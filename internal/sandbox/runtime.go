@@ -27,10 +27,13 @@ type Runtime struct {
 	Trampoline    string
 	TrampolineEnv []string
 	Bootstrap     string
-	// NeedsProfile is set when the copy cannot create a user namespace and no
-	// trampoline exists to borrow a label from. The wrap is still allowed to
-	// succeed — the caller prints userns.ProfileHint and exits 3, the same
-	// code that already means "identity is in place, one human step remains".
+	// NeedsProfile is set when the copy cannot create a user namespace, no
+	// profile attached to it is installed, and no trampoline exists to borrow
+	// a label from. `twin install` answers it by installing the profile
+	// through sudo; when that is not possible either (no sudo, or no terminal
+	// for the password prompt), the caller prints userns.ProfileHint and exits
+	// 3 — the code that already means "identity is in place, one human step
+	// remains".
 	NeedsProfile bool
 	// Notes explain the choice, for the derivation log.
 	Notes []string
@@ -91,11 +94,21 @@ func Resolve(p inst.Paths, cfg *config.Config, needNestedNS bool) Runtime {
 		return rt
 	}
 
+	// A profile attached to the copy grants it the permission directly, which
+	// is both simpler and steadier than a trampoline: no second process, no
+	// bootstrap script, and nothing that depends on which Electron app happens
+	// to be installed today. It is preferred over the trampoline for exactly
+	// that reason — and `twin install` can now put it there itself.
+	if covered, how := userns.ProfileCovers(rt.Copy); covered {
+		rt.Notes = append(rt.Notes, how+"：私有副本可以直接建 user namespace，不需要跳板")
+		return rt
+	}
+
 	switch cfg.USerns.Trampoline {
 	case "off":
 		rt.NeedsProfile = true
 		rt.Notes = append(rt.Notes,
-			"config.toml 里 userns.trampoline = \"off\"：按打印出来的 profile 自己装一份")
+			"config.toml 里 userns.trampoline = \"off\"：不走跳板，需要一份挂在私有副本上的 profile")
 	case "", "auto":
 		if t, ok := userns.Pick(userns.Discover(userns.DefaultDir)); ok {
 			rt.useElectronTrampoline(p, t.Path, t.Describe())

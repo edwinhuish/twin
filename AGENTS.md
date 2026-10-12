@@ -60,11 +60,16 @@ go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o t
 手工端到端验收**必须用 scratch HOME**，不要动真实 `$HOME`：
 
 ```bash
-mkdir -p /tmp/scratch-home/.config/twin
-HOME=/tmp/scratch-home ./twin new wechat --dry-run
-HOME=/tmp/scratch-home ./twin new wechat
-HOME=/tmp/scratch-home ./twin verify wechat2
+mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
+cd /tmp/scratch-work                      # gen 默认往**当前目录**写 config.yml
+HOME=/tmp/scratch-home /path/to/twin gen wechat --dry-run
+HOME=/tmp/scratch-home /path/to/twin gen wechat
+HOME=/tmp/scratch-home /path/to/twin install --dry-run
+HOME=/tmp/scratch-home /path/to/twin install
+HOME=/tmp/scratch-home /path/to/twin verify wechat2
 ```
+⚠️ `install` 需要 AppArmor profile 时会调 `sudo`。验收时**看到密码提示就 Ctrl-C**（它会退回打印
+profile 并以退出码 3 结束，那正是要验的兜底行为）；别在别人的机器上真装那份 profile。
 
 ## 3. 目录结构
 
@@ -72,7 +77,7 @@ HOME=/tmp/scratch-home ./twin verify wechat2
 cmd/twin/            CLI 入口：动词分派、flag 解析、全部终端输出
 internal/
   tomlz/               TOML 子集的编解码（自写，非通用库；config.toml 与 rules.d 用它）
-  yamlz/               YAML 子集的编解码（自写，非通用库；profile.yml 用它）
+  yamlz/               YAML 子集的编解码（自写，非通用库；config.yml 与 profile.yml 用它）
   inst/                实例 schema（真源）＋ Paths（全部产物路径）＋ 语义校验
   desk/                .desktop 读写（含 Name[xx] / Comment[xx] / Keywords[xx]）
   config/              环境层（config.toml）＋ 应用知识层（rules.d）＋ 内置规则
@@ -123,28 +128,30 @@ style → {}    ← 只有标准库
    `exit 0` 但什么都没写）。判据只能用**回读**，不能用"事先猜"—— 代码里不许出现
    `if 在沙箱里 { 跳过 }` 这种基于位置的判断。
 5. **`--dry-run` 必须是忠实的。** 预览与真实落盘必须由**同一份代码**渲染
-   （`DesktopEntry` 与 `it.Render()` 被 dry-run 和 `Materialize` 共用）。用另一套代码画的
-   预览就是一句谎话。
+   （`DesktopEntry` 与 `it.RenderAs(inst.RoleSnapshot)` 被 dry-run 和 `Materialize` 共用；
+   `gen` 用 `RoleConfig`，预览的也就是它写的那份）。用另一套代码画的预览就是一句谎话。
 6. **CLI 用 `parseFL`，不要直接 `fs.Parse`。** Go 的 `flag` 在第一个非 flag token 处停止，
-   而文档里的写法是 `twin new <source> --as <id>` —— 直接用会让 `--as` 及其后的所有选项被
+   而文档里的写法是 `twin gen <source> --as <id>` —— 直接用会让 `--as` 及其后的所有选项被
    **静默忽略**。位置参数可以出现在选项之间，这是文档承诺的行为。
-7. **产物路径一律从 `$HOME` 派生**，且写进 `profile.yml` 的一律用 `~/` 相对形式
-   （`RelStateDir`）—— 快照要能搬到另一台机器重放。启动器里则统一折叠成 `$HOME/...`，
-   绝不把生成时刻的 HOME 烤进去。
+7. **产物路径一律从 `$HOME` 派生**，且写进实例定义的一律用 `~/` 相对形式
+   （`RelStateDir`）—— 那份文件要能搬到另一台机器重放。启动器里则统一折叠成 `$HOME/...`，
+   绝不把生成时刻的 HOME 烤进去。唯一的例外是 `gen` 的输出文件：它在**当前目录**，那是用户的
+   选择，不是机器的属性。
 8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
    stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
    （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
-9. **默认输出是给人读的，不是给人查的。** `twin new` 只打印快照路径与下一步；逐键说明用
-   `yamlz.SetComment` 写在 `profile.yml` 里，人读到它的那一刻正在编辑它 —— 同一件事在终端和
+9. **默认输出是给人读的，不是给人查的。** `twin gen` 只打印文件路径与下一步；逐键说明用
+   `yamlz.SetComment` 写在那份配置里，人读到它的那一刻正在编辑它 —— 同一件事在终端和
    文件里各说一遍，就是两处将来会各表一套。唯一的例外是"一条映射都没有"的警告：它描述的是
-   别处不会再报的后果，所以留在终端上。`twin new --publish` 打印产物、路径映射、自检、下一步
+   别处不会再报的后果，所以留在终端上。`twin install` 打印产物、路径映射、自检、下一步
    四段；其余细节（推导值、规则模板、手工验证命令）走 `--explain`。加新输出前先问：这条不进
    精简版会不会让人做错事？会，才是默认；不会，就写进注释或 `--explain`。
-10. **一条命令只做一件事，安装是显式的。** `twin new` 默认**只写 `profile.yml`**，`--publish`
-    才安装。理由见 §5"加一个 `new` 选项"：一次 wrap 里唯一随程序而变、又猜错了不出声的东西是
+10. **一条命令只做一件事，安装是显式的。** `twin gen` **只写一份配置**，`twin install` 才落盘。
+    理由见 §5"加一个 `gen` 选项"：一次 wrap 里唯一随程序而变、又猜错了不出声的东西是
     路径映射，它该先落成一份能读能改的文件。
-11. **快照一旦存在，它就是真源。** 安装半段（`--publish` / `regen`）只重放快照，不再从 CLI 重新
-    推导；用户带着"描述实例的选项"来落盘一份已有快照时必须**拒绝**（退出码 2），不能静默二选一。
+11. **存档快照只被 `reinstall` 重放。** `install` 按工作副本重新渲染它，`reinstall` 按它重放。
+    两条路都不从 CLI 重新推导 —— 所以"带着描述实例的选项去装一个已存在的实例"这件事**不存在**了：
+    `install` 根本没有那些选项（见 §5"加一个 `gen` 选项"）。
 12. **`gofmt` 是硬门**，`-l` 必须为空。
 
 ## 5. 常见任务怎么做
@@ -154,33 +161,40 @@ style → {}    ← 只有标准库
 用户自己写一条 `bind` 更糟** —— 加之前必须确认这条路径真的实测过。
 
 想让用户不必自己猜路径时，不要往内置表里加：那正是 `internal/generate/suggest.go` 的活儿。
-`SuggestStateDirs` 只报"这台机器上目录真的存在"（事实，`twin new` 每次都打印），
+`SuggestStateDirs` 只报"这台机器上目录真的存在"（事实，`twin gen` 每次都打印），
 `SuggestStateDirsDeep` 再叠加二进制里的 `~/…` 字面量（猜测，只有 `twin rules --init` 会读），
 `RuleDraft` 把前者写成生效的 `bind` 条目、后者全部注释掉。**任何探测结果都不得自动生效** ——
 `--init` 是唯一的出口，因为它是一条显式命令。
 
-### 加一个 `new` 选项
+### 加一个 `gen` 选项
 四处联动：
-1. `cmd/twin/main.go` 的 `cmdNew`：加 flag，放进 `generate.Options`；
-2. **决定它属于哪一类**：`derivationFlags`（描述实例，会进快照）还是描述这次动作（`--as` /
-   `--force` / `--dry-run` / `--explain`）。前者在一份已存在的快照面前必须被拒绝 ——
-   加进那张表就是加进这条规则；
+1. `cmd/twin/main.go` 的 `cmdGen`：加 flag，放进 `generate.Options`；
+2. **决定它属于哪一类**：描述**实例**（会进 config.yml，进而进快照）还是描述**这次动作**
+   （`-o` / `--force` / `--dry-run` / `--explain`）。只有 `gen` 拥有前者 ——
+   `install` 的 flag 表里一个实例选项都没有，所以"带着描述实例的选项去装一个已存在的实例"
+   这件事**无法表达**：那不是一条运行时判断，而是动词拆分本身（见 §4.11）；
 3. `internal/generate/generate.go` 的 `Options` 与 `Plan`：决定优先级与默认值来源；
-4. 会进快照的字段还要动 `internal/inst` 的 `toTree` / `Load`，补一个往返测试，并给它加一条
+4. 会进配置的字段还要动 `internal/inst` 的 `toTree` / `Load`，补一个往返测试，并给它加一条
    `SetComment` 说明 —— 终端不再解释任何键，注释是它唯一的说明书（`TestEverySnapshotKeyIsExplained`
    会拦下漏写的）。
 
-### 两段式（`twin new` / `--publish`）
-- 前半段只有 `generate.WriteSnapshot` 一个写点，**没有第二个渲染器**：快照与一步到位写出来的是
-  同一份字节（`Render` 共用）。`--dry-run` 也必须由 `Materialize` 用的那套代码渲染。
-- 快照的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
-  **丢掉**注释 —— 手改进来的说明不会被下一次 `regen` 带偏，也所以往返必须是逐字节稳定的。
-- 前后两半靠 `generate.SnapshotsFor` 按**解析后的源桌面项路径**相认，绝不重新推导 id：快照一写
-  出来那个 id 就被占用了，重新推导只会悄悄挪到 `wechat3`。
-- "待落盘" = 快照在、桌面项不在（`Snapshot.Published` 的反面）。它是正常中间态，不是缺文件：
-  `twin list` 标 `← 未落盘`，`twin verify` 只报这一件事并给收尾命令，`twin remove` 照删。
-- 安装半段只有一条路（`installAndCheck`），`--publish` 与 `regen` 共用；给它们写第二份实现
-  就是给"publish 会做、regen 不做"留机会。
+### 两段式（`twin gen` / `twin install`）
+- 前半段（`twin gen`）只有一个写点：`it.Render()` ＋ `writeConfigFile`，写的是**工作副本**
+  （`inst.RoleConfig`），默认落在**当前目录**的 `config.yml` —— 那是用户的选择，不是机器的属性
+  （§4.7）。它拒绝覆盖已存在的文件，除非 `--force`：这份文件正是接下来要被人读、被人改的那一份。
+- 后半段（`twin install`）读那份配置、按 `inst.RoleSnapshot` 重新渲染一份写进
+  `~/.local/share/twin/<id>/profile.yml`，再由 `Materialize` 落盘。两半的字节**本来就该不同**：
+  header 要说明这份文件是"被 `reinstall` 重放的存档"还是"被 `install` 读的工作副本"，
+  这就是 `Role` 这层存在的全部理由。
+- 配置里的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
+  **丢掉**注释 —— 手改进来的说明不会被下一次 `gen` 带偏，也所以往返必须是逐字节稳定的。
+- 前后两半不靠重新推导 id 相认，而靠**显式指名的那份文件**（`install -c <文件>`，默认
+  `./config.yml`）：一次 `gen` 只写一份配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到
+  `wechat3`。
+- `install` 不接受位置参数（`len(pos) > 0` 直接报错）：要装哪份配置用 `-c` 说，要包哪个程序是
+  `gen` 那一步说过的。留一条重新推导的路，就是给"同一个问题两处答案"留机会。
+- 安装半段只有一条路（`installAndCheck`），`twin install` 与 `twin reinstall` 共用；给它们写
+  第二份实现就是给"install 会做、reinstall 不做"留机会。
 
 ### 加一个自检项
 `internal/verify/verify.go` 的 `Run()` 里 `add(name, status, detail, fix)`。若这一项**只能由人

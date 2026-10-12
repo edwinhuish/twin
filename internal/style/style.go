@@ -2,7 +2,7 @@
 // stream, and supplies the glyphs the CLI prefixes its lines with.
 //
 // The decision is made per stream, not per program: stdout and stderr are
-// redirected independently, and `twin new wechat > log` has to leave the log
+// redirected independently, and `twin gen wechat > log` has to leave the log
 // readable while the warnings still land in colour on the terminal. It is also
 // made by the caller at output time rather than in an init, so anything that
 // captures twin's output in a test or a script gets plain text for free.
@@ -18,7 +18,7 @@ import (
 type Style struct{ on bool }
 
 // For resolves the decision for one stream.
-func For(f *os.File) Style { return Style{on: allowed(isTerminal(f), os.Getenv)} }
+func For(f *os.File) Style { return Style{on: allowed(IsTerminal(f), os.Getenv)} }
 
 // Enabled reports whether escape codes will actually be emitted. Callers that
 // lay out columns can ask before padding.
@@ -107,10 +107,15 @@ func allowed(tty bool, getenv func(string) string) bool {
 	return getenv("TERM") != "dumb"
 }
 
-// isTerminal asks the kernel with TCGETS instead of inspecting the file mode:
-// /dev/null is a character device too, so `twin new wechat > /dev/null` would
+// IsTerminal asks the kernel with TCGETS instead of inspecting the file mode:
+// /dev/null is a character device too, so `twin gen wechat > /dev/null` would
 // be handed escape codes under the cheaper test.
-func isTerminal(f *os.File) bool {
+//
+// It is exported because one question outside this package has the same shape:
+// whether a password prompt can reach the user at all. sudo needs a terminal,
+// and a `twin install` run from a script has none — that case has to fall back
+// to printing the command instead of hanging on a prompt nobody can see.
+func IsTerminal(f *os.File) bool {
 	var t syscall.Termios
 	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS,
 		uintptr(unsafe.Pointer(&t)), 0, 0, 0)

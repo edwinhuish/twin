@@ -388,7 +388,7 @@ python = "python3"            # 仅用于 SVG 光栅化与 GLib 桌面项自检
 # 应用），先 exec 它拿到标签，再由它 spawn 上面的 bwrap 副本。这正是换一台机器
 # 只要重跑一次 twin 就能用的原因 —— 跳板由它当场重新挑。
 #   "auto" = 自动探测（推荐）
-#   "off"  = 不探测；需要时打印一份 profile 让你 sudo 装上
+#   "off"  = 不探测；需要时 twin install 用 sudo 给你装一份挂在副本上的 profile
 #   路径   = 指定跳板
 trampoline = "auto"
 

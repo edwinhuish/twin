@@ -145,9 +145,11 @@ func Run(p inst.Paths) *Report {
 		add(ov.Name, kind, ov.Detail, fix)
 
 		// The machine's user-namespace situation. The restriction itself is
-		// not the verdict — what matters is whether a trampoline exists to
-		// work around it, because that is the difference between "Chromium and
-		// Electron wrap fine" and "they cannot start at all".
+		// not the verdict — what matters is whether there is a way around it,
+		// because that is the difference between "Chromium and Electron wrap
+		// fine" and "they cannot start at all". There are two ways: a profile
+		// attached to the private copy (durable, and what `twin install`
+		// installs itself), or a trampoline borrowed from an Electron app.
 		restricted, why := userns.Restricted()
 		if !restricted {
 			detail := "内核未限制非特权 user namespace"
@@ -164,7 +166,12 @@ func Run(p inst.Paths) *Report {
 					electron++
 				}
 			}
+			covered, how := userns.ProfileCovers(p.BwrapCopy())
 			switch {
+			case covered:
+				add("非特权 userns", KindOK,
+					fmt.Sprintf("内核在限制（%s），但 %s —— 私有 bwrap 副本可以直接建 user namespace",
+						why, how), "")
 			case electron > 0:
 				pick, _ := userns.Pick(cands)
 				add("非特权 userns", KindOK,
@@ -176,11 +183,12 @@ func Run(p inst.Paths) *Report {
 					fmt.Sprintf("内核在限制，%s 下 %d 个候选里没有一个像 Electron —— "+
 						"它们拿不到「只跑脚本、不开窗口」的驱动方式，Chromium / Electron 包裹会起不来",
 						userns.DefaultDir, len(cands)),
-					"装一个 Electron 应用（VS Code 即可），然后 twin regen 让它当跳板")
+					"装一个 Electron 应用（VS Code 即可），然后 twin reinstall <id> 让它当跳板")
 			default:
 				add("非特权 userns", KindWarn,
 					"内核在限制，且没有找到任何自带 userns 许可的已安装程序：Chromium / Electron 包裹会起不来",
-					"装一个 Electron 应用（VS Code 即可），或按 twin new 打印出来的 profile 自行安装")
+					"twin install 会自己装一份 AppArmor profile（要 sudo）；也可以装一个 Electron 应用"+
+						"（VS Code 即可）当跳板")
 			}
 		}
 	} else {
@@ -403,7 +411,7 @@ func (r *Report) Format(st style.Style) string {
 }
 
 // levelOf maps this package's Kind onto the shared verdict vocabulary, so the
-// table's glyphs match the ones `twin new` prints.
+// table's glyphs match the ones `twin gen` prints.
 func levelOf(k Kind) style.Level {
 	switch k {
 	case KindOK:
@@ -435,8 +443,9 @@ func (r *Report) NextSteps() []string {
 	}
 	out := []string{
 		"看一眼某个程序会被包成什么样：twin inspect wechat",
-		"直接生成（默认值会推导出来并打印来源）：twin new wechat",
-		"生成后自检身份链路：twin verify wechat2",
+		"生成配置（默认值会推导出来并打印来源）：twin gen wechat",
+		"再安装（会先让你过目配置；需要 root 的那一步会问你要密码）：twin install",
+		"装完自检身份链路：twin verify wechat2",
 	}
 	if !r.Graphical {
 		out = append(out,

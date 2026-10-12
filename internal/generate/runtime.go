@@ -102,7 +102,7 @@ try {
     console.error(
       '[twin] 警告: 当前 AppArmor 标签是 "' + label + '"（没有被换掉）。\n' +
       '          跳板程序的 profile 可能已经不存在了。\n' +
-      '          修法: twin regen <实例 id>   —— 会重新挑一个跳板。'
+      '          修法: twin reinstall <实例 id>   —— 会重新挑一个跳板。'
     );
   }
 } catch (_) {

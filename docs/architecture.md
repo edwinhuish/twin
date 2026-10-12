@@ -131,21 +131,29 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 
 ## 5. 产物与模板
 
+`twin install` 写下面这些。第 0 件（`./config.yml`）不是它写的 —— `twin gen` 写在**你当前所在的
+目录**里，因为那是这份 wrap 里唯一需要人读一遍的东西，而"当前目录"是用户已经选好的那个位置。
+
 | # | 路径 | 内容 | 何时写 |
 |---|---|---|---|
 | 1 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 总是 |
 | 2 | `~/.local/share/appicons/<id>.png` | 合成好的图标（256×256 默认） | 总是 |
 | 3 | `~/.local/share/twin/<id>/launch` | 薄启动器（bash，`exec` bwrap） | 总是 |
-| 4 | `~/.local/share/twin/<id>/profile.yml` | **真源文件** | 总是 |
+| 4 | `~/.local/share/twin/<id>/profile.yml` | 实例定义（**存档快照**） | 总是 |
 | 5 | `~/.config/twin/rules.d/<id>.json` | L5 规则（扩展读） | 仅 `level=redirect` |
 | 6 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
 | 7 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
 | 8 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本 | 同上 |
 
-### 5.1 `profile.yml`
+### 5.1 实例定义
+
+同一份 schema 落在两处，头注释各自指向读它的那条命令：
 
 ```yaml
-# twin —— 真源文件（YAML）。改完跑 `twin regen wechat2` 重新落盘。
+# …config.yml 的头 —— twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。
+
+# twin —— 实例定义（存档快照）。改完跑 `twin reinstall wechat2` 重放；
+# `twin install` 会用工作副本那份重新写出它。
 id: wechat2
 name: 微信2
 name_en: WeChat2
@@ -184,8 +192,9 @@ bind:
   - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
 ```
 
-它是**人类可编辑的真源**：改完跑 `twin regen <id>` 重新落盘。真实文件里**每个键上面都有一行
-说明**（`twin new` 不在终端重复它们），上面这份骨架把注释省掉了。
+两个文件都是**给人读、给人改的**：工作副本改完 `twin install`，存档快照改完 `twin reinstall <id>`。
+真实文件里**每个键上面都有一行说明**（`twin gen` / `twin install` 不在终端重复它们），上面这份骨架
+把注释省掉了。
 
 注意几处刻意的设计：
 

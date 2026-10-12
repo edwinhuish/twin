@@ -48,6 +48,20 @@ func RunEnv(env []string, name string, args ...string) (Result, error) {
 	return res, nil
 }
 
+// RunInteractive executes a program attached to this process's own terminal.
+//
+// It exists for exactly one caller: the sudo that installs the AppArmor
+// profile. Run captures a child's output, which would also capture sudo's
+// password prompt — and a prompt nobody can read is a hang, not a question.
+func RunInteractive(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", strings.Join(append([]string{name}, args...), " "), err)
+	}
+	return nil
+}
+
 // Which finds an executable on PATH — or at an absolute path.
 //
 // Note: plain lookPath is fine here because PATH inside a normal desktop

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/edwinhuish/twin/internal/inst"
 )
 
-// The documented form is `twin new <source> --as <id>`: the source comes
+// The documented form is `twin gen <source> --as <id>`: the source comes
 // first. Go's flag package stops at the first non-flag token, which used to
 // swallow every flag placed after the source — --as, --name, --badge, and even
 // --dry-run all vanished without a word. parseFL must see through that.
@@ -23,7 +24,7 @@ func TestParseFLKeepsFlagsAfterPositional(t *testing.T) {
 		{"--as=wechat2", "wechat", "--badge=2"},
 	}
 	for _, args := range cases {
-		fs := flag.NewFlagSet("new", flag.ContinueOnError)
+		fs := flag.NewFlagSet("gen", flag.ContinueOnError)
 		as := fs.String("as", "", "")
 		badge := fs.String("badge", "", "")
 		pos, err := parseFL(fs, args)
@@ -121,98 +122,57 @@ func TestSplitPassthroughRefusesSecondSeparator(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------- two-phase wrap
+// ---------------------------------------------------------------- two commands
 
-func snap(id string, published bool) generate.Snapshot {
-	return generate.Snapshot{
-		Instance:  &inst.Instance{ID: id},
-		Path:      "/home/someone/.local/share/twin/" + id + "/profile.yml",
-		Published: published,
+// A missing configuration is the first thing a new user runs into, so the error
+// has to name the command that writes one. "config.yml: no such file" is true
+// and useless.
+func TestMissingConfigNamesTheCommandThatWritesOne(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), DefaultConfigName)
+	_, err := loadConfigFile(missing)
+	if err == nil {
+		t.Fatal("读一份不存在的配置必须报错")
+	}
+	if !strings.Contains(err.Error(), "twin gen") {
+		t.Errorf("报错没有告诉用户下一步敲什么：%v", err)
 	}
 }
 
-// `twin new wechat --publish` has to find the configuration `twin new wechat`
-// just wrote. Re-deriving the id cannot do it — the snapshot itself makes that
-// id taken — so the answer comes from what is on disk, and only an unambiguous
-// answer is acted on.
-func TestPublishTarget(t *testing.T) {
-	cases := []struct {
-		name    string
-		snaps   []generate.Snapshot
-		as      string
-		want    string
-		wantErr bool
-	}{
-		{"--as 指名就是那个", []generate.Snapshot{snap("wechat2", true), snap("wechat3", false)}, "wechat3", "wechat3", false},
-		{"唯一待落盘的那一份", []generate.Snapshot{snap("wechat2", true), snap("wechat3", false)}, "", "wechat3", false},
-		{"一份待落盘的都没有 ⇒ 一步到位", []generate.Snapshot{snap("wechat2", true)}, "", "", false},
-		{"一个实例都没有 ⇒ 一步到位", nil, "", "", false},
-		{"待落盘不止一份 ⇒ 拒绝猜", []generate.Snapshot{snap("a", false), snap("b", false)}, "", "", true},
-	}
-	for _, c := range cases {
-		got, err := publishTarget(c.snaps, c.as)
-		if (err != nil) != c.wantErr {
-			t.Errorf("%s：err = %v，期望出错=%v", c.name, err, c.wantErr)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("%s：id = %q，期望 %q", c.name, got, c.want)
-		}
-	}
-}
-
-// The configuring half must not stack a second configuration behind the user's
-// back, and must never rewrite the file the user is editing — that file's edits
-// are the entire reason it exists.
-func TestConfigureTarget(t *testing.T) {
-	cases := []struct {
-		name         string
-		snaps        []generate.Snapshot
-		as           string
-		wantID       string
-		wantPrepared bool
-		wantErr      bool
-	}{
-		{"--as 说出口了就照办", []generate.Snapshot{snap("wechat2", false)}, "wechat9", "wechat9", false, false},
-		{"已有一份待落盘的 ⇒ 报告它", []generate.Snapshot{snap("wechat2", false), snap("wechat1", true)}, "", "wechat2", true, false},
-		{"没有待落盘的 ⇒ 写一份新的", []generate.Snapshot{snap("wechat2", true)}, "", "", false, false},
-		{"待落盘不止一份 ⇒ 拒绝猜", []generate.Snapshot{snap("a", false), snap("b", false)}, "", "", false, true},
-	}
-	for _, c := range cases {
-		id, prepared, err := configureTarget(c.snaps, c.as)
-		if (err != nil) != c.wantErr {
-			t.Errorf("%s：err = %v，期望出错=%v", c.name, err, c.wantErr)
-			continue
-		}
-		if id != c.wantID || prepared != c.wantPrepared {
-			t.Errorf("%s：id = %q prepared = %v，期望 %q / %v", c.name, id, prepared, c.wantID, c.wantPrepared)
-		}
-	}
-}
-
-// Only flags that describe the *instance* block a publish from an existing
-// snapshot. --as selects which instance, and --force/--dry-run/--explain/
-// --publish describe the act — refusing those would refuse ordinary commands.
-func TestDerivationInputsLeavesTheInstallFlagsAlone(t *testing.T) {
-	fs := flag.NewFlagSet("t", flag.ContinueOnError)
-	fs.String("name", "", "")
-	fs.String("keywords", "", "")
-	fs.Bool("force", false, "")
-	fs.Bool("dry-run", false, "")
-	fs.Bool("explain", false, "")
-	fs.Bool("publish", false, "")
-	fs.String("as", "", "")
-	if err := fs.Parse([]string{"--as", "wechat2", "--force", "--dry-run", "--name", "微信2"}); err != nil {
+// The configuration is the user's working copy, so `twin gen` refuses to write
+// over one that is already there: replacing it silently would throw away the
+// edits that are the only reason the file exists.
+func TestGenRefusesToClobberAWorkingCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultConfigName)
+	if err := writeConfigFile(path, []byte("first"), false); err != nil {
 		t.Fatal(err)
 	}
-	got := derivationInputs(fs, nil)
-	if len(got) != 1 || got[0] != "--name" {
-		t.Errorf("derivationInputs = %v，期望只有 --name", got)
+	if err := writeConfigFile(path, []byte("second"), false); err == nil {
+		t.Fatal("已存在的配置必须拒绝覆盖")
 	}
-	// The `--` region is a decision about the instance too, even though it is
-	// not a flag and flag.Visit can never see it.
-	if got := derivationInputs(fs, []string{"--unshare-pid"}); len(got) != 2 {
-		t.Errorf("`--` 透传区必须算作描述实例的输入：%v", got)
+	if got, err := os.ReadFile(path); err != nil || string(got) != "first" {
+		t.Errorf("拒绝之后文件却被改了：%q %v", got, err)
+	}
+	if err := writeConfigFile(path, []byte("second"), true); err != nil {
+		t.Fatalf("--force 应当允许覆盖：%v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "second" {
+		t.Errorf("--force 之后内容没更新：%q %v", got, err)
+	}
+}
+
+// `-o` and `--output` are two names for one setting, and the default has to
+// lose to either. The rule lives in one function so it can be tested in one
+// place — a flag package with no aliases makes this the kind of thing that
+// otherwise gets decided independently at each use.
+func TestOneSettingBeatsTheDefault(t *testing.T) {
+	if got := firstNonEmpty("out.yml", "", DefaultConfigName); got != "out.yml" {
+		t.Errorf("长选项应当胜过默认值：%q", got)
+	}
+	if got := firstNonEmpty("", "out.yml", DefaultConfigName); got != "out.yml" {
+		t.Errorf("短选项应当胜过默认值：%q", got)
+	}
+	if got := firstNonEmpty("", "", DefaultConfigName); got != DefaultConfigName {
+		t.Errorf("都没给时才落到默认值：%q", got)
 	}
 }
 
@@ -244,8 +204,9 @@ func TestPathMapsShortFormDropsTheTemplate(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo"}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
+	fix := mapFix{file: DefaultConfigName, replay: installCommandFor(DefaultConfigName)}
 
-	short := captureStdout(t, func() { printPathMaps(p, it, insp, "", false) })
+	short := captureStdout(t, func() { printPathMaps(p, it, insp, "", fix, false) })
 	if strings.Contains(short, "照抄下面这份") {
 		t.Errorf("默认输出不该带规则模板：\n%s", short)
 	}
@@ -253,7 +214,7 @@ func TestPathMapsShortFormDropsTheTemplate(t *testing.T) {
 		t.Errorf("默认输出必须点出生成草稿的路子：\n%s", short)
 	}
 
-	long := captureStdout(t, func() { printPathMaps(p, it, insp, "", true) })
+	long := captureStdout(t, func() { printPathMaps(p, it, insp, "", fix, true) })
 	if !strings.Contains(long, "照抄下面这份") {
 		t.Errorf("--explain 输出应当带规则模板：\n%s", long)
 	}

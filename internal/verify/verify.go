@@ -139,7 +139,7 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 		switch {
 		case len(fatal) > 0:
 			add("桌面项可用", StatusFail, strings.Join(fatal, "; "),
-				fmt.Sprintf("twin regen %s", i.ID))
+				fmt.Sprintf("twin reinstall %s", i.ID))
 		case len(soft) > 0:
 			add("桌面项可用", StatusWarn, strings.Join(soft, "; "), "")
 		default:
@@ -159,16 +159,16 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 		} else {
 			add("GLib 接受该桌面项", StatusFail,
 				"GLib 返回 NULL（"+detail+"）—— 整个桌面项会被静默丢弃，面板只会显示齿轮",
-				fmt.Sprintf("twin regen %s", i.ID))
+				fmt.Sprintf("twin reinstall %s", i.ID))
 		}
 	}
 
 	// ---- 3. the icon -----------------------------------------------------------
 	iconPath := p.Icon(i.ID)
 	if !sysx.Exists(iconPath) {
-		add("图标存在", StatusFail, iconPath+" 不存在", fmt.Sprintf("twin regen %s", i.ID))
+		add("图标存在", StatusFail, iconPath+" 不存在", fmt.Sprintf("twin reinstall %s", i.ID))
 	} else if w, h, err := PNGSize(iconPath); err != nil {
-		add("图标可解码", StatusFail, err.Error(), fmt.Sprintf("twin regen %s", i.ID))
+		add("图标可解码", StatusFail, err.Error(), fmt.Sprintf("twin reinstall %s", i.ID))
 	} else {
 		add("图标", StatusOK, fmt.Sprintf("%s (%d×%d)", filepath.Base(iconPath), w, h), "")
 	}
@@ -177,7 +177,7 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 	launch := p.Launch(i.ID)
 	switch {
 	case !sysx.Exists(launch):
-		add("启动器存在", StatusFail, launch+" 不存在", fmt.Sprintf("twin regen %s", i.ID))
+		add("启动器存在", StatusFail, launch+" 不存在", fmt.Sprintf("twin reinstall %s", i.ID))
 	case !sysx.IsExecutableFile(launch):
 		// This is the same trap as a non-executable Exec target: GLib throws
 		// the entry away without a sound.
@@ -206,29 +206,29 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 	rulePath := p.RuleFile(i.ID)
 	switch {
 	case i.Level == inst.LevelRedirect && !sysx.Exists(rulePath):
-		add("L5 规则文件", StatusFail, rulePath+" 不存在", fmt.Sprintf("twin regen %s", i.ID))
+		add("L5 规则文件", StatusFail, rulePath+" 不存在", fmt.Sprintf("twin reinstall %s", i.ID))
 	case i.Level == inst.LevelRedirect:
 		body, err := os.ReadFile(rulePath)
 		if err != nil {
-			add("L5 规则文件", StatusFail, err.Error(), fmt.Sprintf("twin regen %s", i.ID))
+			add("L5 规则文件", StatusFail, err.Error(), fmt.Sprintf("twin reinstall %s", i.ID))
 			break
 		}
 		rule, err := inst.ParseRedirectRule(body)
 		if err != nil {
 			add("L5 规则文件", StatusFail, filepath.Base(rulePath)+" 不是合法 JSON："+err.Error(),
-				fmt.Sprintf("twin regen %s", i.ID))
+				fmt.Sprintf("twin reinstall %s", i.ID))
 			break
 		}
 		switch err := rule.Validate(i.ID); {
 		case err != nil:
-			add("L5 规则文件", StatusFail, err.Error(), fmt.Sprintf("twin regen %s", i.ID))
+			add("L5 规则文件", StatusFail, err.Error(), fmt.Sprintf("twin reinstall %s", i.ID))
 		case !rule.Carries(i.AliasPath()):
 			// The evidence no longer names this instance's alias — the usual
 			// cause is a hand-edited profile.yml that moved the target, with
 			// no regen since.
 			add("L5 规则文件", StatusFail,
 				fmt.Sprintf("规则的证据里找不到别名路径 %s", i.AliasPath()),
-				fmt.Sprintf("twin regen %s", i.ID))
+				fmt.Sprintf("twin reinstall %s", i.ID))
 		default:
 			add("L5 规则文件", StatusOK,
 				fmt.Sprintf("target=%s，扩展会读 %s", rule.Target, rulePath), "")
@@ -260,29 +260,40 @@ else:
 
 // checkNestedNS verifies the route a Chromium/Electron instance needs to create
 // its own user namespace: the private bubblewrap copy, and — on a machine that
-// restricts unprivileged namespaces — the trampoline that lends it the
-// AppArmor label to do so.
+// restricts unprivileged namespaces — something that lends the copy the
+// permission. There are two such things: a trampoline recorded in the launcher,
+// or a profile attached to the copy itself, which is the one `twin install`
+// installs.
+//
+// The profile is reported as evidence rather than as a verdict. It is decided
+// by reading /etc/apparmor.d, and a check whose outcome depends on what happens
+// to be installed on the machine running the tests cannot be tested — so the
+// status stays about the launcher, and the detail gets sharper when the profile
+// is actually there.
 func checkNestedNS(i *inst.Instance, p inst.Paths, add func(string, Status, string, string)) {
 	copyPath := p.BwrapCopy()
 	if !sysx.Exists(copyPath) {
 		add("嵌套 user namespace", StatusWarn,
 			"快照标了 isolation.nested_ns，但私有副本 "+copyPath+" 不存在 —— 这个实例很可能起不来",
-			fmt.Sprintf("twin regen %s", i.ID))
+			fmt.Sprintf("twin reinstall %s", i.ID))
 		return
 	}
 	tr := trampolineInLauncher(p.Launch(i.ID))
 	switch {
 	case tr == "":
-		add("嵌套 user namespace", StatusOK,
-			"走私有 bwrap 副本 "+copyPath+"，没有用跳板", "")
+		detail := "走私有 bwrap 副本 " + copyPath + "，没有用跳板"
+		if covered, how := userns.ProfileCovers(copyPath); covered {
+			detail += "：" + how
+		}
+		add("嵌套 user namespace", StatusOK, detail, "")
 	case !sysx.Exists(tr):
 		add("嵌套 user namespace", StatusFail,
 			"启动器里的跳板 "+tr+" 已经不存在了（那个应用被卸载或改名了？）—— 这个实例起不来",
-			fmt.Sprintf("twin regen %s", i.ID))
+			fmt.Sprintf("twin reinstall %s", i.ID))
 	case !userns.IsElectron(tr):
 		add("嵌套 user namespace", StatusWarn,
 			"启动器里的跳板 "+tr+" 现在不像 Electron 程序了，Node 模式可能驱动不了它",
-			fmt.Sprintf("twin regen %s", i.ID))
+			fmt.Sprintf("twin reinstall %s", i.ID))
 	default:
 		add("嵌套 user namespace", StatusOK, "跳板 "+tr+" → 副本 "+copyPath, "")
 	}

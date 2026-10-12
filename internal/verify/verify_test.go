@@ -161,7 +161,7 @@ func makeElectron(t *testing.T) string {
 	return bin
 }
 
-// 快照说要嵌套命名空间，副本却不在 —— 这个实例起不来，必须给 regen。
+// 快照说要嵌套命名空间，副本却不在 —— 这个实例起不来，必须给 reinstall。
 func TestNestedNSWithoutTheCopy(t *testing.T) {
 	p, it := nestedEnv(t)
 	var s sink
@@ -170,7 +170,7 @@ func TestNestedNSWithoutTheCopy(t *testing.T) {
 	if f.Status != StatusWarn {
 		t.Errorf("缺副本应当是 WARN：%+v", f)
 	}
-	if !strings.Contains(f.Fix, "regen") {
+	if !strings.Contains(f.Fix, "reinstall") {
 		t.Errorf("要给一条能跑的命令：%q", f.Fix)
 	}
 }
@@ -202,7 +202,7 @@ func TestNestedNSWhenTheTrampolineVanished(t *testing.T) {
 	if f.Status != StatusFail {
 		t.Errorf("跳板没了就是起不来，应当 FAIL：%+v", f)
 	}
-	if !strings.Contains(f.Fix, "regen") {
+	if !strings.Contains(f.Fix, "reinstall") {
 		t.Errorf("要给一条能跑的命令：%q", f.Fix)
 	}
 }

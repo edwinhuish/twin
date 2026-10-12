@@ -247,7 +247,7 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
-	b.WriteString("# twin 生成 —— 不要手改。改 profile.yml 后跑 `twin regen " + i.ID + "` 重新落盘。\n")
+	b.WriteString("# twin 生成 —— 不要手改。改 profile.yml 后跑 `twin reinstall " + i.ID + "` 重新落盘。\n")
 	b.WriteString("#\n")
 	b.WriteString("# 身份两条通道必须同名：窗口 app_id 取自真实路径的 basename（overlay 别名），\n")
 	b.WriteString("# 托盘 SNI Id 取自 argv[0]（默认就是 exec 的那条路径）。\n")

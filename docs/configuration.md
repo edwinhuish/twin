@@ -7,39 +7,48 @@
 |---|---|---|---|
 | 环境 | `~/.config/twin/config.toml` | **这台机器** | 换机器、换桌面会话 |
 | 应用知识 | `~/.config/twin/rules.d/<app>.toml` | **某个程序** | 你了解了一个新程序的习惯 |
-| 实例快照 | `~/.local/share/twin/<id>/profile.yml` | **这一个实例** | 你想改这一个实例 |
+| 实例 | `./config.yml`（`gen` 写、`install` 读） | **这一个实例** | 你想改这一个实例 |
+| 存档 | `~/.local/share/twin/<id>/profile.yml` | 同一个实例的安装记录（`reinstall` 读） | 想按存档重来一次时 |
 | 内置 | （编译进二进制） | 出厂默认 | 永不 |
+
+前两层是"知识"，后两层是"意图"。`config.yml` 是你手上的工作副本；`profile.yml` 是 `install`
+按它渲染出来的**存档**，同一套键、不同的头注释（一个指向 `twin install`，一个指向 `twin reinstall`），
+因为它们回答的是不同的命令。
 
 ---
 
 ## 1. 优先级
 
 ```
-CLI 参数
-  > profile.yml     （实例快照）
-    > rules.d/<app>.toml （应用知识）
-      > config.toml      （环境）
-        > 内置默认
+config.yml      （你正在编辑的那一份：gen 写、install 读）
+  > rules.d/<app>.toml （应用知识）
+    > config.toml      （环境）
+      > 内置默认
 ```
 
 **数组类字段**（`bwrap.extra`、`tmpfs`、`bind`）按**低位在前拼接**，同目标由后写的遮蔽：
 
 ```
-最终 bwrap.extra = config.extra ++ rules.extra ++ CLI(-- 之后的 token)
+最终 bwrap.extra = config.extra ++ rules.extra ++ 配置里的 bwrap.extra
 ```
 
 同目标挂载的冲突规则**不需要 twin 实现** —— bubblewrap 自己就是"后挂载遮蔽前者"。
 
-### `wrap` 与 `regen` 看到的层数不同
+注意顶层那格不再是"命令行参数"：`install` 不接受任何描述实例的选项，所以没有第二份意图来源。
+`gen` 的推导选项换来的是**一份文件**，之后只有文件说话。
+
+### `install` 与 `reinstall` 看到的层数不同
 
 | 动作 | 参与的层 |
 |---|---|
-| `wrap`（新建） | CLI > rules.d > config.toml > 内置 |
-| `regen`（重放） | CLI > profile.yml > 内置（**不读** config / rules） |
-| `regen --refresh` | 上面 ＋ config.toml / rules.d（**只补空字段、只追加缺的 token**） |
+| `gen`（推导） | CLI > rules.d > config.toml > 内置 |
+| `install`（按配置装） | config.yml > rules.d > config.toml > 内置 |
+| `reinstall`（重放存档） | profile.yml > 内置（**不读** config / rules） |
+| `reinstall --refresh` | 上面 ＋ config.toml / rules.d（**只补空字段、只追加缺的 token**） |
 
-这是刻意的：**`regen` 必须是确定性的**。如果它默认依赖 `config.toml`，那么改动一个全局默认
-就会"顺手"改掉一排已有实例 —— 那正是最不该发生的静默变更。
+这是刻意的：**`reinstall` 必须是确定性的**。如果它默认依赖 `config.toml`，那么改动一个全局默认
+就会"顺手"改掉一排已有实例 —— 那正是最不该发生的静默变更。（`install` 读环境是另一回事：它读的
+是**你刚刚交出来的那份配置**，没有第二份意图能和它冲突。）
 
 `--refresh` 只做**加法与填空**，绝不改写快照里已有的值：
 
@@ -49,7 +58,7 @@ CLI 参数
 | `bwrap.extra` | 把 config ＋ rules 的 token **追加**进来；已存在的 token 跳过（幂等） |
 | 其余（id / name / level / tmpfs / binds） | **不动** —— 它们一定已被写满，"空"与"用户要空"分不开 |
 
-⇒ 一句话：`regen` 让**派生文件与快照一致**，而不是让快照跟随环境。
+⇒ 一句话：`reinstall` 让**派生文件与快照一致**，而不是让快照跟随环境。
 
 ---
 
@@ -84,7 +93,7 @@ twin config > ~/.config/twin/config.toml
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `trampoline` | `"auto"` | `"auto"` 自动探测最佳跳板；`"off"` 不用跳板（受限机器上会打印 profile 并退出 3）；或一个显式路径（**必须是 Electron 程序**） |
+| `trampoline` | `"auto"` | `"auto"` 自动探测最佳跳板；`"off"` 不用跳板（受限机器上改走 AppArmor profile，`twin install` 会用 `sudo` 装它）；或一个显式路径（**必须是 Electron 程序**） |
 
 ### `[icon]`
 
@@ -195,8 +204,8 @@ extra = []
 > 问题，真正会撞车的是后者。
 
 内置表短，意味着**多数程序没有规则**，而"要隔离哪些目录"正是最容易猜错、又最不容易发现的一条
-知识（隔离错一个目录，到两个实例抢同一个锁文件时才暴露）。所以 `twin new` 每次都会打印实际生效
-的映射、它的来源、该编辑哪个文件，并附一份照抄即可的模板（见 [`cli.md`](cli.md) 的 `twin new`）。
+知识（隔离错一个目录，到两个实例抢同一个锁文件时才暴露）。所以 `twin gen` 每次都会打印实际生效
+的映射、它的来源、该编辑哪个文件，并附一份照抄即可的模板（见 [`cli.md`](cli.md) 的 `twin gen`）。
 
 不想凭空猜路径，可以让 twin 先探测一遍：`twin rules --init <源桌面项|程序名>` 会写出这份文件的
 **草稿** —— 目录真的存在的那几条写成生效的 `bind` 条目，二进制里扫出来的字面量则全部注释掉
@@ -204,14 +213,17 @@ extra = []
 
 ---
 
-## 4. `profile.yml`（实例快照）
+## 4. 实例定义（`config.yml` / `profile.yml`）
 
-一个实例的**全部意图**，也是唯一的真源文件。手改它然后 `twin regen <id>`。
+**一份 schema，两处落点。** `twin gen` 把它写进当前目录的 `config.yml`（工作副本，`twin install`
+读它）；`twin install` 把**同一份键**渲染进 `~/.local/share/twin/<id>/profile.yml`（存档快照，
+`twin reinstall` 读它）。两者的差别只有头注释里那句"改完敲哪个命令"，因为一个文件不该对着读者
+指一条会静默忽略它的命令。
 
 文件是 YAML：下面每个小节是一个键，表里的键名要拼成点号路径 —— `identity.level`
 指的就是 `identity:` 缩进块里的 `level:`。缩进只能用空格。
 
-**每个键上面都写着它自己的说明**，`twin new` 生成的快照就是这样：阶段的解释留在文件里，
+**每个键上面都写着它自己的说明**，`gen` 生成的配置就是这样：阶段的解释留在文件里，
 人读到它的时候正好在编辑它。下面这些表是同一份内容的查阅版。
 
 ### 顶层
@@ -223,7 +235,7 @@ extra = []
 | `comment` / `comment_en` | 说明 |
 | `keywords` | 搜索关键词（`;` 分隔） |
 | `categories` | 分类（`;` 分隔） |
-| `source` | 源桌面项路径（信息性，`regen` 会重读它取 Categories/Keywords） |
+| `source` | 源桌面项路径（信息性，`install` / `reinstall` 会重读它取 Categories/Keywords） |
 
 ### `identity`
 
@@ -291,10 +303,10 @@ extra = []
 | **意图** | id、名字、level、bind 列表、tmpfs 列表 | ✅ | 用户对这个实例明确表达过的东西 |
 | **推导结果** | 由 id 推出的 badge、由源 Name 推出的中文名 | ✅ | 落成全量值，文件自解释，不留 `null` |
 | **环境** | bwrap 路径、python 路径、图标尺寸（由本机 DPI 决定） | ❌ | 换机器/换会话就变，写进快照必然过期 |
-| **源的现状** | `Categories` / `Keywords` / `Icon=`（实例里留空表示"继承"时） | ❌ | 源桌面项可能被系统更新覆盖 ⇒ `regen` 时重读 |
+| **源的现状** | `Categories` / `Keywords` / `Icon=`（实例里留空表示"继承"时） | ❌ | 源桌面项可能被系统更新覆盖 ⇒ `install` / `reinstall` 时重读 |
 | **应用知识** | 该程序是否需要嵌套 ns | ✅ | 它跟着程序走，不跟着机器走 |
 | **机器状态** | 用哪个跳板、副本放哪 | ❌ | 留在 `config.toml`，让下一台机器自己决定 |
-| **会话类型** | Wayland / X11 | ⚠️ 部分 | 已固化成 `isolation.tmpfs`；`regen` 时会**警告**它与当前会话不符 |
+| **会话类型** | Wayland / X11 | ⚠️ 部分 | 已固化成 `isolation.tmpfs`；`reinstall` 时会**警告**它与当前会话不符 |
 
 ⇒ 一句话：**"这台机器现在什么样"每次重算；"我要什么"写死在文件里。**
 
@@ -316,19 +328,25 @@ twin rules
 twin rules --init myapp
 $EDITOR ~/.config/twin/rules.d/myapp.toml
 
-# 改一个实例
-$EDITOR ~/.local/share/twin/wechat2/profile.yml
-twin regen wechat2
+# 改一个实例（两条路，改哪份文件就用哪个命令）
+$EDITOR config.yml && twin install
+$EDITOR ~/.local/share/twin/wechat2/profile.yml && twin reinstall wechat2
 ```
 
-### `profile.yml` 是给人读的
+### 它是给人读的
 
-它的 header 就写着这一点：
+header 就写着这一点 —— 而且**两处落点各有各的那一句**：
 
 ```yaml
-# twin —— 真源文件（YAML）。改完跑 `twin regen wechat2` 重新落盘。
-# 这个文件是这个实例的唯一定义：`twin new --publish` 与 `twin regen` 只重放它，
-# 不再看命令行。每个键的说明就写在它自己上面。
+# --- config.yml（工作副本，twin gen 写出）---
+# twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。
+# 每个键的说明就写在它自己上面，终端不再重复。
+# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
+
+# --- profile.yml（存档快照，twin install 写出）---
+# twin —— 实例定义（存档快照）。改完跑 `twin reinstall wechat2` 重放；
+# `twin install` 会用工作副本那份重新写出它。
+# 每个键的说明就写在它自己上面，终端不再重复。
 # 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
 
 # 实例 id：桌面项基名、别名文件名、这个目录名，三者都是它。

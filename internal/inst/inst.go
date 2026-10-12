@@ -452,7 +452,7 @@ func CheckBwrapToken(tok string) error {
 // toTree renders the instance as the documented YAML layout.
 //
 // Every key carries the note a human needs in order to decide whether to touch
-// it, because this file *is* the instance's documentation: `twin new` prints the
+// it, because this file *is* the instance's documentation: `twin gen` prints the
 // path and stops, and the terminal no longer repeats any of this.
 func (i *Instance) toTree() (*yamlz.Tree, error) {
 	t := yamlz.New()
@@ -480,7 +480,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	if i.Categories != "" {
 		t.Set("categories", i.Categories)
 	}
-	t.SetComment("source", "源桌面项。`twin regen` 会重读它取 Categories / Keywords。")
+	t.SetComment("source", "源桌面项。`twin install` / `twin reinstall` 会重读它取 Categories / Keywords。")
 	if i.Source != "" {
 		t.Set("source", i.Source)
 	}
@@ -590,15 +590,42 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	return t, nil
 }
 
-// Render returns the YAML document for the instance.
-func (i *Instance) Render() ([]byte, error) {
+// Role says which of the two jobs a rendered instance definition is doing.
+//
+// The same Instance is written to two places: the working copy `twin gen` hands
+// the user, and the archive `twin install` leaves next to the instance. They
+// hold the same keys, but they answer to different commands — and a header that
+// named the wrong one would send a reader to a command that quietly ignores the
+// file they are looking at, which is the failure mode this whole design is
+// arranged against.
+type Role int
+
+const (
+	// RoleConfig is the working copy: `twin gen` writes it, `twin install` reads it.
+	RoleConfig Role = iota
+	// RoleSnapshot is the archive: install writes it and `twin reinstall` replays it.
+	RoleSnapshot
+)
+
+// Render returns the document as the working copy.
+func (i *Instance) Render() ([]byte, error) { return i.RenderAs(RoleConfig) }
+
+// RenderAs returns the document with the header for the given role.
+func (i *Instance) RenderAs(role Role) ([]byte, error) {
 	t, err := i.toTree()
 	if err != nil {
 		return nil, err
 	}
-	header := "# twin —— 真源文件（YAML）。改完跑 `twin regen " + i.ID + "` 重新落盘。\n" +
-		"# 这个文件是这个实例的唯一定义：`twin new --publish` 与 `twin regen` 只重放它，\n" +
-		"# 不再看命令行。每个键的说明就写在它自己上面。\n" +
+	// Only the header differs between the two roles; the keys and their notes
+	// are rendered once, so a key cannot be documented one way in the file the
+	// user edits and another way in the file install archives.
+	head := "# twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。\n"
+	if role == RoleSnapshot {
+		head = "# twin —— 实例定义（存档快照）。改完跑 `twin reinstall " + i.ID + "` 重放；\n" +
+			"# `twin install` 会用工作副本那份重新写出它。\n"
+	}
+	header := head +
+		"# 每个键的说明就写在它自己上面，终端不再重复。\n" +
 		"# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。\n"
 	return append([]byte(header), yamlz.Encode(t)...), nil
 }
@@ -691,7 +718,7 @@ func LoadProfile(p Paths, id string) (*Instance, error) {
 // kept around as a second code path that could disagree with the new one.
 func legacyProfileError(p Paths, id string) error {
 	return fmt.Errorf("%s 还是旧的 TOML 快照（这个版本起快照叫 profile.yml，YAML 格式）："+
-		"请把内容改写成 YAML 存到 %s（键名不变），或者 twin remove %s 之后重新 twin new",
+		"请把内容改写成 YAML 存到 %s（键名不变），或者 twin remove %s 之后重新 twin gen",
 		p.LegacyProfile(id), p.Profile(id), id)
 }
 

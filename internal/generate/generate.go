@@ -45,23 +45,10 @@ type Options struct {
 	// machine-wide switch is config.toml's defaults.tray_override; either one
 	// turning it off is enough.
 	NoTray bool
-	// IconSize is environment, not intent, so it is resolved here but never
-	// written to the snapshot (设计 §3.6): another machine has another DPI.
-	IconSize int
-	Force    bool
-}
-
-// IconSizeFor resolves the icon edge length from the CLI, then config.toml,
-// then the built-in default. Kept next to the other precedence rules so the
-// order lives in one place.
-func (o Options) IconSizeFor(cfg *config.Config) int {
-	if o.IconSize > 0 {
-		return o.IconSize
-	}
-	if cfg != nil && cfg.Defaults.IconSize > 0 {
-		return cfg.Defaults.IconSize
-	}
-	return inst.DefaultIconSize
+	// There is no icon size here on purpose: it is environment, not intent
+	// (设计 §3.6), and another machine has another DPI. It is read straight
+	// from config.toml at install time, so it is never frozen into a
+	// configuration that gets copied to a second machine.
 }
 
 // Inspection is what we learned about the source program.
@@ -333,7 +320,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 
 	// Search keywords: explicit flag > rules.d > the source entry's own
 	// Keywords > a list synthesised from the names the program already answers
-	// to. Deriving them is the difference between `twin new wechat` working
+	// to. Deriving them is the difference between `twin gen wechat` working
 	// as-is and the user having to retype "微信;wechat" on every instance.
 	//
 	// o.Name != "" is passed separately from name because the two are not the
@@ -617,8 +604,10 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 		return nil, err
 	}
 
-	// 3. the instance definition (the human-editable source of truth).
-	cfg, err := it.Render()
+	// 3. the instance definition. It is rendered as the archive role, not the
+	// working-copy one: `twin reinstall` reads this file, and its header has to
+	// say so.
+	cfg, err := it.RenderAs(inst.RoleSnapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -663,66 +652,6 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 		res.Rule = p.RuleFile(it.ID)
 	}
 	return res, nil
-}
-
-// WriteSnapshot writes only profile.yml — the first half of a two-phase wrap.
-//
-// It shares Render with Materialize, so the file the user is invited to edit is
-// byte for byte the one a one-step wrap would have written: two renderers would
-// be two chances to disagree. Nothing else is touched, and that is the point of
-// the split — until `--publish`, the only thing on disk is a file meant to be
-// edited.
-func WriteSnapshot(p inst.Paths, it *inst.Instance) (string, error) {
-	body, err := it.Render()
-	if err != nil {
-		return "", err
-	}
-	path := p.Profile(it.ID)
-	if err := sysx.WriteFileAtomic(path, body, 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-// Snapshot is one profile.yml found by scanning, plus the one piece of state
-// a two-phase wrap needs in order to interpret it.
-type Snapshot struct {
-	Instance *inst.Instance
-	// Path is the snapshot file itself.
-	Path string
-	// Published says the desktop entry is on disk, so this instance is live.
-	// A snapshot without one is a configuration somebody wrote and has not
-	// installed yet — the normal middle of a two-phase wrap, which is why the
-	// state has a name instead of being reported as a missing file.
-	Published bool
-}
-
-// SnapshotsFor returns every instance configured from this source desktop entry.
-//
-// The two halves of `twin new` use it to agree on which instance they mean
-// without re-deriving the id: once phase one has written the snapshot, that id
-// is taken (freeID checks for exactly that), so a re-derivation would quietly
-// move on to wechat3 and install something nobody asked for. Matching on the
-// *resolved* source path is what makes `twin new wechat`, `twin new wechat
-// --publish` and `twin new /usr/share/applications/wechat.desktop --publish`
-// all mean the same instance.
-func SnapshotsFor(p inst.Paths, sourceDesktop string) ([]Snapshot, error) {
-	all, err := inst.List(p)
-	if err != nil {
-		return nil, err
-	}
-	var out []Snapshot
-	for _, it := range all {
-		if it.Source != sourceDesktop {
-			continue
-		}
-		out = append(out, Snapshot{
-			Instance:  it,
-			Path:      p.Profile(it.ID),
-			Published: sysx.Exists(p.Desktop(it.ID)),
-		})
-	}
-	return out, nil
 }
 
 // Keywords resolves the search keywords a new instance should carry.
@@ -910,14 +839,14 @@ func CheckCollision(p inst.Paths, id string, force bool) error {
 		}
 	}
 	if sysx.Exists(p.Profile(id)) {
-		return fmt.Errorf("%s 已存在、桌面项却不在：这是一份写好但还没落盘的配置 —— "+
-			"落盘用 twin new <source> --as %s --publish；要按新参数重写它，先 twin remove %s",
+		return fmt.Errorf("%s 已存在、桌面项却不在：上一次安装没走完（快照写下了，身份还没落盘）—— "+
+			"补完用 twin reinstall %s；要重新来过就先 twin remove %s",
 			p.Profile(id), id, id)
 	}
 	return nil
 }
 
-// CheckInstall guards the publish half of a two-phase wrap.
+// CheckInstall guards the installing half.
 //
 // The snapshot is already ours by construction, so the only thing that can be
 // occupied is the desktop entry: ours from an earlier publish (republishing is

@@ -39,7 +39,7 @@ var xdgRoots = []string{".config", ".local/share", ".local/state", ".cache"}
 // this machine. The program created them, so this is a fact about the program
 // rather than a guess about it.
 //
-// `twin new` prints these on every run. The fuzzier probe — `~/…` literals
+// `twin install` prints these on every run. The fuzzier probe — `~/…` literals
 // inside the binary — is SuggestStateDirsDeep, because it costs a second full
 // read of the binary and is worth paying for only when discovery is the point.
 func SuggestStateDirs(p inst.Paths, insp *Inspection) []StateHint {
@@ -428,8 +428,8 @@ func RuleDraft(key, source string, hints []StateHint) string {
 #
 # 这份列表整体替换内置规则里的映射（不是追加）：你写下的就是全部。
 #
-# 生效范围：只影响以后新建的实例。已存在的实例请改它的 profile.yml
-# 再跑 twin regen <id>，或者 twin new <source> --as <id> --force 重来一次。
+# 生效范围：只影响以后新建的实例。已装好的实例请改它的 profile.yml
+# 再跑 twin reinstall <id>，或者改 config.yml 再 twin install --force。
 `)
 	fmt.Fprintf(&b, "# 写完验证：twin rules %s\n", key)
 	fmt.Fprintf(&b, "\napp = %q\n", key)

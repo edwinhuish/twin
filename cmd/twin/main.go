@@ -39,8 +39,18 @@ const (
 	exitHuman = 3
 )
 
+// DefaultConfigName is the configuration `twin gen` writes and `twin install`
+// reads when neither -o/--output nor -c/--config says otherwise.
+//
+// It is deliberately a path in the current directory rather than one under
+// $HOME: the file is meant to be read, edited, diffed and committed, and the
+// directory the user is standing in is the one place they already chose. An
+// instance directory under ~/.local/share/twin holds the archive of what was
+// installed, which is a different thing with a different lifetime.
+const DefaultConfigName = "config.yml"
+
 // Colour is decided per stream, and decided here rather than at each print
-// site: `twin new wechat > log` must leave the log plain while the warnings
+// site: `twin gen wechat > log` must leave the log plain while the warnings
 // still land in colour on the terminal (see internal/style).
 var (
 	outStyle = style.For(os.Stdout)
@@ -98,11 +108,11 @@ func printManual(rep *verify.Report) {
 const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 / 图标 / 私有数据）
 
 用法:
-  twin new <source> [选项]                写出一份实例配置（profile.yml）
-  twin new <source> --publish [选项]      按配置落盘：桌面项 / 图标 / 启动器 / 托盘
+  twin gen <source> [选项]                在当前目录生成一份配置（默认 ./config.yml）
+  twin install [选项]                     读那份配置并落盘：桌面项 / 图标 / 启动器 / 托盘
   twin inspect <source> [--name 显示名]   只看：源程序是什么、身份该怎么做
   twin verify <id>                        自检一个实例的身份链路
-  twin regen <id> [--refresh]             改了 profile.yml 后重新落盘
+  twin reinstall <id> [--refresh]         按实例快照重新落盘
   twin remove <id> [--yes] [--purge]      删除产物
   twin list                               列出全部实例
   twin doctor                             环境自检（先跑这个）
@@ -111,32 +121,32 @@ const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 /
   twin version                            版本
 
 第一个 token 永远是动词，第二个是它的宾语 —— 位置即含义，没有例外，也没有保留字表。
-所以程序真名就算叫 list / new / doctor，照常写：twin new list 就是包一个叫 list 的程序。
+所以程序真名就算叫 list / gen / doctor，照常写：twin gen list 就是包一个叫 list 的程序。
 
-两段式（默认）—— 一次 wrap 里唯一随程序而变、又猜错了不出声的东西是路径映射，
-所以先把它落成一份可以读、可以改的文件，再安装：
-  twin new wechat                    只写 ~/.local/share/twin/wechat2/profile.yml（id、显示名、
-                                     路径映射全部推导出来写进去），并告诉你改哪个文件。
-  $EDITOR …/wechat2/profile.yml      改 bind / name / keywords / identity.level；
-                                     不改也行，推导出来的默认值通常够用。
-  twin new wechat --publish          按那份配置落盘，再自检。
+两步（推荐）—— 一次 wrap 里唯一随程序而变、又猜错了不出声的东西是路径映射，
+所以先把它落成一份可以读、可以改、能进版本库的文件，再安装：
+  twin gen wechat          在当前目录写 config.yml（id、显示名、路径映射全部推导好写进去），
+                           只打印文件路径与下一步。想写到别处：twin gen wechat -o ~/w/wechat.yml
+  $EDITOR config.yml       改 bind / name / keywords / identity.level；
+                           不改也行，推导出来的默认值通常够用。
+  twin install             读 ./config.yml：写成实例快照 → 落盘 → 自检。
 
-一步到位：没有待落盘的配置时，--publish 就是一次完整的生成，选项与 -- 透传区照常生效：
-  twin new wechat --publish -- --unshare-pid
-待落盘的配置不止一份时（同源多实例），加 --as <id> 指名要做哪一个。
+配置在别处（多实例、多台机器共用一份）：twin install -c ~/wraps/wechat2.yml
 
-配置三层（越具体越优先；数组类低位在前拼接，后者遮蔽前者）:
-  CLI 参数 > profile.yml（实例快照）> rules.d/<app>.toml（应用知识）> config.toml（环境）
-  ~/.config/twin/config.toml        这台机器的默认（bwrap 路径、图标尺寸、全局透传）
-  ~/.config/twin/rules.d/<app>.toml 某程序的知识（状态路径、keywords），支持 {id} 占位
-  ~/.local/share/twin/<id>/profile.yml   这一个实例的意图（真源）
-  ⚠️ regen 只读 CLI 与快照（要确定性）；要重读上面两层，加 --refresh，且只补快照里为空的字段。
+配置从哪来（越具体越优先；数组类低位在前拼接，后者遮蔽前者）:
+  config.yml / -c 指的那份      你正在编辑的那一份：gen 生成、install 读取
+  ~/.config/twin/config.toml    这台机器的默认（bwrap 路径、图标尺寸、全局透传）
+  ~/.config/twin/rules.d/<app>.toml  某程序的知识（状态路径、keywords），支持 {id} 占位
+  ~/.local/share/twin/<id>/profile.yml  安装时按 config.yml 重新生成的存档快照
+  ⚠️ install 按 config.yml 重放；reinstall 只读那份存档快照（要确定性）。
+     要让它重读 config.toml 与 rules.d，加 --refresh，且只补快照里为空的字段。
 
 退出码:
   0 成功    1 失败/自检有 ❌    2 用法错误
   3 身份已成立，但还差一步必须由真实图形会话执行。两个来源：① 托盘图标覆盖表写不进去
-    （那张表只能经会话总线写入）；② 本机限制非特权 userns 而找不到 Electron 跳板 ——
-    那时会打印一份 AppArmor profile 全文，给你 sudo apparmor_parser -r 装上。
+    （那张表只能经会话总线写入）；② 本机限制非特权 userns，而既没有跳板、install 也没能
+    装上 profile（没有 sudo，或标准输入不是终端、问不了密码）—— 那时打印一份 AppArmor
+    profile 全文，给你 sudo apparmor_parser -r 装上。
 
 颜色:
   stdout 与 stderr 各自判断：只在终端上着色，重定向 / 管道 / TERM=dumb 一律纯文本。
@@ -150,7 +160,10 @@ const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 /
   没有会话总线时（安装脚本 / 无图形会话）它写不进去 —— 那时会打印要跑的命令并以退出码 3
   结束；--no-tray 或 config.toml 的 defaults.tray_override = false 则完全不碰这张表。
 
-new 选项:
+gen 选项:
+  -o, --output <文件>    写到哪（默认 ./config.yml）。文件已存在就拒绝，除非 --force ——
+                         那个文件正是你要改的东西，盖掉它比报个错难收拾得多
+  --force                覆盖已存在的输出文件
   --as <id>              实例 id（默认 <源桌面项基名>+最小空闲序号）；同时是窗口 app_id 与托盘 Id
   --name <显示名>        默认 源 Name[当前语言] + 序号（如 微信2）
                          显式给出时，若源 Keywords 不含中文，该名字会被放进关键词（见下）
@@ -171,19 +184,27 @@ new 选项:
   --tmpfs <dir>          让该目录在沙箱内为空，可重复
   --no-tmpfs             完全不要 tmpfs（X11 程序必须如此）
   --no-tray              不写宿主托盘覆盖表（这个实例的托盘图标保持程序自己的）
-  --force                覆盖已存在但不是 twin 生成的桌面项；也允许落盘遮蔽同名的系统桌面项
-  --publish              落盘：写桌面项 / 图标 / 启动器 / 宿主托盘，然后自检。
-                        已经有一份待落盘的配置时，它按那份配置走 —— 此时再给
-                        --name / --level 这类描述实例的选项会被拒绝（要改就改那个文件）
-  --explain              连推导出的默认值、规则模板、手工验证步骤一起打印
-                         （默认只打印快照路径与下一步）
-  --dry-run              只打印将要写什么；与 --publish 一起用就是完整落盘的预演
+  --explain              连推导出的默认值、规则模板一起打印
+  --dry-run              只打印将要写什么，一个字节不落盘
 
   -- <bwrap 选项…>       第一个 -- 之后的 token **原样**透传给 bwrap，拼在基座之后、程序之前：
-                         twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
-                         它排在基座之后，所以同目标挂载由它胜出（bwrap 后挂载遮蔽前者）。
+                         twin gen wechat -- --unshare-pid --setenv TWIN_FOO bar
+                         它会写进配置里（bwrap.extra），install 时生效。它排在基座之后，
+                         所以同目标挂载由它胜出（bwrap 后挂载遮蔽前者）。
                          ⚠️ 不接受 --（会截断 bwrap 解析）、--argv0（会破坏身份不变量）、
                             以及需要文件描述符的选项。
+
+install 选项:
+  -c, --config <文件>    读哪一份配置（默认 ./config.yml）。读不到就报错，不会去猜别的路径
+  --force                覆盖已存在但不是 twin 生成的桌面项；也允许落盘遮蔽同名的系统桌面项
+  --explain              打印完整说明：推导值、路径映射的修改粒度、规则模板全文、手工验证步骤
+  --dry-run              只打印将要写什么，一个字节不落盘。
+                         本机需要 AppArmor profile 时，它也只会说要装什么，不会碰 /etc
+
+install 会在本机限制非特权 userns、而私有 bwrap 副本又拿不到许可时，
+自己把一份 AppArmor profile 装好（写 /etc/apparmor.d/twin-bwrap 并加载）——
+那一步要 root，所以会通过 sudo 要求你输入密码。没有 sudo、或标准输入不是终端
+（脚本里跑）时，它退回打印 profile 全文并以退出码 3 结束。
 
 source 可以是 .desktop 路径、桌面项 id（wechat），或程序名。
 `
@@ -218,14 +239,16 @@ func main() {
 
 	args := os.Args[2:]
 	switch cmd {
-	case "new":
-		os.Exit(cmdNew(p, args))
+	case "gen":
+		os.Exit(cmdGen(p, args))
+	case "install":
+		os.Exit(cmdInstall(p, args))
 	case "inspect":
 		os.Exit(cmdInspect(p, args))
 	case "verify":
 		os.Exit(cmdVerify(p, args))
-	case "regen":
-		os.Exit(cmdRegen(p, args))
+	case "reinstall":
+		os.Exit(cmdReinstall(p, args))
 	case "remove":
 		os.Exit(cmdRemove(p, args))
 	case "list":
@@ -238,7 +261,7 @@ func main() {
 		os.Exit(cmdConfig(p))
 	default:
 		// No implicit verb and no reserved-word table: an unknown first token is
-		// a usage error, never a guess. `twin new list` is how you wrap a program
+		// a usage error, never a guess. `twin gen list` is how you wrap a program
 		// that happens to be named after a subcommand.
 		fail(fmt.Sprintf("未知子命令 %q", cmd))
 		fmt.Fprint(os.Stderr, usage)
@@ -252,7 +275,7 @@ func main() {
 // the flags.
 //
 // Go's flag package stops at the first non-flag token, so the documented form
-// `twin new <source> --as <id>` would otherwise ignore --as — and every
+// `twin gen <source> --as <id>` would otherwise ignore --as — and every
 // flag after the source — without a word. That is precisely the silent failure
 // this tool exists to prevent, so we take the stray token as a positional and
 // re-parse the remainder; values already set accumulate on the same FlagSet.
@@ -469,7 +492,7 @@ func cmdRulesInit(p inst.Paths, source string) int {
 		fmt.Printf("  ~/ 路径字面量。草稿里只有一份形状示例 —— 路径要你自己判断。\n")
 	}
 	fmt.Printf("  验证  twin rules %s\n", key)
-	fmt.Printf("  应用  twin new <source> --as <id> --force\n")
+	fmt.Printf("  应用  twin install --force    （规则只影响以后新建的实例，已装的那份要 twin reinstall <id>）\n")
 	return exitOK
 }
 
@@ -600,9 +623,10 @@ func (l *listFlag) Set(v string) error {
 	return nil
 }
 
-func cmdNew(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("new", flag.ContinueOnError)
+func cmdGen(p inst.Paths, args []string) int {
+	fs := flag.NewFlagSet("gen", flag.ContinueOnError)
 	var (
+		output     = fs.String("output", "", "配置写到哪（默认 ./config.yml）")
 		as         = fs.String("as", "", "实例 id")
 		name       = fs.String("name", "", "显示名")
 		nameEn     = fs.String("name-en", "", "英文显示名")
@@ -614,13 +638,17 @@ func cmdNew(p inst.Paths, args []string) int {
 		badge      = fs.String("badge", "", "角标文字")
 		badgeStyle = fs.String("badge-style", "", "角标风格（留空则 config.toml → corner）")
 		level      = fs.String("level", "", "身份级别（留空则 config.toml → rules.d → alias）")
-		force      = fs.Bool("force", false, "覆盖非 twin 生成的产物")
+		force      = fs.Bool("force", false, "覆盖已存在的输出文件")
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘")
-		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、规则模板、手工验证步骤）")
-		publish    = fs.Bool("publish", false, "把配置落盘：桌面项 / 图标 / 启动器 / 托盘 ＋ 自检")
+		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、规则模板）")
 		noTmpfs    = fs.Bool("no-tmpfs", false, "不要 tmpfs")
 		noTray     = fs.Bool("no-tray", false, "不要把托盘图标覆盖表指向本实例")
 	)
+	// Go's flag package has no aliases, so the documented `-o` is a second
+	// variable for the same setting; the two are reconciled before use rather
+	// than letting "whichever was parsed last" decide.
+	var shortOutput string
+	fs.StringVar(&shortOutput, "o", "", "配置写到哪（--output 的简写）")
 	var tmpfs listFlag
 	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录")
 	// Cut the bwrap passthrough off before twin's own parser runs: tokens
@@ -635,9 +663,14 @@ func cmdNew(p inst.Paths, args []string) int {
 		return exitUsage
 	}
 	if len(pos) < 1 {
-		fail("用法：twin new <source> [--as <id>] [--publish]")
+		fail("用法：twin gen <source> [-o <文件>]")
 		return exitUsage
 	}
+	if *output != "" && shortOutput != "" {
+		fail("同时给了 -o 和 --output：它们是同一个设置，请只留一个")
+		return exitUsage
+	}
+	outPath := firstNonEmpty(*output, shortOutput, DefaultConfigName)
 
 	// An empty --level means "let the config layers decide", which is not the
 	// same as passing --level alias: the rules.d entry for the program may know
@@ -683,69 +716,92 @@ func cmdNew(p inst.Paths, args []string) int {
 		Bwrap:      bwrapTokens,
 		NoTmpfs:    *noTmpfs,
 		NoTray:     *noTray,
-		Force:      *force,
 	}
-	// Both halves of the wrap answer "which instance is this?" the same way, and
-	// never by re-deriving the id: the first half has already taken it (freeID
-	// counts profile.yml as taken, precisely so two instances cannot share an
-	// id), so a re-derivation would quietly move on to wechat3.
-	snaps, err := generate.SnapshotsFor(p, insp.SourceDesktop)
-	if err != nil {
-		fail(err.Error())
-		return exitFail
-	}
-	run := newRun{
-		p: p, insp: insp, opts: o, cfg: cfg, snaps: snaps,
-		as: *as, source: pos[0], bwrap: bwrapTokens,
-		given: derivationInputs(fs, bwrapTokens),
-		force: *force, dry: *dryRun, explain: *explain,
-	}
-	if !*publish {
-		return run.configure()
-	}
-	target, code := run.target()
-	if code != exitOK {
-		return code
-	}
-	it, der, origin := target.it, target.der, target.origin
-
-	rt := sandbox.Resolve(p, cfg, it.NestedNS)
-	printRuntime(rt)
-	plan, err := sandbox.Build(it, p, rt)
+	// force is left out on purpose: it means "overwrite the file I asked for",
+	// and letting it also mean "yes, shadow that other program's desktop entry"
+	// would make one flag do two unrelated destructive things by accident.
+	it, der, err := planInstance(p, o, insp, false)
 	if err != nil {
 		fail(err.Error())
 		return exitFail
 	}
 
-	report := installReport{
-		lead:    outStyle.Green(style.Glyph(style.LevelOK)+" 已生成") + " " + outStyle.Bold(it.ID),
-		der:     der,
-		origin:  origin,
-		verbose: run.verbose(),
+	// The passthrough region is linted, never rewritten (设计 §2.6): a typo in a
+	// bwrap option is cheap to flag here and expensive to hit at launch time.
+	for _, w := range sandbox.LintBwrap(bwrapTokens) {
+		warn(w)
 	}
-	if *dryRun {
-		printRehearsal(p, it, insp, plan, report)
-		return exitOK
+
+	if !*dryRun {
+		body, err := it.Render()
+		if err != nil {
+			fail(err.Error())
+			return exitFail
+		}
+		if err := writeConfigFile(outPath, body, *force); err != nil {
+			fail(err.Error())
+			return exitFail
+		}
 	}
-	return installAndCheck(p, it, insp, rt, plan, o.IconSizeFor(cfg), report)
+	printGenResult(p, it, insp, outPath, *dryRun, *explain, der)
+	return exitOK
 }
 
-// newRun is one `twin new` invocation after the flags are parsed: the source
-// program, the choices, and the instances already on disk for that source.
-type newRun struct {
-	p      inst.Paths
-	insp   *generate.Inspection
-	opts   generate.Options
-	cfg    *config.Config
-	snaps  []generate.Snapshot
-	as     string
-	source string
-	// bwrap is the `--` passthrough region. given lists the flags the user
-	// actually typed: the install half refuses to act on a snapshot when the
-	// invocation also carries decisions about what that snapshot should say,
-	// and a refusal has to name what it would have ignored.
-	bwrap   []string
-	given   []string
+// writeConfigFile writes the configuration, refusing to clobber a file that is
+// already there unless --force says otherwise.
+//
+// The refusal is the important half. This file is the user's working copy, and
+// the whole point of splitting the wrap in two is that somebody reads and edits
+// it before anything is installed; silently replacing it would throw those
+// edits away without a word.
+func writeConfigFile(path string, body []byte, force bool) error {
+	if sysx.Exists(path) && !force {
+		return fmt.Errorf("%s 已存在 —— 不覆盖。它是你要改的那份配置："+
+			"换一个 -o、或先删掉它、或确认要重来再加 --force", path)
+	}
+	return sysx.WriteFileAtomic(path, body, 0o644)
+}
+
+// printGenResult says where the configuration landed and what the next command
+// is. The body of the file is only printed for --dry-run, because the file
+// itself carries a note above every key — repeating those here would be two
+// places that can disagree about what a key means.
+func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
+	outPath string, dry, explain bool, der []generate.Derivation) {
+	lead := outStyle.Green(style.Glyph(style.LevelOK) + " 已写出配置")
+	if dry {
+		lead = title("🔍 将要写出配置（--dry-run，未写盘）")
+	}
+	fmt.Printf("%s %s\n", lead, outStyle.Bold(outPath))
+	if explain {
+		printDerived(der)
+	}
+	// "This instance" is the configuration the user is holding, not a snapshot:
+	// gen has not installed anything, so that snapshot does not exist yet.
+	printPathMaps(p, it, insp, mapsOrigin(insp.Rule),
+		mapFix{file: outPath, replay: installCommandFor(outPath)}, explain)
+	if len(it.Binds) == 0 {
+		fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 没有隔离任何数据目录：这个程序若有单实例锁"+
+			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind"))
+	}
+	if dry {
+		body, err := it.Render()
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		fmt.Printf("\n%s\n%s", title("📄 配置内容（config.yml）"), indent(body, "  "))
+	}
+	fmt.Printf("\n%s\n", title("👉 下一步"))
+	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）\n", outPath)
+	fmt.Printf("  2. 安装：%s\n", installCommandFor(outPath))
+	fmt.Printf("     想先看它会写什么、或看完整说明，就在后面再加 --dry-run / --explain。\n")
+}
+
+// installRun is one `twin install` invocation: the choices that are about the
+// act of installing rather than about the instance being installed.
+type installRun struct {
+	p       inst.Paths
 	force   bool
 	dry     bool
 	explain bool
@@ -753,163 +809,169 @@ type newRun struct {
 
 // verbose is the long form. --explain asks for it; --dry-run has always been
 // the "show me everything" mode.
-func (r newRun) verbose() bool { return r.dry || r.explain }
+func (r installRun) verbose() bool { return r.dry || r.explain }
 
-// configure is the first half of a wrap: profile.yml, and nothing else.
+// cmdInstall is the second step: read the configuration, turn it into an
+// instance, and install that.
 //
-// This is the default on purpose. Which of a program's own directories to
-// isolate, and what to call the instance, is knowledge about the *program* — the
-// one part of a wrap that can be wrong without saying so. The place to review it
-// is a file, before any of it is installed; a wall of terminal output printed
-// after the install already happened is not.
-func (r newRun) configure() int {
-	// The passthrough region is linted, never rewritten (设计 §2.6): a typo in a
-	// bwrap option is cheap to flag here and expensive to hit at launch time.
-	for _, w := range sandbox.LintBwrap(r.bwrap) {
-		warn(w)
-	}
-
-	id, prepared, err := configureTarget(r.snaps, r.as)
+// It reads the file the user has been editing rather than re-deriving anything
+// from flags — which is why it takes no derivation options at all. A flag and a
+// file can disagree; only one of them is what the user just spent time on.
+func cmdInstall(p inst.Paths, args []string) int {
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	var (
+		configPath = fs.String("config", "", "读哪一份配置（默认 ./config.yml）")
+		force      = fs.Bool("force", false, "覆盖非 twin 生成的产物")
+		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘")
+		explain    = fs.Bool("explain", false, "打印完整说明（推导值、规则模板、手工验证步骤）")
+	)
+	var shortConfig string
+	fs.StringVar(&shortConfig, "c", "", "读哪一份配置（--config 的简写）")
+	pos, err := parseFL(fs, args)
 	if err != nil {
-		fail(err.Error())
 		return exitUsage
 	}
-	if prepared {
-		// Do not stack a second configuration behind the user's back: report the
-		// one that exists. This is also what makes `twin new wechat` idempotent
-		// between the two halves — and it never rewrites the file, because the
-		// edits in it are the whole reason the file exists.
-		s, _ := snapshotByID(r.snaps, id)
-		r.printConfig(s.Instance, s.Path, outStyle.Yellow("ℹ️  已有一份写好、还没落盘的配置"),
-			"实例快照 "+s.Path, nil)
-		return exitOK
+	if len(pos) > 0 {
+		fail(fmt.Sprintf("用法：twin install [-c <文件>] —— %q 是多余的：配置路径用 -c 指定，"+
+			"要包哪个程序是在 `twin gen` 那一步说的", pos[0]))
+		return exitUsage
 	}
+	if *configPath != "" && shortConfig != "" {
+		fail("同时给了 -c 和 --config：它们是同一个设置，请只留一个")
+		return exitUsage
+	}
+	path := firstNonEmpty(*configPath, shortConfig, DefaultConfigName)
 
-	it, der, err := planInstance(r.p, r.opts, r.insp, r.force)
+	it, err := loadConfigFile(path)
 	if err != nil {
 		fail(err.Error())
 		return exitFail
 	}
-	lead := outStyle.Green("📝 已写出实例配置")
-	if !r.dry {
-		if _, err := generate.WriteSnapshot(r.p, it); err != nil {
-			fail(err.Error())
-			return exitFail
-		}
-	} else {
-		lead = title("🔍 将要写出实例配置（--dry-run，未写盘）")
+	cfg, code := loadConfig(p)
+	if code != exitOK {
+		return code
 	}
-	r.printConfig(it, r.p.Profile(it.ID), lead, mapsOrigin(r.insp.Rule), der)
+	run := installRun{p: p, force: *force, dry: *dryRun, explain: *explain}
+	return run.apply(it, path, cfg)
+}
+
+// loadConfigFile reads the user-facing configuration and refuses a file that
+// says something impossible, before anything on the machine changes.
+//
+// A missing file is turned into the command that writes one: "config.yml: no
+// such file" tells a first-time user nothing about `twin gen`.
+func loadConfigFile(path string) (*inst.Instance, error) {
+	it, err := inst.Load(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("读不到 %s（%s）—— 先用 twin gen <source> 生成一份，"+
+				"或用 -c 指定它的位置", path, err)
+		}
+		return nil, err
+	}
+	if err := it.Check(); err != nil {
+		return nil, err
+	}
+	return it, nil
+}
+
+// apply installs the instance the configuration describes.
+//
+// The snapshot under ~/.local/share/twin/<id>/ is not the file the user works
+// in any more: it is the archive of what was installed, re-rendered from the
+// parsed instance so that install and reinstall write the same bytes. That is
+// what makes `reinstall` a faithful replay of the last install rather than a
+// second opinion about it.
+func (r installRun) apply(it *inst.Instance, path string, cfg *config.Config) int {
+	if err := generate.CheckInstall(r.p, it.ID, r.force); err != nil {
+		fail(err.Error())
+		return exitFail
+	}
+	// The source desktop entry supplies the two values the desktop item
+	// inherits (Categories, Keywords). A configuration whose source has gone
+	// missing is not fatal: both keys have a valid empty form and everything
+	// else is in the file.
+	insp := snapshotInspection(r.p, it)
+
+	rt := sandbox.Resolve(r.p, cfg, it.NestedNS)
+	printRuntime(rt)
+	if code := ensureProfile(r.p, rt, r.dry); code != exitOK {
+		return code
+	}
+	rt = sandbox.Resolve(r.p, cfg, it.NestedNS)
+
+	plan, err := sandbox.Build(it, r.p, rt)
+	if err != nil {
+		fail(err.Error())
+		return exitFail
+	}
+	report := installReport{
+		lead:    outStyle.Green(style.Glyph(style.LevelOK)+" 已安装") + " " + outStyle.Bold(it.ID),
+		origin:  "配置 " + path,
+		fix:     mapFix{file: path, replay: installCommandFor(path)},
+		verbose: r.verbose(),
+	}
+	if r.dry {
+		printRehearsal(r.p, it, insp, plan, report)
+		return exitOK
+	}
+	// Icon size is environment (this machine's DPI), so it comes from
+	// config.toml every time instead of being frozen into the configuration.
+	return installAndCheck(r.p, it, insp, rt, plan, cfg.Defaults.IconSize, report)
+}
+
+// ensureProfile is the one step of an install that has to run as root.
+//
+// It only fires on a machine that restricts unprivileged user namespaces (so
+// the private bubblewrap copy cannot build one on its own) *and* has nothing to
+// borrow an AppArmor label from. twin then installs the profile itself instead
+// of handing the user a copy-paste job — but only where a password can actually
+// be asked for, which means a terminal on stdin. Anything else (a script, a
+// pipe, a hook) gets the printed commands and exit code 3, which is what this
+// step used to do in every case.
+//
+// Both entry points call it, not just `twin install`: a machine that needs this
+// needs it equally when a snapshot is replayed, and leaving `reinstall` to print
+// a hint pointing at a configuration file the user may not have any more would
+// be a dead end dressed up as advice.
+func ensureProfile(p inst.Paths, rt sandbox.Runtime, dry bool) int {
+	if !rt.NeedsProfile {
+		return exitOK
+	}
+	if dry {
+		fmt.Printf("  %s\n", outStyle.Yellow("本机需要 AppArmor profile（要 root）：--dry-run 只报告，"+
+			"真正安装时会用 sudo 要求你输入密码"))
+		return exitOK
+	}
+	sudo := sysx.Which("sudo")
+	switch {
+	case sudo == "":
+		fmt.Printf("  %s\n", outStyle.Yellow("本机需要 AppArmor profile，但 PATH 上没有 sudo：跳过自动安装"))
+	case !style.IsTerminal(os.Stdin):
+		fmt.Printf("  %s\n", outStyle.Yellow("本机需要 AppArmor profile（要 root），"+
+			"但标准输入不是终端、没法让你输密码：跳过自动安装"))
+	default:
+		fmt.Printf("  %s\n", title("🔐 需要 root 装一份 AppArmor profile"))
+		fmt.Printf("      %s → %s，然后 apparmor_parser -r\n", userns.ProfileName, userns.ProfileFile)
+		fmt.Printf("      sudo 会在这里要求你输入密码。不想给就按 Ctrl-C —— " +
+			"下面会打印同样的命令，你自己跑也一样。\n\n")
+		note, err := userns.InstallProfile(rt.Bwrap, p.BinDir())
+		if err != nil {
+			warn(err.Error())
+			fmt.Printf("  %s\n", outStyle.Yellow("自动安装没成功，退回手工那一步"))
+			return exitOK
+		}
+		fmt.Printf("  %s %s\n", outStyle.Green(style.Glyph(style.LevelOK)), note)
+	}
 	return exitOK
 }
 
-// printConfig says where the configuration is and how to install it. The heading
-// differs between "just written", "would be written" and "already there"; the
-// body does not, because it is the same file in all three cases.
-//
-// The default body is two lines plus the next step, because every explanation
-// this used to print now lives in the file itself as a comment on the key it is
-// about. Repeating it here is how the two halves drift apart, and a comment the
-// user reads *while editing* beats a paragraph they scrolled past. The one thing
-// that stays is the shared-state warning: it is the only failure this command
-// can leave behind that nothing else will surface.
-func (r newRun) printConfig(it *inst.Instance, path, lead, origin string, der []generate.Derivation) {
-	fmt.Printf("%s %s\n", lead, outStyle.Bold(it.ID))
-	fmt.Printf("  快照   %s\n", path)
-	if r.explain {
-		printDerived(der)
-	}
-	if r.verbose() {
-		printPathMaps(r.p, it, r.insp, origin, true)
-		fmt.Printf("\n%s\n", title("✏️  要改就改这一个文件"))
-		fmt.Printf("  %-18s %s\n", "bind", "隔离哪个数据目录（见上面的路径映射）")
-		fmt.Printf("  %-18s %s\n", "name / comment", "显示名与说明（现在："+it.Name+" / "+orDash(it.Comment)+"）")
-		fmt.Printf("  %-18s %s\n", "keywords", "搜索关键词（现在："+orDash(it.Keywords)+"）")
-		fmt.Printf("  %-18s %s\n", "identity.level", "身份级别（现在："+string(it.Level)+"）")
-	} else if len(it.Binds) == 0 {
-		fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 没有隔离任何数据目录：这个程序若有单实例锁"+
-			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见快照里的 bind"))
-	}
-
-	if r.dry {
-		body, err := it.Render()
-		if err != nil {
-			fail(err.Error())
-			return
-		}
-		fmt.Printf("\n%s\n%s", title("📄 实例定义（profile.yml）"), indent(body, "  "))
-	}
-	fmt.Printf("\n%s\n", title("👉 下一步"))
-	if r.dry {
-		fmt.Printf("  落盘（写桌面项 / 图标 / 启动器 / 宿主托盘，并自检）：\n")
-		fmt.Printf("    twin new %s --as %s --publish\n", r.source, it.ID)
-		return
-	}
-	fmt.Printf("  1. 改上面那个文件 —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）\n")
-	fmt.Printf("  2. 落盘：twin new %s --as %s --publish\n", r.source, it.ID)
-	fmt.Printf("     想先看它会写什么、或看完整说明，就在后面再加 --dry-run / --explain。\n")
-}
-
-// installTarget is the instance the install half will act on, plus where its
-// content came from — the snapshot the user edited, or this invocation's flags.
-type installTarget struct {
-	it     *inst.Instance
-	der    []generate.Derivation
-	origin string
-}
-
-// target resolves the instance `--publish` installs.
-//
-// Three answers are possible and all three are ordinary: --as named it, exactly
-// one prepared snapshot of this source is waiting to be installed, or nothing
-// was prepared at all and this is a one-step wrap.
-func (r newRun) target() (installTarget, int) {
-	id, err := publishTarget(r.snaps, r.as)
-	if err != nil {
-		fail(err.Error())
-		return installTarget{}, exitUsage
-	}
-
-	if s, ok := snapshotByID(r.snaps, id); ok {
-		// The snapshot is the truth the user has been editing, so flags that
-		// describe the instance may not compete with it. Refusing beats both
-		// alternatives: silently re-deriving would discard their edits, and
-		// silently ignoring the flags would discard their words.
-		if len(r.given) > 0 {
-			fail(fmt.Sprintf("实例 %s 的配置已经写好了（%s）：--publish 按它落盘，%s 不会起作用。"+
-				"要改就编辑那个文件（或 twin remove %s 之后重跑），要一步到位就换一个 --as",
-				id, s.Path, strings.Join(r.given, "、"), id))
-			return installTarget{}, exitUsage
-		}
-		if err := s.Instance.Check(); err != nil {
-			fail(err.Error())
-			return installTarget{}, exitFail
-		}
-		if err := generate.CheckInstall(r.p, id, r.force); err != nil {
-			fail(err.Error())
-			return installTarget{}, exitFail
-		}
-		// Re-read the source for the two values the desktop entry inherits
-		// (Categories, Keywords), with the snapshot supplying everything else.
-		return installTarget{
-			it:     s.Instance,
-			origin: "实例快照 " + s.Path,
-		}, exitOK
-	}
-
-	// Nothing prepared: `--publish` is an ordinary one-step wrap of a new
-	// instance, id and all.
-	it, der, err := planInstance(r.p, r.opts, r.insp, r.force)
-	if err != nil {
-		fail(err.Error())
-		return installTarget{}, exitFail
-	}
-	return installTarget{it: it, der: der, origin: mapsOrigin(r.insp.Rule)}, exitOK
-}
-
 // planInstance derives the instance and refuses the collisions that would make
-// it a shadow of something else. Both halves call it, and the second half only
-// when there is nothing on disk yet.
+// it a shadow of something else.
+//
+// Only `twin gen` calls it now. `twin install` and `twin reinstall` do not
+// re-derive anything: one reads a configuration, the other replays a snapshot,
+// and both of those already say which instance they are.
 func planInstance(p inst.Paths, o generate.Options, insp *generate.Inspection, force bool) (*inst.Instance, []generate.Derivation, error) {
 	it, der, err := generate.Plan(p, o, insp)
 	if err != nil {
@@ -927,105 +989,6 @@ func planInstance(p inst.Paths, o generate.Options, insp *generate.Inspection, f
 		return nil, nil, err
 	}
 	return it, der, nil
-}
-
-// configureTarget decides which instance `twin new` is about to write a
-// configuration for. An explicit --as always wins.
-//
-// Otherwise the answer comes from what is already on disk: a single prepared
-// snapshot for this source means the user is standing between the two halves,
-// and the honest response is to point at that file rather than stack a second
-// configuration next to it. `prepared` reports exactly that, so the caller can
-// print the file instead of rewriting it.
-func configureTarget(snaps []generate.Snapshot, as string) (id string, prepared bool, err error) {
-	if as != "" {
-		return as, false, nil
-	}
-	switch pending := pendingSnapshots(snaps); len(pending) {
-	case 0:
-		return "", false, nil
-	case 1:
-		return pending[0].Instance.ID, true, nil
-	default:
-		return "", false, fmt.Errorf("这个源程序有 %d 份写好、还没落盘的配置（%s）—— 指名一个：twin new <source> --as <id>",
-			len(pending), snapshotIDs(pending))
-	}
-}
-
-// publishTarget decides which instance `--publish` installs. An explicit --as
-// wins; a single prepared snapshot is the instance the user is in the middle of;
-// none prepared means this is a one-step wrap, which "" reports.
-func publishTarget(snaps []generate.Snapshot, as string) (string, error) {
-	if as != "" {
-		return as, nil
-	}
-	switch pending := pendingSnapshots(snaps); len(pending) {
-	case 0:
-		return "", nil
-	case 1:
-		return pending[0].Instance.ID, nil
-	default:
-		return "", fmt.Errorf("这个源程序有 %d 份写好、还没落盘的配置（%s）—— 指名一个：twin new <source> --as <id> --publish",
-			len(pending), snapshotIDs(pending))
-	}
-}
-
-// pendingSnapshots are the snapshots with no desktop entry: configured, not yet
-// installed. One line of filtering, but it is the entire vocabulary of a
-// two-phase wrap, so it gets a name.
-func pendingSnapshots(snaps []generate.Snapshot) []generate.Snapshot {
-	var out []generate.Snapshot
-	for _, s := range snaps {
-		if !s.Published {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func snapshotIDs(snaps []generate.Snapshot) string {
-	ids := make([]string, 0, len(snaps))
-	for _, s := range snaps {
-		ids = append(ids, s.Instance.ID)
-	}
-	return strings.Join(ids, " ")
-}
-
-func snapshotByID(snaps []generate.Snapshot, id string) (generate.Snapshot, bool) {
-	for _, s := range snaps {
-		if s.Instance.ID == id {
-			return s, true
-		}
-	}
-	return generate.Snapshot{}, false
-}
-
-// derivationFlags are the options that describe the *instance* rather than the
-// act of installing it. --as is not one of them: it selects which instance,
-// which is exactly what the install half needs to be told.
-var derivationFlags = map[string]bool{
-	"name": true, "name-en": true, "comment": true, "comment-en": true,
-	"keywords": true, "categories": true, "icon": true, "badge": true,
-	"badge-style": true, "level": true, "tmpfs": true,
-	"no-tmpfs": true, "no-tray": true,
-}
-
-// derivationInputs lists what the user typed that would go into the snapshot.
-//
-// flag.Visit only reports flags that were actually given, which is what this
-// needs: a default is not a decision, and counting one would refuse a
-// perfectly ordinary `--publish`.
-func derivationInputs(fs *flag.FlagSet, bwrap []string) []string {
-	var out []string
-	fs.Visit(func(f *flag.Flag) {
-		if derivationFlags[f.Name] {
-			out = append(out, "--"+f.Name)
-		}
-	})
-	if len(bwrap) > 0 {
-		out = append(out, "`--` 之后的 bwrap 透传区")
-	}
-	return out
 }
 
 // mapsOrigin names the layer a path map came from, or "" when no layer claims
@@ -1066,14 +1029,14 @@ func cmdVerify(p inst.Paths, args []string) int {
 		}
 		return exitFail
 	}
-	// A configured-but-unpublished instance is one state, not five missing
-	// files. Saying so once — with the command that finishes the wrap — is more
-	// use than a table of cascading failures, and it is honest about the fact
-	// that nothing is broken.
+	// An instance directory can still lack its desktop entry: an install that
+	// died between writing the snapshot and writing the identity anchor leaves
+	// exactly that. It is one state, not five missing files, so it is reported
+	// as one thing with the command that repeats the install.
 	if !sysx.Exists(p.Desktop(id)) {
-		fmt.Printf("%s %s 还没落盘：只有配置 %s，桌面项 / 图标 / 启动器都还没写\n",
-			outStyle.Mark(style.LevelSkip), it.ID, p.Profile(id))
-		fmt.Printf("  落盘：twin new <source> --as %s --publish    （等价的直接做法：twin regen %s）\n", id, id)
+		fmt.Printf("%s %s 的桌面项不在：上一次安装没走完（快照 %s 在，桌面项 / 图标 / 启动器不全）\n",
+			outStyle.Mark(style.LevelFail), it.ID, p.Profile(id))
+		fmt.Printf("  重来一次：twin reinstall %s\n", id)
 		return exitFail
 	}
 	rep := verify.Run(it, p)
@@ -1117,27 +1080,29 @@ func cmdList(p inst.Paths) int {
 	if len(items) == 0 {
 		fmt.Printf("%s 还没有任何实例（%s 下为空）\n",
 			outStyle.Mark(style.LevelSkip), filepath.Join(p.Home, ".local/share/twin"))
-		fmt.Printf("   做第一个：twin new wechat\n")
+		fmt.Printf("   做第一个：twin gen wechat && twin install\n")
 		return exitOK
 	}
 	fmt.Printf("%s\n", title("📋 实例"))
 	fmt.Printf("%-16s %-10s %-8s %-24s %s\n", "id", "level", "别名", "程序", "桌面项")
-	unpublished := 0
+	broken := 0
 	for _, it := range items {
 		desktop := filepath.Base(p.Desktop(it.ID))
 		mark := ""
-		// A row without a desktop entry is not a broken instance any more: it is
-		// the middle of a two-phase wrap, which is a state twin itself creates.
+		// A row without a desktop entry means an install died half way: the
+		// snapshot is on disk but the identity anchor is not, so nothing in
+		// this row would actually start. Saying so is the whole point of the
+		// column.
 		if !sysx.Exists(p.Desktop(it.ID)) {
-			mark = "  " + outStyle.Yellow("← 未落盘")
-			unpublished++
+			mark = "  " + outStyle.Yellow("← 安装未完成")
+			broken++
 		}
 		fmt.Printf("%-16s %-10s %-8s %-24s %s%s\n", it.ID, it.Level, it.EffectiveAlias(),
 			filepath.Base(it.Target), desktop, mark)
 	}
-	if unpublished > 0 {
-		fmt.Printf("\n%s 有 %d 个只写了配置、还没落盘：twin new <source> --publish（或 twin regen <id>）\n",
-			outStyle.Mark(style.LevelWarn), unpublished)
+	if broken > 0 {
+		fmt.Printf("\n%s 有 %d 个桌面项缺失（上一次安装没走完）：twin reinstall <id>\n",
+			outStyle.Mark(style.LevelWarn), broken)
 	}
 	// The one thing you come to this table to do next is get rid of a row, and
 	// `remove` is the only verb that does it — so name it here rather than
@@ -1146,17 +1111,24 @@ func cmdList(p inst.Paths) int {
 	return 0
 }
 
-// ---------------------------------------------------------------- regen
+// ---------------------------------------------------------------- reinstall
 
-func cmdRegen(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("regen", flag.ContinueOnError)
+// cmdReinstall replays the snapshot under ~/.local/share/twin/<id>/.
+//
+// It is the verb for an instance that is already installed: the configuration
+// in the current directory may have been moved, committed or thrown away since,
+// and the archive of what was installed is the only faithful record left. That
+// is also why it takes no derivation flags — `twin install` is where a
+// configuration becomes an instance, and this is where an instance is repeated.
+func cmdReinstall(p inst.Paths, args []string) int {
+	fs := flag.NewFlagSet("reinstall", flag.ContinueOnError)
 	refresh := fs.Bool("refresh", false, "重读 config.toml / rules.d，只补快照里为空的字段")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return exitUsage
 	}
 	if len(pos) < 1 {
-		fail("用法：twin regen <id> [--refresh]")
+		fail("用法：twin reinstall <id> [--refresh]")
 		return exitUsage
 	}
 	id := pos[0]
@@ -1176,10 +1148,11 @@ func cmdRegen(p inst.Paths, args []string) int {
 	}
 	insp := snapshotInspection(p, it)
 
-	// Replaying a snapshot is deterministic by design: it reads the CLI and
-	// profile.yml only. Touching config.toml must not silently rewrite a
-	// shelf of existing instances — that is what --refresh is for, and even
-	// then it only fills fields the snapshot left empty (设计 §3.5).
+	// Replaying a snapshot is deterministic by design: it reads profile.yml
+	// (and the CLI, which has nothing left to say here). Touching config.toml
+	// must not silently rewrite a shelf of existing instances — that is what
+	// --refresh is for, and even then it only fills fields the snapshot left
+	// empty (设计 §3.5).
 	if *refresh {
 		cfg, code := loadConfig(p)
 		if code != exitOK {
@@ -1204,24 +1177,33 @@ func cmdRegen(p inst.Paths, args []string) int {
 
 	rt := runtimeFor(p, it.NestedNS)
 	printRuntime(rt)
+	if code := ensureProfile(p, rt, false); code != exitOK {
+		return code
+	}
+	rt = runtimeFor(p, it.NestedNS)
+
 	plan, err := sandbox.Build(it, p, rt)
 	if err != nil {
 		fail(err.Error())
 		return exitFail
 	}
-	// Same path as `twin new --publish`: replaying a snapshot and installing one
-	// are the same operation with two entry points, and giving them separate
-	// code would be two chances to drift.
+	// Same path as `twin install`: installing a configuration and replaying the
+	// archive one wrote are the same operation with two entry points, and giving
+	// them separate code would be two chances to drift.
 	return installAndCheck(p, it, insp, rt, plan, iconSizeFor(p), installReport{
-		lead:    outStyle.Green("✅ 已重新落盘") + " " + outStyle.Bold(it.ID),
-		origin:  "实例快照 " + p.Profile(it.ID),
+		lead:   outStyle.Green("✅ 已重新安装") + " " + outStyle.Bold(it.ID),
+		origin: "实例快照 " + p.Profile(it.ID),
+		// reinstall never reads a configuration, so the file to edit really is
+		// the snapshot: this is the one entry point where that advice is right
+		// rather than merely available.
+		fix:     mapFix{file: p.Profile(it.ID), replay: "twin reinstall " + it.ID},
 		verbose: false,
 	})
 }
 
 // installAndCheck writes an instance's artefacts and reports what it found when
-// reading them back. It is the shared second half of `twin new --publish` and
-// `twin regen`.
+// reading them back. It is the shared back end of `twin install` and
+// `twin reinstall`, which differ only in where the instance came from.
 func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection, rt sandbox.Runtime,
 	plan *sandbox.Plan, iconSize int, report installReport) int {
 	res, err := generate.Materialize(p, it, insp, plan, iconSize)
@@ -1253,7 +1235,7 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	for _, n := range res.Notes {
 		fmt.Printf("  · %s\n", n)
 	}
-	printPathMaps(p, it, insp, report.origin, report.verbose)
+	printPathMaps(p, it, insp, report.origin, report.fix, report.verbose)
 
 	fmt.Printf("\n%s\n%s", title("🔍 自检"), formatFindings(rep))
 	printNextSteps(p, it, report.verbose)
@@ -1280,7 +1262,31 @@ type installReport struct {
 	lead    string
 	der     []generate.Derivation
 	origin  string
+	fix     mapFix
 	verbose bool
+}
+
+// mapFix names the file that holds *this* instance's own bind list, and the
+// command that replays it.
+//
+// There is more than one right answer, which is why it is passed in rather than
+// worked out from position: `twin gen` hands the user a configuration and
+// `twin install` reads that same file, while `twin reinstall` replays the
+// snapshot in the instance directory. Naming a file that is not there yet sends
+// the reader looking for it.
+type mapFix struct {
+	file   string
+	replay string
+}
+
+// installCommandFor spells the command that installs a given configuration,
+// with -c only when it is not the default name: `twin install` reads
+// ./config.yml, and saying `-c ./config.yml` would suggest otherwise.
+func installCommandFor(path string) string {
+	if path == DefaultConfigName {
+		return "twin install"
+	}
+	return "twin install -c " + path
 }
 
 // printNextSteps says the one thing that still has to happen by hand, and where
@@ -1300,7 +1306,7 @@ func printNextSteps(p inst.Paths, it *inst.Instance, verbose bool) {
 	}
 	fmt.Printf("  1. 桌面项是后写的 —— 请**重新启动**这个实例，否则窗口还是旧的名字和图标。\n")
 	fmt.Printf("  2. 确认身份与托盘：twin verify %s\n", it.ID)
-	fmt.Printf("     完整落盘预演（含规则模板与推导值）：twin new <source> --as %s --publish --dry-run --explain\n", it.ID)
+	fmt.Printf("     改了实例快照要重放：twin reinstall %s\n", it.ID)
 }
 
 // printRehearsal is --dry-run's output: every file and every host-side change
@@ -1334,11 +1340,13 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 			title("🔔 托盘覆盖"), tray.Schema+" / "+tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
 	}
 	printDerived(report.der)
-	printPathMaps(p, it, insp, report.origin, report.verbose)
+	printPathMaps(p, it, insp, report.origin, report.fix, report.verbose)
 	if plan.Bwrap != "" {
 		fmt.Printf("\n%s\n%s\n", title("🧱 bwrap 调用"), plan.String())
 	}
-	body, err := it.Render()
+	// Rendered as the archive role because that is what install writes to
+	// profile.yml: a preview drawn from a different renderer is a lie.
+	body, err := it.RenderAs(inst.RoleSnapshot)
 	if err != nil {
 		fail(err.Error())
 		return
@@ -1373,10 +1381,10 @@ func snapshotInspection(p inst.Paths, it *inst.Instance) *generate.Inspection {
 	return &generate.Inspection{Entry: &desk.Entry{}}
 }
 
-// runtimeFor and iconSizeFor resolve the environment layer for `regen`, where a
-// missing or malformed config.toml must not stop a replay: regen's contract is
-// that it reads the CLI and the snapshot, and the config is optional garnish.
-// `--refresh` is the path where a malformed file is reported instead.
+// runtimeFor and iconSizeFor resolve the environment layer for `reinstall`,
+// where a missing or malformed config.toml must not stop a replay: replaying a
+// snapshot reads the snapshot, and the config is optional garnish. `--refresh`
+// is the path where a malformed file is reported instead.
 func runtimeFor(p inst.Paths, needNestedNS bool) sandbox.Runtime {
 	cfg, err := config.Load(p)
 	if err != nil {
@@ -1385,22 +1393,24 @@ func runtimeFor(p inst.Paths, needNestedNS bool) sandbox.Runtime {
 	return sandbox.Resolve(p, cfg, needNestedNS)
 }
 
-// printProfileHint is the fallback for a machine with no Electron binary to
-// borrow an AppArmor label from: instead of a trampoline, one command run as
-// root gives the private bubblewrap copy the userns permission directly.
+// printProfileHint is what is left when `twin install` cannot do the one step
+// that needs root: the machine restricts unprivileged user namespaces, no
+// Electron binary is installed to borrow an AppArmor label from, and no
+// password could be asked for (no sudo on PATH, or stdin is not a terminal).
 //
-// twin never installs this itself. Writing to /etc is exactly the kind of
-// side effect a wrap must not have, and the user is one copy-paste away from
-// the same result — which is also why this path exists only as a fallback.
+// `twin install` runs these two commands itself through sudo whenever it can.
+// Printing them is the honest fallback, not the plan: the commands are exactly
+// what was attempted, so the user can run them and get the same result.
 func printProfileHint(copyPath string) {
-	fmt.Printf("\n%s\n", title("✋ 还差一步：这台机器上没有可用的跳板"))
+	fmt.Printf("\n%s\n", title("✋ 还差一步：证书这关要走一次 root"))
 	fmt.Printf("  这个程序运行时要自己建一个嵌套 user namespace，而内核只放行\n")
 	fmt.Printf("  「profile 里写了 userns 许可」的程序（%s）。\n", userns.SysctlSource)
 	fmt.Printf("  私有 bwrap 副本故意不带 profile，所以它自己建不了。\n\n")
 	fmt.Printf("  两条路，任选其一：\n")
-	fmt.Printf("    1) 装一个 Electron 应用（VS Code 就够了），再跑一次 `twin regen <id>`；\n")
+	fmt.Printf("    1) 装一个 Electron 应用（VS Code 就够了），再跑一次 `twin reinstall <id>`；\n")
 	fmt.Printf("       它会自动发现新跳板，什么都不用配置。\n")
-	fmt.Printf("    2) 把下面这份 profile 存成 %s 并加载：\n\n", userns.ProfileFile)
+	fmt.Printf("    2) 在有终端的环境里再跑一次 twin install（或 twin reinstall <id>）——\n")
+	fmt.Printf("       它会用 sudo 替你装好这份 profile；或者手工把它存成 %s 并加载：\n\n", userns.ProfileFile)
 	for _, line := range strings.Split(strings.TrimRight(userns.ProfileHint(copyPath), "\n"), "\n") {
 		fmt.Printf("       %s\n", line)
 	}
@@ -1578,10 +1588,12 @@ func printDerived(der []generate.Derivation) {
 // many maps, where the knowledge came from, which file holds it.
 //
 // origin is named by the caller rather than derived here, because "where did
-// this mapping come from" has an answer the two halves of `twin new` disagree
-// about: the configuring half knows the rule and the command line, while the
-// installing half is replaying a snapshot the user may have edited by hand.
-func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, origin string, verbose bool) {
+// this mapping come from" has an answer `gen`, `install` and `reinstall`
+// disagree about: gen knows the rule and the command line, install is reading a
+// file the user may have edited by hand, and reinstall is replaying the archive
+// an earlier install wrote.
+func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
+	origin string, fix mapFix, verbose bool) {
 	key := ruleKeyFor(insp)
 	rulePath := filepath.Join(p.RulesDir(), key+".toml")
 
@@ -1596,7 +1608,7 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, o
 				"（Electron / Qt / GTK 系很常见），两个实例会互相干扰。"))
 		}
 		printStateHints(p, insp, it, key)
-		printMapFix(p, it, key, rulePath)
+		printMapFix(it, key, rulePath, fix)
 		if verbose {
 			printRuleTemplate(p, it, key, nil)
 		}
@@ -1621,7 +1633,7 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, o
 		}
 	}
 	printStateHints(p, insp, it, key)
-	printMapFix(p, it, key, rulePath)
+	printMapFix(it, key, rulePath, fix)
 	if verbose {
 		printRuleTemplate(p, it, key, it.Binds)
 	}
@@ -1631,15 +1643,13 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, o
 // what turns "that mapping is wrong" into an action, so it survives into the
 // short form.
 //
-// The two routes are the same in both halves of a wrap, which is why this does
-// not have to know which half it is printing for: a rules.d file is for the
-// instances the user has not created yet, the snapshot is for this one, and
-// `twin regen` installs whatever the snapshot says.
-func printMapFix(p inst.Paths, it *inst.Instance, key, rulePath string) {
+// The rules.d route is the same in every entry point, because it is about the
+// instances the user has not created yet. The route for *this* instance is the
+// one that differs — see mapFix — so the caller supplies it.
+func printMapFix(it *inst.Instance, key, rulePath string, fix mapFix) {
 	fmt.Printf("  改：%s —— 影响这个程序以后新建的实例（twin rules --init %s 生成草稿）\n",
 		rulePath, key)
-	fmt.Printf("      只改这一个：编辑 %s 里的 bind，再 twin regen %s\n",
-		p.Profile(it.ID), it.ID)
+	fmt.Printf("      只改这一个：编辑 %s 里的 bind，再 %s\n", fix.file, fix.replay)
 }
 
 // printStateHints lists directories the program is likely to keep state in that
@@ -1753,6 +1763,19 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// firstNonEmpty is the "last one wins only if the earlier ones said nothing"
+// rule. Both `gen` and `install` need it for the same reason: a documented
+// short flag and its long form are two variables for one setting, so the two
+// have to be reconciled somewhere, and a default has to lose to either.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // orBuiltin names where an application rule came from: the user's file, or the

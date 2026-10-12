@@ -150,7 +150,7 @@ func Discover(dir string) []Trampoline {
 // same one: Electron-capable first (only those can be driven silently), then
 // distribution-managed paths ahead of anything under /opt, then plain path
 // order. Stability matters because the chosen path is baked into a generated
-// launcher and only re-decided on the next `twin regen`.
+// launcher and only re-decided on the next `twin reinstall`.
 func sortTrampolines(list []Trampoline) {
 	sort.SliceStable(list, func(i, j int) bool {
 		a, b := list[i], list[j]
@@ -433,22 +433,7 @@ func IsElectron(bin string) bool {
 	return false
 }
 
-// ProfileHint returns the AppArmor profile that would grant a bubblewrap copy
-// the userns permission directly, removing the need for a trampoline.
-//
-// It is the fallback for machines with no Electron installed at all. twin
-// never writes this to /etc itself: it is printed for the user to install with
-// one sudo command, which keeps the tool free of system-configuration changes.
-func ProfileHint(copyPath string) string {
-	return "# 写到 " + ProfileFile + " 后执行：\n" +
-		"#   sudo apparmor_parser -r " + ProfileFile + "\n" +
-		"abi <abi/4.0>,\n" +
-		"include <tunables/global>\n" +
-		"\n" +
-		"profile \"twin-bwrap\" \"" + copyPath + "\" flags=(unconfined) {\n" +
-		"  userns,\n" +
-		"}\n"
-}
-
-// ProfileFile is where the fallback profile belongs.
-const ProfileFile = "/etc/apparmor.d/twin-bwrap"
+// The policy itself, the profile file it belongs in and the commands that
+// install it live in install.go — next to the read-back that decides whether
+// the thing is actually loaded, because "printed" and "installed" are the two
+// states this package has to keep apart.

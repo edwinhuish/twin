@@ -9,22 +9,25 @@ $ twin --help
 ## 1. 调用形态
 
 ```
-twin <动词> [参数…]               # 动词不带宾语（list / doctor / config）
-twin <动词> <宾语> [选项]         # 大部分动词带一个宾语（new / inspect / verify …）
+twin <动词> [参数…]               # 动词不带宾语（list / doctor / config / install）
+twin <动词> <宾语> [选项]         # 大部分动词带一个宾语（gen / inspect / verify …）
 ```
 
 **第一个 token 永远是动词，第二个永远是它的宾语** —— 位置即含义。没有隐式动词，也没有
-保留字表：所以程序真名无论叫 `list` 还是 `new`，照常写就行，不需要任何逃生口写法。
+保留字表：所以程序真名无论叫 `list` 还是 `gen`，照常写就行，不需要任何逃生口写法。
 
 ```bash
-twin new list          # 包一个名叫 list 的程序
+twin gen list          # 包一个名叫 list 的程序
 twin inspect doctor    # 预览名叫 doctor 的程序
 ```
 
-> **为什么不能写 `twin wechat`？** 早期版本允许把首个 token 当隐式 `new` 的宾语，代价是它的
+> **为什么不能写 `twin wechat`？** 早期版本允许把首个 token 当隐式动词的宾语，代价是它的
 > 含义取决于是否命中一张保留字表 —— 读一行命令得先背那张表，还得额外解释"程序名撞上动词时
 > 怎么办"。取消隐式动词同时消灭了**保留字表**和**逃生口**两样特例，一个从未实现的
-> `completion` 死字也顺带清掉了。这也是为什么动词叫 `new` 而不叫 `wrap`：`twin wrap` 是叠词。
+> `completion` 死字也顺带清掉了。
+>
+> `install` 不带宾语（它读一份配置，宾语在文件里），所以它是这条规则的第一个例外 —— 而它不需要
+> 任何特例代码：没给宾语的那些动词本来就不看第二个 token。
 
 `<source>` 可以是：`.desktop` 文件的路径、桌面项 id（`wechat`），或程序名。
 查找顺序是 `~/.local/share/applications` → `/usr/local/share/applications` →
@@ -97,64 +100,71 @@ Keywords   微信;wechat;
 `--name` 只影响预览：它会**真的**参与 keywords 的推导（因为你显式给了名字），所以能在不写盘
 的前提下看到"命名 ↔ 关键词"的联动结果。
 
-### `twin new <source> [选项]`
+### `twin gen <source> [选项]`
 
-**默认只写一份配置，不安装任何东西。** 全部选项见 §3。
+**只写一份配置，不安装任何东西。** 全部选项见 §3。
 
 一次 wrap 里唯一随程序而变、又猜错了不出声的东西是路径映射（隔离错一个目录，要到两个实例抢同一个
 锁文件时才暴露）。所以先把它落成一份能读能改的文件，再安装：
 
 | 命令 | 做什么 |
 |---|---|
-| `twin new wechat` | 只写 `~/.local/share/twin/wechat2/profile.yml`，然后说清改哪个文件、下一步敲什么 |
-| `$EDITOR …/wechat2/profile.yml` | 改 `bind` / `name` / `keywords` / `identity.level`；不改也行 |
-| `twin new wechat --publish` | 按那份配置落盘：桌面项 / 图标 / 启动器 / 宿主托盘 ＋ 自检 |
-| `twin new wechat --publish -- --unshare-pid` | 一步到位：没有待落盘的配置时，它就是一次完整生成，选项与 `--` 透传区照常生效 |
+| `twin gen wechat` | 在当前目录写 `config.yml`（id、显示名、路径映射全部推导出来写进去），然后说清下一步敲什么 |
+| `$EDITOR config.yml` | 改 `bind` / `name` / `keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
+| `twin install` | 读那份配置：写实例快照 → 落盘（桌面项 / 图标 / 启动器 / 宿主托盘）＋ 自检 |
+| `twin gen wechat -o ~/w/wechat.yml` | 写到别处；之后用 `twin install -c ~/w/wechat.yml` 装它 |
 
-**`--publish` 怎么知道是哪一份配置？** 顺序是：`--as <id>` 指名 → 这个源程序**唯一**那份待落盘的
-配置 → 都没有，就当一次完整的生成（id 照旧推导）。它**不会**重新推导 id：配置一旦写出来，那个 id
-就被占用了（`--as` 撞上它会被拒绝），重新推导只会悄悄挪到 `wechat3`。待落盘的配置不止一份时
-（同源多实例），它拒绝猜，要求 `--as` 指名并把候选列出来。
+**配置为什么在当前目录？** 它是这份 wrap 里唯一需要人读一遍的东西，所以放在人**已经选好的**那个
+目录里：能 diff、能提交、能拷到另一台机器、能同时留好几份。实例目录下的
+`~/.local/share/twin/<id>/profile.yml` 是另一个东西 —— `install` 写下的**存档**，寿命与含义都不同。
 
-已经有一份待落盘的配置时，再给 `--name` / `--keywords` / `--level` 这类**描述实例**的选项会被**拒绝**
-（退出码 2）：那份配置才是真源 —— 静默按选项重新推导会丢掉你刚改的内容，静默忽略选项又等于没说。
-要改就改文件；要另起一个实例，换一个 `--as`。
+**输出文件已存在就拒绝**（退出码 1），除非 `--force`：那个文件正是你要改的东西，盖掉它比报个错
+难收拾得多。
 
 ```console
-$ twin new wechat
-📝 已写出实例配置 wechat2
-  快照   /home/you/.local/share/twin/wechat2/profile.yml
+$ twin gen wechat
+✅ 已写出配置 config.yml
+
+📁 路径映射
+  3 条，来源：内置规则 wechat
+  …
 
 👉 下一步
-  1. 改上面那个文件 —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）
-  2. 落盘：twin new wechat --as wechat2 --publish
+  1. 改 config.yml —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）
+  2. 安装：twin install
      想先看它会写什么、或看完整说明，就在后面再加 --dry-run / --explain。
 ```
 
-配置阶段的输出刻意短：它这一阶段只做两件事 —— **只写一个文件**（桌面项、图标、启动器、私有状态
-目录都等 `--publish`），并且**把路径指出来**。逐键的说明、`bind` 的语义、`rules.d` 的存在，
-全都写在**那份文件的注释里**：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件
-两处说法各表一套。要看完整的推导值与规则模板，加 `--explain`。
+`gen` 的输出刻意短：它只做两件事 —— **只写一个文件**（桌面项、图标、启动器、私有状态目录都等
+`install`），并且**把路径指出来**。逐键的说明、`bind` 的语义、`rules.d` 的存在，全都写在**那份文件
+的注释里**：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件两处说法各表一套。
+要看完整的推导值与规则模板，加 `--explain`。
 
 终端上只多留一行，给"**一条映射都没有**"的程序：
 
 ```console
-$ twin new foo
-📝 已写出实例配置 foo2
-  快照   /home/you/.local/share/twin/foo2/profile.yml
-  ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见快照里的 bind
+$ twin gen foo
+✅ 已写出配置 config.yml
+  ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind
 
 👉 下一步
   …
 ```
 
 它是这个命令唯一可能留下、而别处不会再报的后果（共享状态要到两个实例抢同一个锁文件时才暴露），
-所以它留在终端上；其余情况一律不多说。已经有同一源程序的待落盘配置时，它只报告那一份，既不写
-第二份、也不重写它 —— 你改过的内容就是那个文件存在的理由。
+所以它留在终端上；其余情况一律不多说。
+
+### `twin install [-c <文件>] [选项]`
+
+**读一份配置，把它变成实例。** 默认读 `./config.yml`，用 `-c` / `--config` 指别处；读不到就直接
+报错并让你去跑 `twin gen`，不会去猜别的路径。
+
+它**不接受任何描述实例的选项**：包哪个程序、叫什么名字、隔离哪些目录，全都在那份文件里。一个 flag
+和一个文件可以互相矛盾，而其中只有一个是用户刚刚花了时间改的那份。
 
 ```console
-$ twin new wechat --publish
-✅ 已生成 wechat2
+$ twin install
+✅ 已安装 wechat2
   桌面项   /home/you/.local/share/applications/wechat2.desktop
   图标     /home/you/.local/share/appicons/wechat2.png
   启动器   /home/you/.local/share/twin/wechat2/launch
@@ -162,7 +172,7 @@ $ twin new wechat --publish
   托盘覆盖 已写入 custom-icons（该表热重载，立刻生效）
 
 📁 路径映射
-  3 条，来源：实例快照 /home/you/.local/share/twin/wechat2/profile.yml
+  3 条，来源：配置 config.yml
   私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
   …
 🔍 自检
@@ -173,31 +183,67 @@ $ twin new wechat --publish
 👉 下一步
   1. 桌面项是后写的 —— 请**重新启动**这个实例，否则窗口还是旧的名字和图标。
   2. 确认身份与托盘：twin verify wechat2
-     完整落盘预演（含规则模板与推导值）：twin new <source> --as wechat2 --publish --dry-run --explain
+     改了实例快照要重放：twin reinstall wechat2
 ```
 
 安装阶段的输出也刻意短：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步。"要动手时才需要"的东西
-（规则模板全文、推导值、手工验证命令）用 `--explain` 展开。`--dry-run --publish` 是**完整落盘**的
-预演 —— 桌面项正文、`profile.yml` 正文、bwrap 调用、托盘将写入的那一行全都在，而且由真实落盘
-用的**同一份代码**渲染。
+（规则模板全文、推导值、手工验证命令）用 `--explain` 展开。`--dry-run` 是**完整落盘**的预演 ——
+桌面项正文、`profile.yml` 正文、bwrap 调用、托盘将写入的那一行全都在，而且由真实落盘用的
+**同一份代码**渲染。
+
+**实例目录里那份不是工作副本。** `install` 会按配置重新渲染它（存档角色，头注释指向
+`twin reinstall`），所以 `install` 与 `reinstall` 写出的字节一致；改完 `config.yml` 再 `install`
+一次，实例就更新了。反过来，`reinstall` **只**读存档快照、不看配置 —— 它要的是确定性。
 
 路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
-抢同一个锁文件时才暴露。两半各有各的交代方式：`twin new` 把它写进 `profile.yml` 的 `bind`
-（连同"空着意味着什么"的注释），只在一条都没有时于终端补一句警告；`--publish` 仍是单独一节，
-因为它这时已经变成了启动器里的 `--bind`。这一节说明共有几条、知识来自哪一层（内置规则 /
-`rules.d` / **实例快照**）、以及**改它该编辑哪个文件** —— 两条路都要说清楚：`rules.d`
-管的是**以后新建**的实例，快照管的是**这一个**。
+抢同一个锁文件时才暴露。两个命令各有各的交代方式：`gen` 把它写进配置的 `bind`（连同"空着意味着
+什么"的注释），只在一条都没有时于终端补一句警告；`install` 把它展开成单独一节，因为它这时已经
+变成了启动器里的 `--bind`。这一节说明共有几条、知识来自哪一层（内置规则 / `rules.d` / **这一份
+配置**），以及**改它该编辑哪个文件** —— 两条路都要说清楚：`rules.d` 管的是**以后新建**的实例，
+手上这份文件管的是**这一个**。
+
+#### 需要 root 的那一步：AppArmor profile
+
+本机若限制非特权 user namespace（Ubuntu 默认开），而程序自己又要建嵌套 ns（Chromium / Electron
+类），私有 bwrap 副本就需要一份挂在它路径上的 AppArmor profile。`twin install` 会**自己装上**：
+
+```console
+$ twin install
+🧱 沙箱方案
+  · config.toml 里 userns.trampoline = "off"：不走跳板，需要一份挂在私有副本上的 profile
+
+  🔐 需要 root 装一份 AppArmor profile
+      twin-bwrap → /etc/apparmor.d/twin-bwrap，然后 apparmor_parser -r
+      sudo 会在这里要求你输入密码。不想给就按 Ctrl-C —— 下面会打印同样的命令，你自己跑也一样。
+
+[sudo] password for you:
+  ✅ /etc/apparmor.d/twin-bwrap 已写出并用 apparmor_parser 加载，内核的已加载列表里也能读到 twin-bwrap
+```
+
+三条纪律：
+
+- **只在终端上问密码。** 标准输入不是终端（脚本、管道、CI）时不碰 sudo，退回打印 profile 全文并以
+  退出码 3 结束 —— 那是这个工具从第一天起就有的诚实行为，不是失败。
+- **干的事就是打印出来的那两条命令**：写 `/etc/apparmor.d/twin-bwrap`、`apparmor_parser -r`。没有
+  别的系统改动，没有 AppArmor 之外的配置，也没有常驻进程。
+- **回读才算数。** `apparmor_parser` 返回 0 只说明内核收下了；twin 还会读
+  `/sys/kernel/security/apparmor/profiles` 确认 `twin-bwrap` 真在列表里。那台机器不让非 root 读这份
+  列表时，它明说"只确认到退出码"，而不是把查不到当成查过了。
+
+`--dry-run` 只报告这一步、绝不碰 `/etc`。装完之后 `sandbox.Resolve` 会认出这份 profile（判据是
+`/etc/apparmor.d/twin-bwrap` 里的附着路径），于是**不再需要跳板**，`reinstall` 也不会再问一次密码。
+`twin reinstall <id>` 同样会走这一步：一台机器需要它，就无论在装还是在重放时需要它。
 
 `--explain` 把这一节再摊开一点，并附上一份照抄即可的规则模板：
 
 ```console
 📁 路径映射
-  3 条，来源：内置规则 wechat
+  3 条，来源：配置 config.yml
   私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
   共用  ~/Documents/xwechat_files:~/Documents/xwechat_files   （原地升回可写，数据不搬家）
   私有  ~/.local/state/twin/wechat2/all_users:~/Documents/xwechat_files/all_users
   改：~/.config/twin/rules.d/wechat.toml —— 影响这个程序以后新建的实例（twin rules --init wechat 生成草稿）
-      只改这一个：编辑 ~/.local/share/twin/wechat2/profile.yml 里的 bind，再 twin regen wechat2
+      只改这一个：编辑 config.yml 里的 bind，再 twin install
 
   📋 照抄下面这份（就是规则文件的全部内容）：
 
@@ -230,19 +276,19 @@ $ twin new wechat --publish
     ~/.local/state/foo                           目录存在
     要隔离就先生成一份规则草稿：twin rules --init foo
   改：~/.config/twin/rules.d/foo.toml —— 影响这个程序以后新建的实例（twin rules --init foo 生成草稿）
-      只改这一个：编辑 …/twin/foo2/profile.yml 里的 bind，再 twin regen foo2
+      只改这一个：编辑 config.yml 里的 bind，再 twin install
 ```
 
 ### `twin verify <id>`
 
-自检一个**已生成**实例的身份链路。**重新读硬盘**，不信内存里的期望。
+自检一个**已安装**实例的身份链路。**重新读硬盘**，不信内存里的期望。
 
-实例只写了配置、还没 `--publish`（没有桌面项）时，它不吃一遍连锁失败，而是把这一件事说清楚，
-并给出收尾命令，退出码 `1`：
+实例目录在、桌面项却不在（上一次安装死在写快照与写身份锚点之间）时，它不吃一遍连锁失败，而是把
+这一件事说清楚并给出收尾命令，退出码 `1`：
 
 ```console
-➖ wechat3 还没落盘：只有配置 /home/you/.local/share/twin/wechat3/profile.yml，桌面项 / 图标 / 启动器都还没写
-  落盘：twin new <source> --as wechat3 --publish    （等价的直接做法：twin regen wechat3）
+❌ wechat3 的桌面项不在：上一次安装没走完（快照 /home/you/.local/share/twin/wechat3/profile.yml 在，桌面项 / 图标 / 启动器不全）
+  重来一次：twin reinstall wechat3
 ```
 
 | 检查项 | 失败意味着 |
@@ -269,22 +315,25 @@ $ twin new wechat --publish
 📋 实例
 id               level      别名     程序                     桌面项
 wechat2          alias      wechat2  wechat                   wechat2.desktop
-foo3             alias      foo3     foo                      foo3.desktop  ← 未落盘
+foo3             alias      foo3     foo                      foo3.desktop  ← 安装未完成
 
-⚠️ 有 1 个只写了配置、还没落盘：twin new <source> --publish（或 twin regen <id>）
+⚠️ 有 1 个桌面项缺失（上一次安装没走完）：twin reinstall <id>
 
 删除某一个：twin remove <id>（不加 --yes 只打印要删什么）
 ```
 
-`← 未落盘` 不是"桌面项被谁删了"，而是两段式 wrap 的正常中间态：配置已经在 `profile.yml` 里，
-只差 `--publish`。
+`← 安装未完成` 不是"桌面项被谁删了"，而是**上一次 `install` 死在半路**：快照写下了，身份锚点没写全。
+`twin reinstall <id>` 就是收尾命令 —— 它按那份快照把整件事重放一遍。
 
-### `twin regen <id> [--refresh]`
+### `twin reinstall <id> [--refresh]`
 
-改了 `profile.yml` 后重新落盘 —— 也就是 `twin new <source> --as <id> --publish` 的另一条入口，
-两者走**同一条安装路径**，所以不可能出现"publish 会做、regen 不做"的事。
+按**实例目录里那份快照**重新落盘。它是"这个实例已经装好了，现在要按存档重来一次"那条路。
 
-- **默认只读 CLI 与快照**（重放必须是确定性的）。碰一下 `config.toml` 不该静默改写一排实例。
+它不看 `config.yml`：配置可能已经被拷走、提交进仓库、或者删掉了，而"上次到底装了什么"只剩存档这一
+份记录。要按新配置更新实例，改配置再 `twin install` —— 两者走**同一条安装路径**，所以不可能出现
+"install 会做、reinstall 不做"的事。
+
+- **默认只读快照**（重放必须是确定性的）。碰一下 `config.toml` 不该静默改写一排实例。
 - `--refresh` 才重读 `config.toml` 与 `rules.d`，而且**只补快照里为空的字段** ＋ 追加缺失的
   bwrap token。
 - 若今天的会话与快照里的决定矛盾（例如快照记着"走 Wayland"而当前只有 X11），会**警告**而不是
@@ -296,8 +345,7 @@ foo3             alias      foo3     foo                      foo3.desktop  ← 
 
 - **不加 `--yes` 只打印**：将要删的文件（存在的打 `✅`、不存在打 `➖`）、私有状态目录
   （默认保留）、托盘表里那一条会怎样，末尾给出那条下一步命令。
-- 只写了配置、还没落盘的实例也照删 —— 待落盘的快照本来就是这么撤销的（`--publish` 的拒绝信息
-  也是这么写的）。
+- 安装没走完的实例也照删 —— 快照本来就写在那儿，撤销它就是把那个目录清掉。
 - `--purge` 连私有状态目录一起删（那是**唯一**不可逆的部分）。
 - 不带 `--purge` 时状态目录保留 —— 下次同名重建会接着用。
 - 会顺带移除宿主托盘表里该 `id` 的条目：表是全局的，而这条是"一个即将不存在的程序"的声明，
@@ -337,7 +385,7 @@ twin config > ~/.config/twin/config.toml
 Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把它们当"这个程序的私有数据"
 绑掉，会让半个桌面跟着坏，而症状看起来像是 twin 的 bug。
 
-探测到的东西也可以只看不写：`twin new` 打印的 `路径映射` 一节里同样列出"**未应用**"的候选目录
+探测到的东西也可以只看不写：`twin gen` 打印的 `路径映射` 一节里同样列出"**未应用**"的候选目录
 （只含存在性证据那一条，因为它在每次生成时都要跑一遍）。
 
 ### `twin version`
@@ -346,7 +394,10 @@ Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把�
 
 ---
 
-## 3. `new` 选项
+## 3. `gen` 选项
+
+`install` 不在这张表里，因为它**没有**这些选项：包哪个程序、叫什么名字、隔离哪些目录，全都在它读的
+那份配置文件里。它只接受 `-c/--config`、`--force`、`--explain`、`--dry-run`（见本节末尾）。
 
 ### 身份与命名
 
@@ -377,8 +428,9 @@ Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把�
 | `--no-tmpfs` | — | 完全不要 tmpfs。**X11 程序必须如此**（`--tmpfs /tmp` 会砍掉 `/tmp/.X11-unix/X0`） |
 
 > **路径映射没有 CLI 选项**，两条路都是文件：`rules.d/<程序>.toml` 管这个程序**以后新建**的实例，
-> 实例快照的 `bind` 管**这一个**。一条映射正是最该在安装任何东西**之前**被读一遍的东西，而命令行
-> 参数没人会回头再看第二眼 —— 所以它先落成文件（见 [`configuration.md`](configuration.md)）。
+> 手上那份配置的 `bind`（`install` 会把它渲染进实例快照）管**这一个**。一条映射正是最该在安装任何
+> 东西**之前**被读一遍的东西，而命令行参数没人会回头再看第二眼 —— 所以它先落成文件
+> （见 [`configuration.md`](configuration.md)）。
 > `--tmpfs` 与透传区不同：它**享受** `~/` 展开与 `mkdir` 补齐。
 
 ### 托盘与覆盖
@@ -391,39 +443,50 @@ Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把�
 
 ### 执行控制
 
-| 选项 | 说明 |
+`gen` 与 `install` 各自的"这次动作"选项。上面的表都是 **gen 的**，因为它们描述的是实例本身。
+
+| `gen` 选项 | 说明 |
 |---|---|
-| `--publish` | 落盘：写桌面项 / 图标 / 启动器 / 宿主托盘，然后自检。已经有一份待落盘的配置时按它走 —— 此时再给上面那些**描述实例**的选项会被拒绝（退出码 2） |
-| `--force` | 覆盖已存在但**不是** twin 生成的桌面项／实例；也允许落盘时遮蔽同名的系统桌面项 |
+| `-o`, `--output <文件>` | 写到哪（默认 `./config.yml`）。两个拼写是同一个设置，同时给会报用法错误 |
+| `--force` | 覆盖已存在的输出文件（默认拒绝） |
+| `--explain` | 打印完整说明：推导值、`路径映射` 的修改粒度与规则模板全文 |
+| `--dry-run` | 只打印将要写什么，一个字节不落盘（连配置正文一起打印） |
+
+| `install` 选项 | 说明 |
+|---|---|
+| `-c`, `--config <文件>` | 读哪一份配置（默认 `./config.yml`）。两个拼写是同一个设置，同时给会报用法错误 |
+| `--force` | 覆盖已存在但**不是** twin 生成的桌面项；也允许落盘时遮蔽同名的系统桌面项 |
 | `--explain` | 打印完整说明：推导值、`路径映射` 的修改粒度与规则模板全文、手工验证命令 |
-| `--dry-run` | 只打印将要写什么，一个字节不落盘。不带 `--publish` 时打印这份配置（含 `profile.yml` 正文）；带 `--publish` 时打印完整落盘（文件清单、桌面项全文、bwrap 调用、托盘将写入的行、推导值） |
+| `--dry-run` | 只打印将要写什么，一个字节不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘将写入的行）；需要 AppArmor profile 时只报告，不碰 `/etc` |
 
-`--publish` 之后的选项分两类，因为两段式的两半问的是不同的问题：
+`gen` 的选项分两类，只有第一类会进配置：
 
-| 类别 | 选项 | 待落盘配置已存在时 |
-|---|---|---|
-| **描述实例**（会进快照） | `--name` `--name-en` `--comment` `--comment-en` `--keywords` `--categories` `--icon` `--badge` `--badge-style` `--level` `--tmpfs` `--no-tmpfs` `--no-tray` 与 `--` 透传区 | **拒绝**：要改就改快照 |
-| **描述这次动作** | `--as` `--force` `--publish` `--dry-run` `--explain` | 照常生效 |
+| 类别 | 选项 |
+|---|---|
+| **描述实例**（会进配置） | `--name` `--name-en` `--comment` `--comment-en` `--keywords` `--categories` `--icon` `--badge` `--badge-style` `--level` `--tmpfs` `--no-tmpfs` `--no-tray` 与 `--` 透传区 |
+| **描述这次动作** | `--as` `--output` `--force` `--dry-run` `--explain` |
+
+`install` 完全没有第二类之外的选项，所以"待落盘的配置已存在时拒绝描述实例的选项"这条规则不再需要
+存在 —— 那种冲突在拆命令的时候就没有了。
 
 ### bwrap 透传
 
 ```
-twin new <source> [选项] -- <bwrap 选项…>
+twin gen <source> [选项] -- <bwrap 选项…>
 ```
 
 第一个 `--` 之后的 token **原样**透传给 bwrap，拼在基座之后、程序之前：
 
 ```bash
-twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
+twin gen wechat -- --unshare-pid --setenv TWIN_FOO bar
 ```
 
 - 排在基座之后 ⇒ 同目标的挂载由**它**胜出（bwrap 后挂载遮蔽前者）。
 - ⚠️ 不接受：`--`（会截断 bwrap 的解析）、`--argv0`（破坏身份不变量）、需要 fd 的选项。
 - ⚠️ 透传区**不享受** `mkdir` 补齐与 `~/` 展开。
 - 校验是 lint（警告），不是改写。
-- 它和你写的其他选项一样，会进快照（`extra`）。所以两段式 wrap 里它只在那一次写得进：
-  `twin new wechat --publish -- --unshare-pid`（一步到位）会把 token 一起写进快照；
-  快照已经写好之后再传，会被当作"描述实例的输入"拒绝 —— 要改就改快照里的 `extra`，再 `twin regen`。
+- 它和你写的其他选项一样，会写进配置（`bwrap.extra`），`install` 时生效。要改就改配置里的 `extra`
+  再 `twin install`；存档快照里那份是 `install` 渲染出来的，改它就得配 `twin reinstall <id>`。
 
 ---
 
@@ -438,10 +501,10 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 | `NO_COLOR` 非空 | 强制关掉，优先级最高 |
 | `CLICOLOR_FORCE` 非空且不为 `0` | 强制打开（管道喂给会渲染转义的 pager 时用） |
 
-- **stdout 与 stderr 各自判断**：`twin new wechat > log` 里 `log` 是纯文本，而落在终端上的
+- **stdout 与 stderr 各自判断**：`twin gen wechat > log` 里 `log` 是纯文本，而落在终端上的
   `⚠️ 提醒` 依然有颜色。
 - 判断用的是 `TCGETS`，不是"是不是字符设备" —— `/dev/null` 也是字符设备，否则
-  `twin new wechat > /dev/null` 会拿到一堆转义序列。
+  `twin gen wechat > /dev/null` 会拿到一堆转义序列。
 - 字形与颜色表达**同一件事**：`✅` 通过、`⚠️` 降级、`❌` 失败、`➖` 跳过（事实性跳过，不是失败）。
   所以 `2>&1 | tee log` 之后依然读得出来哪一行失败。
 - 退出码不受颜色影响，`NO_COLOR` 也不改变退出码。
@@ -454,8 +517,8 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 |---|---|
 | `0` | 成功。**包括事实性跳过**：`--no-tray` / 整机 `tray_override = false` / 这台机器根本没有托盘宿主 |
 | `1` | 失败，或自检里有 ❌ |
-| `2` | 用法错误（未知选项、非法 `--level`、`--` 之后不是 bwrap 选项、`HOME` 未设置…）。**两段式 wrap 的两种"不肯猜"也算这里**：待落盘的配置不止一份却没给 `--as`；`--publish` 带着描述实例的选项去落盘一份已存在的快照 |
-| `3` | **身份已经成立，但还差一步必须由人执行。** 目前两个来源：<br>① 托盘覆盖表写不进去（无会话总线 —— 安装脚本、无图形会话）<br>② 内核限制 `userns` 且机器上找不到跳板 ⇒ 要你 `sudo` 装一份 profile |
+| `2` | 用法错误（未知选项、非法 `--level`、`--` 之后不是 bwrap 选项、`-o` 与 `--output` 同时给出、`HOME` 未设置…） |
+| `3` | **身份已经成立，但还差一步必须由人执行。** 目前两个来源：<br>① 托盘覆盖表写不进去（无会话总线 —— 安装脚本、无图形会话）<br>② 内核限制 `userns` 而机器上既没有跳板、`install` 也没法装 profile（没有 `sudo`，或标准输入不是终端、问不了密码）⇒ profile 全文已经打印给你 |
 
 退出码 3 的意义在于把**"去图形会话里跑一下"**和**"这东西坏了"**分开。脚本可以据此决定是
 提示用户、还是报错退出。
@@ -472,9 +535,11 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 生成器 |
 | `~/.local/share/appicons/<id>.png` | 图标 | 生成器 |
 | `~/.local/share/twin/<id>/launch` | 薄启动器 | 生成器 |
-| `~/.local/share/twin/<id>/profile.yml` | 实例快照（真源；写出来就算"配置好了"） | 生成器（`twin new`），你改，再 `--publish` / `regen` |
+| `./config.yml`（或 `-o` 指的路径） | 工作副本：你编辑的那一份 | 生成器（`twin gen`），你改，再 `twin install` |
+| `~/.local/share/twin/<id>/profile.yml` | 实例存档快照 | 生成器（`twin install` 按配置渲染）；你改，再 `twin reinstall <id>` |
 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本（共享，一台机器一份） | 生成器（仅需要时） |
 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（共享） | 生成器（仅需要时） |
+| `/etc/apparmor.d/twin-bwrap` | 挂在私有副本上的 profile（要 root） | `twin install` 经 `sudo`（仅需要时） |
 | `~/.local/state/twin/<id>/` | 私有数据（持久） | 运行期 |
 
 ⚠️ **别把产物放到 `/opt` 或任何 root 属主的位置**：手写版的 `wechat2.sh` 就是这样，结果图标和
@@ -502,46 +567,54 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 ## 8. 典型用法
 
 ```bash
-# 最省事（三行就是全部）
-twin new wechat                      # 写配置，打印"改哪个文件、下一步敲什么"
-$EDITOR ~/.local/share/twin/wechat2/profile.yml
-twin new wechat --publish
+# 最省事（两行就是全部）
+twin gen wechat          # 在当前目录写 config.yml，打印下一步
+twin install             # 读它：写快照 → 落盘 → 自检
 
-# 一模一样，只是不打算改配置（待落盘的配置不存在时）
-twin new wechat --publish
+# 想改点什么（路径映射是最值得看一眼的那一项）
+twin gen wechat
+$EDITOR config.yml       # 改 bind / name / keywords / identity.level
+twin install
+
+# 配置留在别处：多实例、或者一份配置要喂给几台机器
+twin gen wechat -o ~/wraps/wx-work.yml
+twin install -c ~/wraps/wx-work.yml
 
 # 先看再写
 twin inspect wechat
-twin new wechat --dry-run            # 这份配置会写什么
-twin new wechat --publish --dry-run  # 完整落盘会写什么
+twin gen wechat --dry-run          # 这份配置会写什么
+twin install --dry-run             # 完整落盘会写什么（含需要 root 的那一步）
 
 # 输出默认是精简版；要推导值、规则模板、手工验证命令就加 --explain
-twin new wechat --explain
+twin gen wechat --explain
+twin install --explain
 
 # 明确指定身份
-twin new wechat --as wx-work --name "微信·工作" --badge W --badge-style number --publish
+twin gen wechat --as wx-work --name "微信·工作" --badge W --badge-style number
+twin install
 
-# 让两份实例彻底分家（连配置目录一起隔离）：映射写进快照，再落盘
-twin new wechat --as wx-alt
-$EDITOR ~/.local/share/twin/wx-alt/profile.yml
+# 让两份实例彻底分家（连配置目录一起隔离）：映射写进配置，再安装
+twin gen wechat --as wx-alt
+$EDITOR config.yml
 #   bind:
 #     - ~/.local/state/twin/wx-alt/config:~/.config/wechat
 #     - ~/.local/state/twin/wx-alt/xwechat:~/.xwechat
-twin new wechat --as wx-alt --publish
+twin install
 
 # 一个只想多开小号、其它全共享的浏览器
-twin new google-chrome --as chrome-alt
-$EDITOR ~/.local/share/twin/chrome-alt/profile.yml
+twin gen google-chrome --as chrome-alt
+$EDITOR config.yml
 #   bind:
 #     - ~/.local/state/twin/chrome-alt/profile:~/.config/google-chrome
-twin new google-chrome --as chrome-alt --publish
+twin install
 
 # 底层的额外隔离（透传）
-twin new wechat --publish -- --unshare-pid
+twin gen wechat -- --unshare-pid
+twin install
 
-# 改完快照重放（regen 与 --publish 是同一条路）
+# 改完实例快照重放（install 与 reinstall 是同一条路）
 $EDITOR ~/.local/share/twin/wechat2/profile.yml
-twin regen wechat2
+twin reinstall wechat2
 
 # 先看要删什么，再删
 twin remove wechat2

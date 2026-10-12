@@ -8,11 +8,11 @@
 （两个账号、两套配置、两个任务栏图标）。
 
 ```console
-$ twin new wechat       # 生成第二个微信：独立窗口名、独立托盘图标、独立账号状态
-$ twin verify wechat2   # 自检这条身份链路的每一环
+$ twin gen wechat       # 在当前目录写出 config.yml：独立窗口名、独立托盘图标、独立账号状态
+$ twin install          # 读它，落盘，然后自检这条身份链路的每一环
 ```
 
-最短可用命令就是上面这一行 —— id、显示名、说明、角标、关键词、状态路径全部从源程序的
+最短可用命令就是上面这两行 —— id、显示名、说明、角标、关键词、状态路径全部从源程序的
 `.desktop` 与二进制里推导出来，落盘前**逐条打印来源**，都可用选项覆盖。
 
 ---
@@ -37,7 +37,9 @@ $ twin verify wechat2   # 自检这条身份链路的每一环
 诚实地划边界，是这个工具设计的一半。以下事情 `twin` **不会**做，也**不假装**做了：
 
 - ❌ 不修改、不复制原程序的目录（overlay 是零拷贝、只在命名空间内）
-- ❌ 不写 `/etc`、不装 AppArmor profile、不创建 systemd 单元（唯一例外见下文"退路"）
+- ❌ 不创建 systemd 单元，不写 `/etc` 下除**一份 AppArmor profile** 以外的任何东西 —— 那份是
+  "内核不放行非特权 userns、机器上又没有跳板"时的唯一退路，`twin install` 会问你密码去装它，
+  **不给密码就用不了它**（那时打印 profile 全文，你自己决定）。
 - ❌ 不隔离网络（`isolation.unshare` 里出现 `net` 会被直接拒绝）
 - ❌ 不做"权限沙箱" —— 它给的是**身份**，不是安全边界
 - ❌ 不提供 GUI（为什么不做，见 [`docs/architecture.md`](docs/architecture.md) §7）
@@ -51,72 +53,74 @@ twin doctor
 # 1. 只看不写：这个程序会被包成什么样
 twin inspect wechat
 
-# 2. 只写配置：打印那份配置的路径与下一步；每个键的说明都写在文件里的注释里
-twin new wechat
+# 2. 写配置：当前目录多一个 config.yml；每个键的说明都写在文件里的注释里
+twin gen wechat
 
 # 3. 看一眼（可选）：路径映射是最容易猜错的一条，改完再往下走
-$EDITOR ~/.local/share/twin/wechat2/profile.yml
+$EDITOR config.yml
 
-# 4. 落盘 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
-twin new wechat --publish
+# 4. 安装 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
+twin install
 twin verify wechat2
 ```
 
-只想一步到位（默认值就够用，或者你本来就想把选项一次写全）：
+一份配置可以放别处、可以有几份（多实例、多台机器共用）：
 
 ```bash
-twin new wechat --publish
-twin new wechat --publish --as wx-work --name "微信·工作" -- --unshare-pid
+twin gen wechat -o ~/wraps/wx-work.yml
+twin install -c ~/wraps/wx-work.yml
 ```
 
 **为什么是两步**：一次 wrap 里唯一随程序而变、又猜错了不出声的，是"隔离哪些数据目录"。所以先把它
-落成一份能读能改的 `profile.yml`，再安装 —— 而不是先装好、再在一屏输出里让你事后发现映射是错的。
-`--publish` 不会重新猜 id：配置一旦写出来，那个 id 就被占用了，重新推导只会悄悄变成 `wechat3`。
+落成一份能读能改的 `config.yml`，再安装 —— 而不是先装好、再在一屏输出里让你事后发现映射是错的。
+放在**当前目录**是同一个道理：它是这份 wrap 里唯一需要人读一遍的东西，放在你**已经选好的**那个
+目录里，才能 diff、提交、拷到另一台机器。
 
-生成后你会发现多了这些东西：
+安装后你会发现多了这些东西：
 
 ```
 ~/.local/share/applications/wechat2.desktop     ← 身份锚点
 ~/.local/share/appicons/wechat2.png             ← 带角标的图标
 ~/.local/share/twin/wechat2/launch           ← 薄启动器（bash，exec bwrap）
-~/.local/share/twin/wechat2/profile.yml      ← 真源文件，手改这个然后 --publish / regen
+~/.local/share/twin/wechat2/profile.yml      ← 安装时的存档快照（install 按 config.yml 渲染它）
 ~/.local/state/twin/wechat2/                 ← 这个实例的私有数据目录
 ```
 
 **为什么必须重启实例**：桌面项是**后写的**，而 GNOME 不会给一个**已经存在**的窗口重算
 归属。生成完之后要**完全退出**再从这个新桌面项启动一次，才会看到新的图标与名字。
 
-**数据目录也值得看一眼**：`twin new` 一结束就打印一节 `路径映射`，说明这次重定向了哪些目录、
-这份知识从哪来（内置规则 / `rules.d` / 实例快照），以及**改它该编辑哪个文件** ——
-两条路是分开的：`rules.d` 管这个程序**以后新建**的实例，快照管**这一个**。不同程序的数据目录
-完全不同，而隔离错一个目录要等到两个实例抢同一个锁文件才暴露。改完快照重放：`twin regen <id>`
-（与 `--publish` 走同一条安装路径）。要一份照抄即可的规则模板、看到推导出的每个默认值，
-加 `--explain`。
+**数据目录也值得看一眼**：`twin gen` 一结束就打印一节 `路径映射`，说明这次重定向了哪些目录、
+这份知识从哪来（内置规则 / `rules.d` / 这份配置），以及**改它该编辑哪个文件** ——
+两条路是分开的：`rules.d` 管这个程序**以后新建**的实例，手上这份配置管**这一个**。不同程序的数据
+目录完全不同，而隔离错一个目录要等到两个实例抢同一个锁文件才暴露。改完配置重装一次：`twin install`
+（改的若是实例目录里那份快照，就 `twin reinstall <id>`，两者走同一条安装路径）。要一份照抄即可的
+规则模板、看到推导出的每个默认值，加 `--explain`。
 
 **输出默认是精简的**：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步，一屏能看完；其余细节都要
 `--explain`（或 `--dry-run`）才展开。颜色只在终端上出现 —— 重定向、管道、`TERM=dumb` 一律
 纯文本，`NO_COLOR` 强制关掉、`CLICOLOR_FORCE=1` 强制打开。字形（`✅` `⚠️` `❌` `➖`）与颜色
 表达同一件事，所以日志里也读得出来哪一行失败。
 
-陌生程序不知道该映射什么？`twin new` 会把这台机器上**真的存在**的 `~/.config/<程序名>` 之类
+陌生程序不知道该映射什么？`twin gen` 会把这台机器上**真的存在**的 `~/.config/<程序名>` 之类
 目录列出来（只列，不套用）；`twin rules --init <source>` 则把探测结果写成一份规则草稿，其中
 "目录真的存在"的几条生效、"二进制里有这个字符串"的几条注释掉，等你逐条确认。
 
 ## 原理速览
 
 ```
-twin new wechat                  ← 前半段：只配置
+twin gen wechat                  ← 前半段：只配置
       │
       ├─ 1. 解析源桌面项 → 找到真实程序 /opt/wechat/wechat、图标、语言化的 Name/Keywords
       ├─ 2. 推导默认值   → id=wechat2  name=微信2  badge=2  keywords=微信;wechat;
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
       ├─ 4. 从内置规则 / rules.d 算出路径映射
-      └─ 5. 写出 profile.yml（唯一一个文件），并打印"改哪个文件、下一步敲什么"
+      └─ 5. 写出 config.yml（当前目录，唯一一个文件），并打印"下一步敲什么"
 
-twin new wechat --publish        ← 后半段：按快照安装（regen 也走这条路）
+twin install                     ← 后半段：按配置安装（reinstall 也走这条路）
       │
-      ├─ 6. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板（见下）
-      ├─ 7. 落盘 4~6 件产物（幂等）
+      ├─ 6. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板。
+      │                    两者都没有、而程序又要嵌套 ns 时：用 sudo 装一份 AppArmor profile
+      ├─ 7. 落盘 5~7 件产物（幂等），包括按配置渲染的存档快照 profile.yml
       ├─ 8. 写宿主托盘覆盖表（把自己那行指到本实例图标；热重载，立刻生效）
       └─ 9. 自检身份链路（target/别名/桌面项/图标/启动器/规则/嵌套 ns）
 ```
@@ -178,14 +182,21 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 - `/usr/bin/bwrap` 的 AppArmor profile 会给它的**每个后代**叠上 `unpriv_bwrap`，而那份
   profile 带 `audit deny capability` ⇒ 后代 capability 全丢 ⇒ 嵌套 `unshare()` 恒 `EPERM`。
 
-`twin` 的解法是**私有 bwrap 副本 ＋ 跳板**：复制一份 bwrap 到没有 profile 的路径上
-（逃开限制二），运行时先 `exec` 一个自带 `flags=(unconfined) { userns, }` profile 的
-Electron 程序（通常是 VS Code），让内核在 exec 时**替换**掉 AppArmor 标签，再由它 spawn
-副本 —— 副本及其后代就都带着那个许可了。
+`twin` 有两条出路，都自动选，优先第二条：
 
-整个机制完全自动：**机器上装了任何 Electron 应用就能用**，换一台机器重跑一次 `twin`
-就重新发现一次，不绑死任何特定程序。找不到跳板时会打印一份 AppArmor profile 文本并以
-**退出码 3** 结束（身份是成立的，只差你 `sudo` 装一条 profile）。
+1. **私有 bwrap 副本 ＋ 跳板**：复制一份 bwrap 到没有 profile 的路径上（逃开限制二），运行时先
+   `exec` 一个自带 `flags=(unconfined) { userns, }` profile 的 Electron 程序（通常是 VS Code），
+   让内核在 exec 时**替换**掉 AppArmor 标签，再由它 spawn 副本 —— 副本及其后代就都带着那个许可了。
+   **机器上装了任何 Electron 应用就能用**，换一台机器重跑一次 `twin` 就重新发现一次，不绑死任何
+   特定程序。
+2. **一份挂在副本路径上的 AppArmor profile**：不依赖机器上恰好装了什么。`twin install` 自己装它
+   —— 写 `/etc/apparmor.d/twin-bwrap`、`apparmor_parser -r`，两条命令都经 `sudo`，所以会**要求你
+   输入密码**；不想给就按 Ctrl-C。没有 `sudo`、或标准输入不是终端（脚本里跑）时，它退回打印
+   profile 全文并以**退出码 3** 结束（身份是成立的，只差这一条 profile）。
+
+装好之后 `install` 会**回读**：`apparmor_parser` 返回 0 只说明内核收下了，还要在
+`/sys/kernel/security/apparmor/profiles` 里真的看到 `twin-bwrap` 才算数 —— 看不到就说看不到，
+不把查不到当成查过了。
 
 完整机制、三条退化路线与取证记录：[`docs/apparmor-userns.md`](docs/apparmor-userns.md)。
 
@@ -193,11 +204,11 @@ Electron 程序（通常是 VS Code），让内核在 exec 时**替换**掉 AppA
 
 | 命令 | 作用 |
 |---|---|
-| `twin new <source> [选项]` | **最常用**：写出一份实例配置（`profile.yml`）；id / 名字 / 角标 / 状态路径全部推导 |
-| `twin new <source> --publish` | 按那份配置落盘：桌面项 / 图标 / 启动器 / 托盘 ＋ 自检。没有待落盘的配置时就是一次完整生成 |
+| `twin gen <source> [选项]` | **最常用**：在当前目录写出一份配置（`config.yml`）；id / 名字 / 角标 / 状态路径全部推导。`-o` 换位置 |
+| `twin install [-c <文件>]` | **最常用**：读那份配置，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。需要 AppArmor profile 时用 `sudo` 装 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
 | `twin verify <id>` | 自检一个实例的身份链路 |
-| `twin regen <id> [--refresh]` | 改了 `profile.yml` 后重新落盘 |
+| `twin reinstall <id> [--refresh]` | 按实例目录里那份存档快照重新落盘 |
 | `twin remove <id> [--yes] [--purge]` | 删除产物（默认只打印，不动手） |
 | `twin list` | 列出全部实例 |
 | `twin doctor` | 环境自检（先跑这个），输出末尾直接告诉你下一步敲什么 |
@@ -207,7 +218,7 @@ Electron 程序（通常是 VS Code），让内核在 exec 时**替换**掉 AppA
 | `twin version` | 版本 |
 
 > 第一个 token 永远是动词，第二个永远是它的宾语 —— 位置即含义，没有保留字表。
-> 所以程序真名就叫 `list` 也不特殊：`twin new list` 就是包它。
+> 所以程序真名就叫 `list` 也不特殊：`twin gen list` 就是包它。
 
 全部选项、退出码、拒绝清单：[`docs/cli.md`](docs/cli.md)。
 
@@ -216,18 +227,18 @@ Electron 程序（通常是 VS Code），让内核在 exec 时**替换**掉 AppA
 三层，越具体越优先：
 
 ```
-CLI 参数
-  > ~/.local/share/twin/<id>/profile.yml     实例快照（真源）
-    > ~/.config/twin/rules.d/<app>.toml      应用知识（支持 {id} 占位）
-      > ~/.config/twin/config.toml           这台机器的环境
-        > 编译进二进制里的内置默认
+./config.yml（或 -c 指的那份）              你正在编辑的那一份
+  > ~/.config/twin/rules.d/<app>.toml      应用知识（支持 {id} 占位）
+    > ~/.config/twin/config.toml           这台机器的环境
+      > 编译进二进制里的内置默认
 ```
 
 | 文件 | 它描述什么 | 谁改它 |
 |---|---|---|
-| `~/.config/twin/config.toml` | **这台机器**：bwrap 路径、图标尺寸、是否维护托盘表 | 你，换机器时 |
+| `./config.yml` | **这一个实例**：全部意图。`gen` 写它、`install` 读它 | 你改，然后 `twin install` |
+| `~/.local/share/twin/<id>/profile.yml` | 同一个实例的**存档快照**：`install` 按配置渲染，`reinstall` 重放 | 你改，然后 `twin reinstall <id>` |
 | `~/.config/twin/rules.d/<app>.toml` | **某个程序**：状态路径、关键词、tmpfs | 你，了解新程序时 |
-| `~/.local/share/twin/<id>/profile.yml` | **这一个实例**：全部意图 | 你改，然后 `regen` |
+| `~/.config/twin/config.toml` | **这台机器**：bwrap 路径、图标尺寸、是否维护托盘表、跳板策略 | 你，换机器时 |
 
 `config.toml` 不存在是正常的（用内置默认）。数组类字段（`tmpfs` / `bind` / `bwrap.extra`）
 按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。

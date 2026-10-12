@@ -234,6 +234,45 @@ func TestProfileHint(t *testing.T) {
 	}
 }
 
+// The policy attaches to the *path* of the copy twin made. Attaching to a name
+// would hand the permission to anything else called bwrap, and would stop
+// matching the moment twin's copy moved.
+func TestProfileTextAttachesToTheCopyPath(t *testing.T) {
+	const copy = "/home/x/.local/share/twin/bin/bwrap"
+	text := ProfileText(copy)
+	if !strings.Contains(text, "\""+copy+"\"") {
+		t.Errorf("profile 必须按路径附着：\n%s", text)
+	}
+	if !strings.Contains(text, "userns,") {
+		t.Errorf("profile 里必须有 userns 许可，否则白装：\n%s", text)
+	}
+	// 名称是回读时唯一能认出自己的东西，所以它必须与 Loaded 查的那个名字一致。
+	if !strings.Contains(text, "\""+ProfileName+"\"") {
+		t.Errorf("profile 名必须是 %s：\n%s", ProfileName, text)
+	}
+	// 提示版比策略版多出来的只是那几行安装说明。
+	if hint := ProfileHint(copy); !strings.HasSuffix(hint, text) {
+		t.Errorf("ProfileHint 应当是「安装说明 + 策略本身」：\n%s", hint)
+	}
+}
+
+// 内核那份已加载列表里，一行是一个 profile，名字在最前、模式在括号里。
+// 「读不到」和「不在里面」是两个不同的答案。
+func TestLoadedInReadsTheKernelList(t *testing.T) {
+	const withOurs = "vscode (enforce)\ntwin-bwrap (enforce)\n/usr/bin/bwrap//unpriv_bwrap (enforce)\n"
+	if !loadedIn(withOurs) {
+		t.Error("列表里有 twin-bwrap，应当判为已加载")
+	}
+	if loadedIn("vscode (enforce)\n/usr/bin/bwrap//unpriv_bwrap (enforce)\n") {
+		t.Error("列表里没有 twin-bwrap，不该判为已加载")
+	}
+	// 前缀相同的别的 profile 不能算命中：否则一个残留的旧 profile 会替
+	// 真正缺失的那份回答。
+	if loadedIn("twin-bwrap-old (enforce)\n") {
+		t.Error("只按前缀匹配会把别的 profile 当成自己")
+	}
+}
+
 func mkFile(t *testing.T, path string, perm os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
