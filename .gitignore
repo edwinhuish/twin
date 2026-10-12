@@ -1,0 +1,13 @@
+# 编译产物
+/bin/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.swp
+.DS_Store
