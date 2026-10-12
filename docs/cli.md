@@ -105,6 +105,64 @@ Keywords   微信;wechat;
 - 会 lint 透传区（只警告，不改写）。
 - 会检查 id 冲突：显式 `--as` 撞到已存在的东西时拒绝，除非 `--force`。
 - 落盘后**自己**写宿主托盘覆盖表，然后跑一次自检。
+- 落盘后会打印一节 **`路径映射`**（`--dry-run` 同样打印）。
+
+路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
+抢同一个锁文件时才暴露。所以它必须出现在输出里，而不是只躺在 `instance.toml` 里。这一节会说明
+共有几条、知识来自哪一层（内置规则 / `rules.d` / `--map`）、**改它该编辑哪个文件**，并附上一份
+照抄即可的 `rules.d` 模板。程序没有规则时，它会明说"什么都没重定向"并点出这个风险，再列出
+**探测到的**候选目录（标着`未应用`，见下面的 `twin rules --init`）。
+
+```
+路径映射
+  3 条，来源：内置规则 wechat
+  私有  ~/.xwechat                             → ~/.local/state/twin/wechat2/xwechat
+  共用  ~/Documents/xwechat_files   （原地升回可写，数据不搬家）
+  私有  ~/Documents/xwechat_files/all_users    → ~/.local/state/twin/wechat2/all_users
+
+  要改（挑一个粒度）：
+    · 影响这个程序以后新建的实例：写 ~/.config/twin/rules.d/wechat.toml，
+      再 twin new <source> --as <id> --force 让这一个跟上
+    · 只改这一个实例（不动规则）：编辑 ~/.local/share/twin/wechat2/instance.toml 里的 [[map.bind]]，再 twin regen wechat2
+    · 只改这一次（不落规则）：twin new <source> --as <id> --map '<canonical>:<private>'
+
+  照抄下面这份（就是规则文件的全部内容）：
+
+    app = "wechat"
+
+    [[bind]]
+    canonical = "~/.xwechat"
+    private   = "~/.local/state/twin/{id}/xwechat"
+
+    [[bind]]
+    canonical = "~/Documents/xwechat_files"
+    private   = "~/Documents/xwechat_files"
+
+    [[bind]]
+    canonical = "~/Documents/xwechat_files/all_users"
+    private   = "~/.local/state/twin/{id}/all_users"
+
+  private 与 canonical 相同（或整个 private 留空）⇒ 与该目录共用，只把只读升回可写；
+  private 指向别处 ⇒ 私有副本，两个实例互不干扰。
+```
+
+模板里的 `private` 会把本实例的 id 写回成 `{id}` 占位符 —— 照抄出来的规则服务这个程序的**所有**
+实例，而不是被烤死在某一个 id 上。上面路径按 `$HOME` 缩写了，工具打印的是绝对路径。
+
+一个**没有规则**的程序长这样（模板部分省略）——`路径映射` 一节的职责就是把"没映射任何东西"
+这句话连同"那该映射什么"一起说清楚：
+
+```
+路径映射
+  没有生效的映射：数据目录与源程序共用（本实例只做身份包裹）。
+  ⚠️ 这个程序没有规则。它若有单实例锁或共享配置（Electron / Qt / GTK 系很常见），
+     两个实例会互相干扰 —— 需要隔离时写一条规则。
+
+  这个程序可能的状态目录（**未应用**，仅供参考）
+    ~/.config/foo                                目录存在
+    ~/.local/state/foo                           目录存在
+    要隔离就先生成一份规则草稿：twin rules --init foo
+```
 
 ### `twin verify <id>`
 
@@ -168,6 +226,30 @@ twin config > ~/.config/twin/config.toml
 
 - 无参数：列出内置规则名，并打印写一条用户规则的骨架。
 - 带参数：显示该程序**最终生效**的规则，含它来自内置还是你的文件。
+
+### `twin rules --init <源桌面项 | 程序名 | id>`
+
+**探测这个程序把状态放在哪，写出一份 `rules.d/<app>.toml` 草稿**（已存在则拒绝，绝不覆盖）。
+这是全部命令里唯一会把"探测结果"变成文件的一步 —— 因为是你要它做的。
+
+两条证据来源，草稿里分得很清楚：
+
+| 证据 | 强度 | 草稿里 |
+|---|---|---|
+| 这台机器上目录**真的存在**（`~/.config/<名>`、`~/.local/share/<名>`、`~/.cache/<名>`、`~/.local/state/<名>`、`~/.<名>`） | 事实：程序已经在那儿写过东西了 | 写成**生效**的 `[[bind]]`（`private` 默认给私有副本） |
+| 同上，但目录名只是**相近**（`~/.xwechat` 对 `wechat`） | 也是事实（目录确实存在），但那句话里的"属于这个程序"是推断 | 同样生效，证据写成 `目录存在（名字相近）` |
+| 二进制里的 `~/…` 路径字面量 | 猜测：可能属于可选功能、别的平台，或一个只是被链接进来的库 | **注释掉** |
+
+点目录（`~/.<名>` 那种）是按**名字匹配**找的，不是按名字查的：程序给目录起的名字和它在桌面项里
+的名字经常不一样，只查 `~/.wechat` 会漏掉 `~/.xwechat`。`~/.config`、`~/.cache`、`~/.local`
+这三个是整机共用的根，名字撞上也不作数。
+
+字面量还要过两道闸：只保留落在状态根（或 `~/.<名>`）下面的路径，而且那一段必须与程序名有关 ——
+Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把它们当"这个程序的私有数据"
+绑掉，会让半个桌面跟着坏，而症状看起来像是 twin 的 bug。
+
+探测到的东西也可以只看不写：`twin new` 打印的 `路径映射` 一节里同样列出"**未应用**"的候选目录
+（只含存在性证据那一条，因为它在每次生成时都要跑一遍）。
 
 ### `twin version`
 

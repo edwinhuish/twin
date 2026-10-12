@@ -4,6 +4,9 @@ import (
 	"flag"
 	"strings"
 	"testing"
+
+	"github.com/edwinhuish/twin/internal/generate"
+	"github.com/edwinhuish/twin/internal/inst"
 )
 
 // The documented form is `twin new <source> --as <id>`: the source comes
@@ -113,5 +116,41 @@ func TestSplitPassthroughRefusesNonDashHead(t *testing.T) {
 func TestSplitPassthroughRefusesSecondSeparator(t *testing.T) {
 	if _, _, err := splitPassthrough([]string{"wechat", "--", "--unshare-pid", "--", "--foo"}); err == nil {
 		t.Fatal("a `--` inside the passthrough region must be refused")
+	}
+}
+
+// ---------------------------------------------------------------- path maps
+
+// The rules.d template is meant to be pasted, and a rules.d file serves every
+// instance of a program. An id baked into the printed paths would make the
+// pasted copy serve exactly one instance — which is what the {id} placeholder
+// exists to prevent.
+func TestRuleTemplateUnbakesInstanceID(t *testing.T) {
+	p := inst.Paths{Home: "/home/someone"}
+	it := &inst.Instance{ID: "wechat2"}
+	if got := dedupStateDir(p, it, "~/.local/state/twin/wechat2/xwechat"); got != "~/.local/state/twin/{id}/xwechat" {
+		t.Errorf("dedupStateDir = %q, want ~/.local/state/twin/{id}/xwechat", got)
+	}
+	// A shared directory must survive untouched: rewriting an unrelated path
+	// would turn "shared" into "private" in the template the user copies.
+	if got := dedupStateDir(p, it, "~/Documents/xwechat_files"); got != "~/Documents/xwechat_files" {
+		t.Errorf("dedupStateDir rewrote an unrelated path: %q", got)
+	}
+}
+
+// The file name offered to the user is what twin will read back next time, so
+// it has to be the key the rule was found under — the desktop basename is only
+// the fallback for a program that has no rule yet.
+func TestRuleKeyPrefersTheMatchedKey(t *testing.T) {
+	insp := &generate.Inspection{
+		RuleKey:       "xwechat",
+		SourceDesktop: "/usr/share/applications/wechat.desktop",
+	}
+	if got := ruleKeyFor(insp); got != "xwechat" {
+		t.Errorf("ruleKeyFor = %q, want xwechat", got)
+	}
+	bare := &generate.Inspection{SourceDesktop: "/usr/share/applications/wechat.desktop"}
+	if got := ruleKeyFor(bare); got != "wechat" {
+		t.Errorf("ruleKeyFor fallback = %q, want wechat", got)
 	}
 }

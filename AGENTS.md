@@ -77,6 +77,7 @@ internal/
   config/              环境层（config.toml）＋ 应用知识层（rules.d）＋ 内置规则
   generate/            inspect / plan / materialize / unwrap / refresh
     traits.go           从二进制内字符串扫出特征（Wayland/Qt/多合一/嵌套 ns）
+    suggest.go          状态目录探测（目录存在 ＋ 二进制内 ~/ 字面量）＋ rules.d 草稿
     runtime.go          bwrap 私有副本同步 ＋ 跳板脚本
   sandbox/             bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）
   icon/                纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）
@@ -134,6 +135,12 @@ inst → {tomlz}
 ### 加一条内置规则
 `internal/config/config.go` 的 `BuiltinRules()`。内置表刻意很短：**静默猜错一个路径，比开口要
 一个 `--map` 更糟** —— 加之前必须确认这条路径真的实测过。
+
+想让用户不必自己猜路径时，不要往内置表里加：那正是 `internal/generate/suggest.go` 的活儿。
+`SuggestStateDirs` 只报"这台机器上目录真的存在"（事实，`twin new` 每次都打印），
+`SuggestStateDirsDeep` 再叠加二进制里的 `~/…` 字面量（猜测，只有 `twin rules --init` 会读），
+`RuleDraft` 把前者写成生效的 `[[bind]]`、后者全部注释掉。**任何探测结果都不得自动生效** ——
+`--init` 是唯一的出口，因为它是一条显式命令。
 
 ### 加一个 `new` 选项
 三处联动：

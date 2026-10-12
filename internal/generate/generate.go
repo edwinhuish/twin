@@ -77,8 +77,14 @@ type Inspection struct {
 	Presets       []inst.Bind
 	// Rule is the application knowledge that applied to this program, already
 	// merged built-in + rules.d. Its Binds are pre-expanded into Presets.
-	Rule  *config.Rule
-	Notes []string
+	Rule *config.Rule
+	// RuleKey is the name Rule was found under, empty when there is no rule.
+	// The CLI prints it as the file name to write when the user corrects a path
+	// map, so it has to be the key FindRule actually matched: re-deriving it
+	// from the desktop basename could name a different one of the two keys that
+	// RuleKeys tries, and a rule filed under the other name would be shadowed.
+	RuleKey string
+	Notes   []string
 }
 
 // Result lists what was written.
@@ -198,6 +204,7 @@ func Inspect(p inst.Paths, source string) (*Inspection, error) {
 		return nil, err
 	}
 	insp.Rule = rule
+	insp.RuleKey = matched
 	if rule != nil {
 		// The bind list is materialised here rather than in Plan so that
 		// `inspect` can show the same paths a real run would use, while the

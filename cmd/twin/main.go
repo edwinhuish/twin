@@ -326,9 +326,17 @@ func cmdConfig(p inst.Paths) int {
 
 func cmdRules(p inst.Paths, args []string) int {
 	fs := flag.NewFlagSet("rules", flag.ContinueOnError)
+	initDraft := fs.Bool("init", false, "为这个程序探测并写出一份规则草稿（不覆盖已有文件）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return exitUsage
+	}
+	if *initDraft {
+		if len(pos) != 1 {
+			fail("用法：twin rules --init <源桌面项 | 程序名 | id>")
+			return exitUsage
+		}
+		return cmdRulesInit(p, pos[0])
 	}
 	if len(pos) == 1 {
 		key := strings.TrimSuffix(filepath.Base(pos[0]), ".desktop")
@@ -374,6 +382,60 @@ func cmdRules(p inst.Paths, args []string) int {
   canonical = "~/.config/<app>"
   private   = "~/.local/state/twin/{id}/config"
 `)
+	fmt.Printf("\n不想凭空猜路径，就让 twin 先探测一遍再写草稿：\n  twin rules --init <源桌面项|程序名>\n")
+	return exitOK
+}
+
+// cmdRulesInit writes a rules.d draft built from what twin could discover about
+// the program.
+//
+// It is the one place where discovery turns into something with effect, and the
+// thing that makes that acceptable is that the user asked for it by name. twin
+// still never writes a path map on its own initiative: the file lands on disk
+// as a draft, with the guessed entries commented out (设计 §7).
+func cmdRulesInit(p inst.Paths, source string) int {
+	insp, err := generate.Inspect(p, source)
+	if err != nil {
+		fail(err.Error())
+		return exitFail
+	}
+	key := ruleKeyFor(insp)
+	path := filepath.Join(p.RulesDir(), key+".toml")
+	if sysx.Exists(path) {
+		// Overwriting somebody's hand-tuned rule would be the most destructive
+		// thing this command could do, and it is exactly the file they would
+		// have to restore from memory.
+		fail(fmt.Sprintf("%s 已存在 —— 不覆盖。现状：twin rules %s", path, key))
+		return exitFail
+	}
+
+	hints := generate.SuggestStateDirsDeep(p, insp)
+	if err := sysx.WriteFileAtomic(path, []byte(generate.RuleDraft(key, insp.SourceDesktop, hints)), 0o644); err != nil {
+		fail(err.Error())
+		return exitFail
+	}
+
+	live := 0
+	for _, h := range hints {
+		if h.Strong {
+			live++
+		}
+	}
+	fmt.Printf("已写出规则草稿 %s\n", path)
+	switch {
+	case live > 0:
+		fmt.Printf("  %d 条已生效（这台机器上目录真的存在），%d 条只是二进制里的字符串，被注释掉了。\n",
+			live, len(hints)-live)
+		fmt.Printf("  请逐条确认该私有还是共用 —— 草稿里的 private 默认按「私有副本」写。\n")
+	case len(hints) > 0:
+		fmt.Printf("  没有目录存在的证据，%d 条都只是二进制里的字符串 —— 全部被注释掉了。\n", len(hints))
+		fmt.Printf("  请挑出真正的状态目录，填上 private 再取消注释。\n")
+	default:
+		fmt.Printf("  什么都没探测到：这台机器上没有 ~/.config/<程序名> 这类目录，二进制里也没有相关的\n")
+		fmt.Printf("  ~/ 路径字面量。草稿里只有一份形状示例 —— 路径要你自己判断。\n")
+	}
+	fmt.Printf("  验证  twin rules %s\n", key)
+	fmt.Printf("  应用  twin new <source> --as <id> --force\n")
 	return exitOK
 }
 
@@ -659,6 +721,7 @@ func cmdNew(p inst.Paths, args []string) int {
 				tray.Schema+" / "+tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
 		}
 		printDerived(der)
+		printPathMaps(p, it, insp, maps, rw)
 		if plan.Bwrap != "" {
 			fmt.Printf("\nbwrap 调用\n%s\n", plan.String())
 		}
@@ -705,6 +768,7 @@ func cmdNew(p inst.Paths, args []string) int {
 	for _, n := range res.Notes {
 		fmt.Printf("  · %s\n", n)
 	}
+	printPathMaps(p, it, insp, maps, rw)
 
 	fmt.Printf("\n自检\n%s", formatFindings(rep))
 
@@ -1053,6 +1117,159 @@ func printDerived(der []generate.Derivation) {
 	for _, d := range der {
 		fmt.Printf("  %-9s %s   ← %s\n", d.Key, d.Value, d.Source)
 	}
+}
+
+// printPathMaps explains the one part of a wrap that is knowledge about the
+// *program* rather than about its identity: which of the program's own data
+// directories twin redirected, and where they went.
+//
+// It is spelled out because that knowledge is the part most likely to be wrong
+// for a program twin has never seen — and a wrong map is silent until two
+// instances fight over a lock file, or one of them quietly reads the other's
+// profile. The built-in table is deliberately short for the same reason, so the
+// output has to hand the user the exact file to edit rather than trusting them
+// to find it (设计 §7).
+func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, cliMaps []inst.Bind, rw []string) {
+	key := ruleKeyFor(insp)
+	rulePath := filepath.Join(p.RulesDir(), key+".toml")
+
+	fmt.Printf("\n路径映射\n")
+	if len(it.Binds) == 0 {
+		// "twin redirected nothing" is a fact worth stating: it is the normal
+		// case for an unknown program, and the reason two instances of it may
+		// start interfering with each other.
+		fmt.Printf("  没有生效的映射：数据目录与源程序共用（本实例只做身份包裹）。\n")
+		if insp.Rule == nil {
+			fmt.Printf("  ⚠️ 这个程序没有规则。它若有单实例锁或共享配置（Electron / Qt / GTK 系很常见），\n")
+			fmt.Printf("     两个实例会互相干扰 —— 需要隔离时写一条规则。\n")
+		}
+		printStateHints(p, insp, it, key)
+		fmt.Printf("\n  规则文件：%s\n", rulePath)
+		printRuleTemplate(p, it, key, nil)
+		return
+	}
+
+	origin := ""
+	switch {
+	case len(cliMaps) > 0:
+		// --map does not add to the rule's list, it replaces it, and the user
+		// should know that before they wonder why the rule stopped applying.
+		origin = "命令行 --map（已整体替换规则里的映射）"
+	case insp.Rule != nil:
+		origin = orBuiltin(insp.Rule)
+	}
+	if len(rw) > 0 {
+		if origin != "" {
+			origin += " ＋ "
+		}
+		origin += fmt.Sprintf("--rw %s", strings.Join(rw, " --rw "))
+	}
+	if origin == "" {
+		fmt.Printf("  %d 条\n", len(it.Binds))
+	} else {
+		fmt.Printf("  %d 条，来源：%s\n", len(it.Binds), origin)
+	}
+	for _, b := range it.Binds {
+		if b.Canonical == b.Private {
+			fmt.Printf("  共用  %s   （原地升回可写，数据不搬家）\n", b.Canonical)
+			continue
+		}
+		fmt.Printf("  私有  %-38s → %s\n", b.Canonical, b.Private)
+	}
+
+	fmt.Printf("\n  要改（挑一个粒度）：\n")
+	fmt.Printf("    · 影响这个程序以后新建的实例：写 %s，\n", rulePath)
+	fmt.Printf("      再 twin new <source> --as <id> --force 让这一个跟上\n")
+	fmt.Printf("    · 只改这一个实例（不动规则）：编辑 %s 里的 [[map.bind]]，再 twin regen %s\n",
+		p.Config(it.ID), it.ID)
+	fmt.Printf("    · 只改这一次（不落规则）：twin new <source> --as <id> --map '<canonical>:<private>'\n")
+	printStateHints(p, insp, it, key)
+	printRuleTemplate(p, it, key, it.Binds)
+}
+
+// printStateHints lists directories the program is likely to keep state in that
+// twin is *not* redirecting.
+//
+// This is the answer to the question a user asks when a program has no rule:
+// "nothing was mapped — so what should have been?" It is deliberately the
+// weakest evidence in the whole pipeline (a directory that exists, and nothing
+// else), so it is labelled as such and never applied; acting on it is what
+// `twin rules --init` is for.
+func printStateHints(p inst.Paths, insp *generate.Inspection, it *inst.Instance, key string) {
+	const maxHints = 6
+	hints := uncoverHints(generate.SuggestStateDirs(p, insp), it.Binds)
+	if len(hints) == 0 {
+		return
+	}
+	fmt.Printf("\n  这个程序可能的状态目录（**未应用**，仅供参考）\n")
+	for i, h := range hints {
+		if i == maxHints {
+			fmt.Printf("    …还有 %d 个（twin rules --init %s 会全部写上）\n", len(hints)-i, key)
+			break
+		}
+		fmt.Printf("    %-44s %s\n", h.Path, h.Evidence)
+	}
+	fmt.Printf("    要隔离就先生成一份规则草稿：twin rules --init %s\n", key)
+}
+
+// uncoverHints drops what the instance already maps. Proposing "maybe isolate
+// ~/.xwechat" directly under a line saying ~/.xwechat is already isolated would
+// teach the user to stop reading the list.
+func uncoverHints(hints []generate.StateHint, binds []inst.Bind) []generate.StateHint {
+	var out []generate.StateHint
+	for _, h := range hints {
+		covered := false
+		for _, b := range binds {
+			if h.Path == b.Canonical || strings.HasPrefix(h.Path, strings.TrimSuffix(b.Canonical, "/")+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// printRuleTemplate prints a paste-ready rules.d file built from the maps that
+// are actually in effect. "Copy this and change one line" is the whole edit;
+// an empty template would make the user retype paths twin already knows, and
+// retyping is where the typos come from.
+func printRuleTemplate(p inst.Paths, it *inst.Instance, key string, binds []inst.Bind) {
+	fmt.Printf("\n  照抄下面这份（就是规则文件的全部内容）：\n")
+	fmt.Printf("\n    app = %q\n", key)
+	if len(binds) == 0 {
+		fmt.Printf("\n    [[bind]]\n")
+		fmt.Printf("    canonical = %q      # ← 换成这个程序真正的状态目录\n", "~/.config/"+key)
+		fmt.Printf("    private   = \"~/.local/state/twin/{id}/config\"\n")
+	} else {
+		for _, b := range binds {
+			fmt.Printf("\n    [[bind]]\n    canonical = %q\n    private   = %q\n",
+				b.Canonical, dedupStateDir(p, it, b.Private))
+		}
+	}
+	fmt.Printf("\n  private 与 canonical 相同（或整个 private 留空）⇒ 与该目录共用，只把只读升回可写；\n")
+	fmt.Printf("  private 指向别处 ⇒ 私有副本，两个实例互不干扰。\n")
+}
+
+// dedupStateDir rewrites this instance's state directory back to the {id}
+// placeholder. A template that froze "wechat2" into the path would make the
+// pasted rule serve exactly one instance — the opposite of what a rules.d file
+// is for (设计 §3.3), and the same reason instance.toml stores `~` paths.
+func dedupStateDir(p inst.Paths, it *inst.Instance, s string) string {
+	return strings.ReplaceAll(s, p.RelStateDir(it.ID), "~/.local/state/twin/{id}")
+}
+
+// ruleKeyFor names the rules.d file the user would write to correct this
+// program's knowledge. It prefers the key a rule was actually found under, and
+// otherwise falls back to the desktop entry's basename — the name a person
+// calls the program, and the first name RuleKeys tries.
+func ruleKeyFor(insp *generate.Inspection) string {
+	if insp.RuleKey != "" {
+		return insp.RuleKey
+	}
+	return strings.TrimSuffix(filepath.Base(insp.SourceDesktop), ".desktop")
 }
 
 // indent prefixes every line of a file body, for printing it under a heading.
