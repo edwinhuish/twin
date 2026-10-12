@@ -16,10 +16,35 @@
   状态行统一用 `✅ / ⚠️ / ❌ / ➖`，与颜色表达同一件事，纯文本里也不丢信息。
 - **`twin new --explain`**：展开完整说明（推导出的默认值、`路径映射` 的三种修改粒度、
   照抄即可的 `rules.d` 模板、手工验证命令）。`--dry-run` 同样展开。
+- **两段式 wrap：`twin new` 配置、`twin new --publish` 安装。** `twin new wechat` 只写
+  `~/.local/share/twin/wechat2/instance.toml`，并打印快照路径、"要改哪几个键"和下一步命令；
+  改完再 `twin new wechat --publish` 落盘（桌面项 / 图标 / 启动器 / 宿主托盘 ＋ 自检）。
+  没有待落盘的配置时 `--publish` 就是一次完整生成，选项与 `--` 透传区照常生效。
+- `generate.SnapshotsFor` / `WriteSnapshot` / `CheckInstall`：两半按**解析后的源桌面项路径**相认，
+  不重新推导 id —— 快照一写出来那个 id 就被占用了，重新推导只会悄悄挪到 `wechat3`。
 
 ### Changed
 
-- **`twin new` 的默认输出精简为一屏**：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步。推导值、规则
+- **`twin new` 默认不再安装任何东西**（行为变更）：它现在只写一份配置。要以前那样一步到位，
+  用 `twin new wechat --publish`（或在没有待落盘配置时直接补 `--publish`）。
+- `twin regen` 与 `twin new --publish` 合并到**同一条安装路径**，所以不会出现"publish 会做、
+  regen 不做"的差别。
+- 有一份待落盘的配置时，`--name` / `--comment` / `--keywords` / `--categories` / `--icon` /
+  `--badge` / `--level` / `--map` / `--rw` / `--tmpfs` / `--no-tmpfs` / `--no-tray` 与 `--`
+  透传区会被**拒绝**（退出码 2）：那份快照才是真源。同样地，待落盘的配置不止一份时要求 `--as`
+  指名，拒绝猜。
+- `twin list` 用 `← 未落盘` 标注配置已写、还没安装的实例，并在表尾给出收尾命令；
+  `twin verify` 对未落盘实例只报这一件事（附收尾命令，退出码 `1`），不再连锁失败。
+- `路径映射` 的"改它"提示改成两条明确的路：`rules.d` 管以后新建的实例，实例快照管这一个。
+
+### Fixed
+
+- `inst.List` 不再把 `~/.local/share/twin/bin/` 当成一个坏掉的实例 —— 只要这台机器包过
+  Chromium 系程序（`bin/` 里是共享的 bwrap 副本与跳板脚本，没有 `instance.toml`），
+  `twin list` 就会整个失败。没有快照的空目录一并跳过。
+- README 里 `launch` 示例行末尾残留的一段无关文本。
+
+- **安装阶段的默认输出精简为一屏**：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步。推导值、规则
   模板、手工验证步骤移入 `--explain`（它们本来就在 `instance.toml` 里，或一条命令可达）。
   `路径映射` 的默认形态也压到"几条 / 来源 / 每条指向哪 / 改哪个文件"。
 - `twin list` / `twin remove` / `twin doctor` / `twin verify` / `twin inspect` 的输出统一带上
@@ -48,6 +73,8 @@
   `config` / `version`。
 - 三层配置：CLI > `instance.toml`（实例快照）> `rules.d/<app>.toml`（应用知识）>
   `config.toml`（本机环境）> 内置默认。
+- 两段式 wrap：`twin new` 写配置（`instance.toml`）、`twin new --publish` 安装；没有待落盘的配置
+  时 `--publish` 就是一次完整生成。
 - `/tmp` 策略、路径映射（`--map` / `--rw` / `--tmpfs`）、bwrap 透传区（lint 而非改写）。
 - 纯 Go 图标管线（PNG/JPEG 解码、缩放、角标蒙版、5×7 点阵字体）；SVG 走外部工具三级降级。
 - 宿主托盘覆盖表（`custom-icons`）的 read-modify-write ＋ 回读。

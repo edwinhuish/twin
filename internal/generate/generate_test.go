@@ -19,6 +19,127 @@ func clearLocale(t *testing.T, lang string) {
 	t.Setenv("LANG", lang)
 }
 
+// WriteSnapshot is the whole of the configuring half: one file, and the same
+// bytes a one-step wrap would have written. Anything else on disk at that point
+// would be an install the user has not asked for yet.
+func TestWriteSnapshotWritesOnlyTheConfig(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	it, _, err := Plan(p, Options{}, wechatInspection())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := WriteSnapshot(p, it)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != p.Config(it.ID) {
+		t.Errorf("path = %q，期望 %q", path, p.Config(it.ID))
+	}
+	for _, f := range []string{p.Desktop(it.ID), p.Icon(it.ID), p.Launch(it.ID), p.StateDir(it.ID)} {
+		if sysx.Exists(f) {
+			t.Errorf("配置阶段不该写出 %s", f)
+		}
+	}
+	body, err := it.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Errorf("快照内容与 Render 不一致：\n%s", got)
+	}
+}
+
+// The two halves find each other by *resolved* source path, so the same
+// instance answers to `twin new wechat` and to a path spelled out in full —
+// and a snapshot from another program is never a candidate.
+func TestSnapshotsForMatchesBySource(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	mk := func(id, source string, desktop bool) {
+		t.Helper()
+		if err := os.MkdirAll(p.InstanceDir(id), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		it := &inst.Instance{ID: id, Source: source, Target: "/opt/wechat/wechat", Level: inst.LevelAlias}
+		body, err := it.Render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sysx.WriteFileAtomic(p.Config(id), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if desktop {
+			if err := sysx.WriteFileAtomic(p.Desktop(id), []byte("[Desktop Entry]\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	mk("wechat2", "/usr/share/applications/wechat.desktop", true)
+	mk("wechat3", "/usr/share/applications/wechat.desktop", false)
+	mk("other2", "/usr/share/applications/other.desktop", false)
+
+	got, err := SnapshotsFor(p, "/usr/share/applications/wechat.desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("拿到 %d 份快照，期望 2：%+v", len(got), got)
+	}
+	byID := map[string]bool{}
+	for _, s := range got {
+		byID[s.Instance.ID] = s.Published
+	}
+	if !byID["wechat2"] {
+		t.Error("wechat2 有桌面项，应当算已落盘")
+	}
+	if byID["wechat3"] {
+		t.Error("wechat3 没有桌面项，应当算未落盘")
+	}
+}
+
+// The install half may overwrite its own desktop entry (that is what a
+// republish is) but never somebody else's. Ownership is read back out of the
+// file, not inferred from the snapshot that happens to exist next to it.
+func TestCheckInstallTellsOursFromTheirs(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	foreign := filepath.Join("/usr/share/applications", "demo.desktop")
+	if sysx.Exists(foreign) {
+		t.Skipf("这台机器上真的有 %s，无法用它当「别人的桌面项」", foreign)
+	}
+
+	write := func(exec string) {
+		t.Helper()
+		body := "[Desktop Entry]\nType=Application\nName=Demo\nExec=" + exec + "\n"
+		if err := sysx.WriteFileAtomic(p.Desktop("demo"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("/usr/bin/other %U")
+	if err := CheckInstall(p, "demo", false); err == nil {
+		t.Error("别人的桌面项必须被拒绝，除非 --force")
+	}
+	if err := CheckInstall(p, "demo", true); err != nil {
+		t.Errorf("--force 应当放行：%v", err)
+	}
+
+	write(p.Launch("demo") + " %U")
+	if err := CheckInstall(p, "demo", false); err != nil {
+		t.Errorf("我们自己的桌面项应当可以重新落盘：%v", err)
+	}
+
+	// A file that does not parse is not evidence of ownership either.
+	if err := os.WriteFile(p.Desktop("demo"), []byte("not a desktop entry\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckInstall(p, "demo", false); err == nil {
+		t.Error("解析不了的桌面项不能当成自己的")
+	}
+}
+
 // Unwrap is the only destructive thing twin does, and its contract is narrow on
 // purpose: our own files go, the program's private data survives unless asked
 // for, and no other instance is touched. Every one of those is a way to lose

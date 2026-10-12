@@ -133,10 +133,16 @@ style → {}    ← 只有标准库
 8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
    stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
    （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
-9. **默认输出是给人读的，不是给人查的。** 一次 `twin new` 打印产物、路径映射、自检、下一步四段；
-   其余细节（推导值、规则模板、手工验证命令）走 `--explain` 或本来就在 `instance.toml` 里。
-   加新输出前先问：这条不进精简版会不会让人做错事？会，才是默认；不会，就放进 `--explain`。
-10. **`gofmt` 是硬门**，`-l` 必须为空。
+9. **默认输出是给人读的，不是给人查的。** 一次 `twin new --publish` 打印产物、路径映射、自检、
+   下一步四段；其余细节（推导值、规则模板、手工验证命令）走 `--explain` 或本来就在
+   `instance.toml` 里。加新输出前先问：这条不进精简版会不会让人做错事？会，才是默认；不会，
+   就放进 `--explain`。
+10. **一条命令只做一件事，安装是显式的。** `twin new` 默认**只写 `instance.toml`**，`--publish`
+    才安装。理由见 §5"加一个 `new` 选项"：一次 wrap 里唯一随程序而变、又猜错了不出声的东西是
+    路径映射，它该先落成一份能读能改的文件。
+11. **快照一旦存在，它就是真源。** 安装半段（`--publish` / `regen`）只重放快照，不再从 CLI 重新
+    推导；用户带着"描述实例的选项"来落盘一份已有快照时必须**拒绝**（退出码 2），不能静默二选一。
+12. **`gofmt` 是硬门**，`-l` 必须为空。
 
 ## 5. 常见任务怎么做
 
@@ -151,10 +157,23 @@ style → {}    ← 只有标准库
 `--init` 是唯一的出口，因为它是一条显式命令。
 
 ### 加一个 `new` 选项
-三处联动：
+四处联动：
 1. `cmd/twin/main.go` 的 `cmdNew`：加 flag，放进 `generate.Options`；
-2. `internal/generate/generate.go` 的 `Options` 与 `Plan`：决定优先级与默认值来源；
-3. 会进快照的字段还要动 `internal/inst` 的 `toTree` / `Load`，并补一个往返测试。
+2. **决定它属于哪一类**：`derivationFlags`（描述实例，会进快照）还是描述这次动作（`--as` /
+   `--force` / `--dry-run` / `--explain`）。前者在一份已存在的快照面前必须被拒绝 ——
+   加进那张表就是加进这条规则；
+3. `internal/generate/generate.go` 的 `Options` 与 `Plan`：决定优先级与默认值来源；
+4. 会进快照的字段还要动 `internal/inst` 的 `toTree` / `Load`，并补一个往返测试。
+
+### 两段式（`twin new` / `--publish`）
+- 前半段只有 `generate.WriteSnapshot` 一个写点，**没有第二个渲染器**：快照与一步到位写出来的是
+  同一份字节（`Render` 共用）。`--dry-run` 也必须由 `Materialize` 用的那套代码渲染。
+- 前后两半靠 `generate.SnapshotsFor` 按**解析后的源桌面项路径**相认，绝不重新推导 id：快照一写
+  出来那个 id 就被占用了，重新推导只会悄悄挪到 `wechat3`。
+- "待落盘" = 快照在、桌面项不在（`Snapshot.Published` 的反面）。它是正常中间态，不是缺文件：
+  `twin list` 标 `← 未落盘`，`twin verify` 只报这一件事并给收尾命令，`twin remove` 照删。
+- 安装半段只有一条路（`installAndCheck`），`--publish` 与 `regen` 共用；给它们写第二份实现
+  就是给"publish 会做、regen 不做"留机会。
 
 ### 加一个自检项
 `internal/verify/verify.go` 的 `Run()` 里 `add(name, status, detail, fix)`。若这一项**只能由人

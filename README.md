@@ -51,15 +51,27 @@ twin doctor
 # 1. 只看不写：这个程序会被包成什么样
 twin inspect wechat
 
-# 2. 预演：把将要写下的每个文件、每行桌面项、bwrap 调用全打印出来
-twin new wechat --dry-run
-
-# 3. 生成
+# 2. 只写配置：告诉你路径映射是什么、改哪个文件、下一步敲什么
 twin new wechat
 
-# 4. 从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
+# 3. 看一眼（可选）：路径映射是最容易猜错的一条，改完再往下走
+$EDITOR ~/.local/share/twin/wechat2/instance.toml
+
+# 4. 落盘 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
+twin new wechat --publish
 twin verify wechat2
 ```
+
+只想一步到位（默认值就够用，或者你本来就想把选项一次写全）：
+
+```bash
+twin new wechat --publish
+twin new wechat --publish --as wx-work --name "微信·工作" -- --unshare-pid
+```
+
+**为什么是两步**：一次 wrap 里唯一随程序而变、又猜错了不出声的，是"隔离哪些数据目录"。所以先把它
+落成一份能读能改的 `instance.toml`，再安装 —— 而不是先装好、再在一屏输出里让你事后发现映射是错的。
+`--publish` 不会重新猜 id：配置一旦写出来，那个 id 就被占用了，重新推导只会悄悄变成 `wechat3`。
 
 生成后你会发现多了这些东西：
 
@@ -67,18 +79,19 @@ twin verify wechat2
 ~/.local/share/applications/wechat2.desktop     ← 身份锚点
 ~/.local/share/appicons/wechat2.png             ← 带角标的图标
 ~/.local/share/twin/wechat2/launch           ← 薄启动器（bash，exec bwrap）
-~/.local/share/twin/wechat2/instance.toml    ← 真源文件，手改这个然后 regen
+~/.local/share/twin/wechat2/instance.toml    ← 真源文件，手改这个然后 --publish / regen
 ~/.local/state/twin/wechat2/                 ← 这个实例的私有数据目录
 ```
 
 **为什么必须重启实例**：桌面项是**后写的**，而 GNOME 不会给一个**已经存在**的窗口重算
 归属。生成完之后要**完全退出**再从这个新桌面项启动一次，才会看到新的图标与名字。
 
-**数据目录也值得看一眼**：`twin new` 结束时会打印一节 `路径映射`，说明这次重定向了哪些目录、
-这份知识从哪来（内置规则 / `rules.d` / `--map`），以及**改它该编辑哪个文件**。不同程序的
-数据目录完全不同，而隔离错一个目录要等到两个实例抢同一个锁文件才暴露。改完规则重跑
-`twin new … --force` 即可让新实例跟上；只想改某一个实例，就编辑它的 `instance.toml` 再
-`twin regen`。要一份照抄即可的规则模板、看到推导出的每个默认值，加 `--explain`。
+**数据目录也值得看一眼**：`twin new` 一结束就打印一节 `路径映射`，说明这次重定向了哪些目录、
+这份知识从哪来（内置规则 / `rules.d` / `--map` / 实例快照），以及**改它该编辑哪个文件** ——
+两条路是分开的：`rules.d` 管这个程序**以后新建**的实例，快照管**这一个**。不同程序的数据目录
+完全不同，而隔离错一个目录要等到两个实例抢同一个锁文件才暴露。改完快照重放：`twin regen <id>`
+（与 `--publish` 走同一条安装路径）。要一份照抄即可的规则模板、看到推导出的每个默认值，
+加 `--explain`。
 
 **输出默认是精简的**：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步，一屏能看完；其余细节都要
 `--explain`（或 `--dry-run`）才展开。颜色只在终端上出现 —— 重定向、管道、`TERM=dumb` 一律
@@ -92,15 +105,20 @@ twin verify wechat2
 ## 原理速览
 
 ```
-twin new wechat
+twin new wechat                  ← 前半段：只配置
       │
       ├─ 1. 解析源桌面项 → 找到真实程序 /opt/wechat/wechat、图标、语言化的 Name/Keywords
       ├─ 2. 推导默认值   → id=wechat2  name=微信2  badge=2  keywords=微信;wechat;
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
-      ├─ 4. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板（见下）
-      ├─ 5. 落盘 4~6 件产物（幂等）
-      ├─ 6. 写宿主托盘覆盖表（把自己那行指到本实例图标；热重载，立刻生效）
-      └─ 7. 自检身份链路（target/别名/桌面项/图标/启动器/规则/嵌套 ns）
+      ├─ 4. 从内置规则 / rules.d / --map 算出路径映射
+      └─ 5. 写出 instance.toml（唯一一个文件），并打印"改哪个文件、下一步敲什么"
+
+twin new wechat --publish        ← 后半段：按快照安装（regen 也走这条路）
+      │
+      ├─ 6. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板（见下）
+      ├─ 7. 落盘 4~6 件产物（幂等）
+      ├─ 8. 写宿主托盘覆盖表（把自己那行指到本实例图标；热重载，立刻生效）
+      └─ 9. 自检身份链路（target/别名/桌面项/图标/启动器/规则/嵌套 ns）
 ```
 
 `launch` 最终长这样（`level=alias`，无嵌套 ns 需求时）：
@@ -110,7 +128,7 @@ twin new wechat
 set -euo pipefail
 : "${HOME:?twin: HOME 未设置，拒绝启动}"
 readonly ID='wechat2'
-readonly STATE="$HOME/.local/state/twin/wechat2"`〔反查：拆分|笔画〕
+readonly STATE="$HOME/.local/state/twin/wechat2"
 
 mkdir -p "$HOME/.local/state/twin/wechat2" \
          "$HOME/.local/state/twin/wechat2/xwechat" \
@@ -175,7 +193,8 @@ Electron 程序（通常是 VS Code），让内核在 exec 时**替换**掉 AppA
 
 | 命令 | 作用 |
 |---|---|
-| `twin new <source> [选项]` | **最常用**：生成一个实例；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin new <source> [选项]` | **最常用**：写出一份实例配置（`instance.toml`）；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin new <source> --publish` | 按那份配置落盘：桌面项 / 图标 / 启动器 / 托盘 ＋ 自检。没有待落盘的配置时就是一次完整生成 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
 | `twin verify <id>` | 自检一个实例的身份链路 |
 | `twin regen <id> [--refresh]` | 改了 `instance.toml` 后重新落盘 |

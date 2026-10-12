@@ -664,6 +664,66 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 	return res, nil
 }
 
+// WriteSnapshot writes only instance.toml — the first half of a two-phase wrap.
+//
+// It shares Render with Materialize, so the file the user is invited to edit is
+// byte for byte the one a one-step wrap would have written: two renderers would
+// be two chances to disagree. Nothing else is touched, and that is the point of
+// the split — until `--publish`, the only thing on disk is a file meant to be
+// edited.
+func WriteSnapshot(p inst.Paths, it *inst.Instance) (string, error) {
+	body, err := it.Render()
+	if err != nil {
+		return "", err
+	}
+	path := p.Config(it.ID)
+	if err := sysx.WriteFileAtomic(path, body, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// Snapshot is one instance.toml found by scanning, plus the one piece of state
+// a two-phase wrap needs in order to interpret it.
+type Snapshot struct {
+	Instance *inst.Instance
+	// Path is the snapshot file itself.
+	Path string
+	// Published says the desktop entry is on disk, so this instance is live.
+	// A snapshot without one is a configuration somebody wrote and has not
+	// installed yet — the normal middle of a two-phase wrap, which is why the
+	// state has a name instead of being reported as a missing file.
+	Published bool
+}
+
+// SnapshotsFor returns every instance configured from this source desktop entry.
+//
+// The two halves of `twin new` use it to agree on which instance they mean
+// without re-deriving the id: once phase one has written the snapshot, that id
+// is taken (freeID checks for exactly that), so a re-derivation would quietly
+// move on to wechat3 and install something nobody asked for. Matching on the
+// *resolved* source path is what makes `twin new wechat`, `twin new wechat
+// --publish` and `twin new /usr/share/applications/wechat.desktop --publish`
+// all mean the same instance.
+func SnapshotsFor(p inst.Paths, sourceDesktop string) ([]Snapshot, error) {
+	all, err := inst.List(p)
+	if err != nil {
+		return nil, err
+	}
+	var out []Snapshot
+	for _, it := range all {
+		if it.Source != sourceDesktop {
+			continue
+		}
+		out = append(out, Snapshot{
+			Instance:  it,
+			Path:      p.Config(it.ID),
+			Published: sysx.Exists(p.Desktop(it.ID)),
+		})
+	}
+	return out, nil
+}
+
 // Keywords resolves the search keywords a new instance should carry.
 //
 // The chain is explicit > inherited > synthesised:
@@ -849,9 +909,44 @@ func CheckCollision(p inst.Paths, id string, force bool) error {
 		}
 	}
 	if sysx.Exists(p.Config(id)) {
-		return fmt.Errorf("%s/%s 已存在但桌面项不在，建议先 unwrap", p.InstanceDir(id), "instance.toml")
+		return fmt.Errorf("%s 已存在、桌面项却不在：这是一份写好但还没落盘的配置 —— "+
+			"落盘用 twin new <source> --as %s --publish；要按新参数重写它，先 twin remove %s",
+			p.Config(id), id, id)
 	}
 	return nil
+}
+
+// CheckInstall guards the publish half of a two-phase wrap.
+//
+// The snapshot is already ours by construction, so the only thing that can be
+// occupied is the desktop entry: ours from an earlier publish (republishing is
+// the point) or somebody else's. Ownership is read back out of the file rather
+// than assumed from the snapshot's existence — the desktop entry is the
+// identity anchor, and guessing wrong here silently shadows another program.
+func CheckInstall(p inst.Paths, id string, force bool) error {
+	if force {
+		return nil
+	}
+	if d := p.Desktop(id); sysx.Exists(d) && !desktopIsOurs(p, id, d) {
+		return fmt.Errorf("%s 已存在，但不是 twin 生成的 —— 加 --force 才会覆盖", d)
+	}
+	for _, dir := range []string{"/usr/share/applications", "/usr/local/share/applications"} {
+		if cand := filepath.Join(dir, id+".desktop"); sysx.Exists(cand) {
+			return fmt.Errorf("系统的 %s 已占用这个 id —— 换一个 --as，或用 --force 让本实例遮蔽它", cand)
+		}
+	}
+	return nil
+}
+
+// desktopIsOurs asks whether a desktop entry launches this instance. The Exec
+// line naming our own launcher is the evidence; a third party's entry, a
+// hand-written one, or a file that does not parse is not ours to overwrite.
+func desktopIsOurs(p inst.Paths, id, path string) bool {
+	e, err := desk.Parse(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(e.Exec, p.Launch(id))
 }
 
 // Unwrap removes everything twin generated for an id.
