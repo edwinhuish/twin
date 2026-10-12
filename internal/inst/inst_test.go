@@ -34,6 +34,43 @@ func base() *Instance {
 	}
 }
 
+// List must report instances, not everything that happens to live under
+// ~/.local/share/twin. `bin/` holds the shared bwrap copy and bootstrap script
+// (Paths.BinDir), so a Chromium wrap puts a directory there — and treating it
+// as an instance with a missing snapshot broke `twin list` on any machine that
+// had ever wrapped one.
+func TestListSkipsDirectoriesThatAreNotInstances(t *testing.T) {
+	p := Paths{Home: t.TempDir()}
+	data, err := base().Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p.BinDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.BwrapCopy(), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A directory someone half-created: no snapshot, nothing to report.
+	if err := os.MkdirAll(p.InstanceDir("halfmade"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p.InstanceDir("wechat2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Config("wechat2"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := List(p)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "wechat2" {
+		t.Errorf("List = %+v，期望只有 wechat2", got)
+	}
+}
+
 func TestRenderLoadRoundTrip(t *testing.T) {
 	in := base()
 	data, err := in.Render()

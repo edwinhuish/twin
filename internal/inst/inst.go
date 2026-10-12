@@ -547,7 +547,17 @@ func List(p Paths) ([]*Instance, error) {
 		if !e.IsDir() {
 			continue
 		}
-		it, err := Load(p.Config(e.Name()))
+		// Not every directory here is an instance. `bin/` holds the shared
+		// bwrap copy and bootstrap script (see Paths.BinDir), and a directory
+		// without a snapshot is not an instance either — a half-written one
+		// has nothing to load and nothing to say. Treating them as broken
+		// instances made `twin list` fail on every machine that had ever
+		// wrapped a Chromium program.
+		path := p.Config(e.Name())
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		it, err := Load(path)
 		if err != nil {
 			return nil, err
 		}
