@@ -14,6 +14,7 @@ import (
 
 	"github.com/edwinhuish/twin/internal/inst"
 	"github.com/edwinhuish/twin/internal/sandbox"
+	"github.com/edwinhuish/twin/internal/style"
 	"github.com/edwinhuish/twin/internal/sysx"
 	"github.com/edwinhuish/twin/internal/tray"
 	"github.com/edwinhuish/twin/internal/userns"
@@ -367,13 +368,17 @@ func firstLine(s string) string {
 }
 
 // Format renders the report for a terminal.
-func (r *Report) Format() string {
+//
+// The style is handed in rather than resolved here: whether colour is allowed
+// is a property of the stream the caller is about to write to, and only the
+// caller knows which stream that is.
+func (r *Report) Format(st style.Style) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-6s %-28s %s\n", "状态", "检查项", "详情")
+	fmt.Fprintf(&b, "   %-28s %s\n", "检查项", "详情")
 	for _, c := range r.Checks {
-		fmt.Fprintf(&b, "%-6s %-28s %s\n", c.Kind, c.Name, c.Detail)
+		fmt.Fprintf(&b, "%s %-28s %s\n", st.Mark(levelOf(c.Kind)), c.Name, c.Detail)
 		if c.Fix != "" {
-			fmt.Fprintf(&b, "       %-28s → %s\n", "", c.Fix)
+			fmt.Fprintf(&b, "   %-28s → %s\n", "", c.Fix)
 		}
 	}
 	var ok, warn, fail, skip int
@@ -389,8 +394,34 @@ func (r *Report) Format() string {
 			skip++
 		}
 	}
-	fmt.Fprintf(&b, "\n%d 通过 / %d 警告 / %d 失败 / %d 跳过\n", ok, warn, fail, skip)
+	// Counts are coloured only when non-zero: painting "0 失败" red would train
+	// the reader to ignore the colour.
+	fmt.Fprintf(&b, "\n%s / %s / %s / %s\n",
+		count(st.Green, ok, "通过"), count(st.Yellow, warn, "警告"),
+		count(st.Red, fail, "失败"), count(st.Dim, skip, "跳过"))
 	return b.String()
+}
+
+// levelOf maps this package's Kind onto the shared verdict vocabulary, so the
+// table's glyphs match the ones `twin new` prints.
+func levelOf(k Kind) style.Level {
+	switch k {
+	case KindOK:
+		return style.LevelOK
+	case KindWarn:
+		return style.LevelWarn
+	case KindFail:
+		return style.LevelFail
+	default:
+		return style.LevelSkip
+	}
+}
+
+func count(paint func(string) string, n int, label string) string {
+	if n == 0 {
+		return fmt.Sprintf("%d %s", n, label)
+	}
+	return paint(fmt.Sprintf("%d %s", n, label))
 }
 
 // NextSteps is the closing advice: what to actually type next.

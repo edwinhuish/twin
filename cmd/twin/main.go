@@ -20,6 +20,7 @@ import (
 	"github.com/edwinhuish/twin/internal/generate"
 	"github.com/edwinhuish/twin/internal/inst"
 	"github.com/edwinhuish/twin/internal/sandbox"
+	"github.com/edwinhuish/twin/internal/style"
 	"github.com/edwinhuish/twin/internal/sysx"
 	"github.com/edwinhuish/twin/internal/tray"
 	"github.com/edwinhuish/twin/internal/userns"
@@ -37,6 +38,20 @@ const (
 	exitUsage = 2
 	exitHuman = 3
 )
+
+// Colour is decided per stream, and decided here rather than at each print
+// site: `twin new wechat > log` must leave the log plain while the warnings
+// still land in colour on the terminal (see internal/style).
+var (
+	outStyle = style.For(os.Stdout)
+	errStyle = style.For(os.Stderr)
+)
+
+// title renders a section title: bold, with the emoji kept at the call site so
+// the shape of the output stays readable from the source. Titles and verdicts
+// are the only things that get colour, so a scan down the left edge is enough
+// to get through a long wrap report.
+func title(t string) string { return outStyle.Bold(t) }
 
 // loadConfig reads the environment layer, turning a malformed file into a
 // usage error. Silently falling back to the built-in defaults would make a
@@ -74,7 +89,7 @@ func printManual(rep *verify.Report) {
 	if len(lines) == 0 {
 		return
 	}
-	fmt.Printf("\n还差一步（必须由真实图形会话执行，脚本里写不了 —— 这就是退出码 %d 的含义）\n", exitHuman)
+	fmt.Printf("\n%s\n", title(fmt.Sprintf("✋ 还差一步（必须由真实图形会话执行，脚本里写不了 —— 这就是退出码 %d 的含义）", exitHuman)))
 	for i, l := range lines {
 		fmt.Printf("  %d. %s\n", i+1, l)
 	}
@@ -113,6 +128,11 @@ const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 /
     （那张表只能经会话总线写入）；② 本机限制非特权 userns 而找不到 Electron 跳板 ——
     那时会打印一份 AppArmor profile 全文，给你 sudo apparmor_parser -r 装上。
 
+颜色:
+  stdout 与 stderr 各自判断：只在终端上着色，重定向 / 管道 / TERM=dumb 一律纯文本。
+  NO_COLOR 强制关掉；CLICOLOR_FORCE=1 强制打开（管道给会渲染转义的 pager 时用）。
+  字形（✅ ⚠️ ❌ ➖）与颜色表达同一件事，所以纯文本里也不丢信息。
+
 托盘图标:
   twin 生成时**自己**把宿主的托盘图标覆盖表（org.gnome.shell.extensions.appindicator
   的 custom-icons，按 SNI Id 匹配）指向本实例的图标，该表热重载、立刻生效、不用重登。
@@ -144,6 +164,8 @@ new 选项:
   --no-tmpfs             完全不要 tmpfs（X11 程序必须如此）
   --no-tray              不写宿主托盘覆盖表（这个实例的托盘图标保持程序自己的）
   --force                覆盖已存在但不是 twin 生成的桌面项
+  --explain              连推导出的默认值、规则模板、手工验证步骤一起打印
+                         （默认只打印路径、路径映射、自检与下一步）
   --dry-run              只打印将要写什么
 
   -- <bwrap 选项…>       第一个 -- 之后的 token **原样**透传给 bwrap，拼在基座之后、程序之前：
@@ -283,15 +305,15 @@ func splitPassthrough(args []string) (head, tail []string, err error) {
 
 func cmdDoctor(p inst.Paths) int {
 	rep := doctor.Run(p)
-	fmt.Print(rep.Format())
+	fmt.Print(rep.Format(outStyle))
 	if steps := rep.NextSteps(); len(steps) > 0 {
-		fmt.Printf("\n下一步\n")
+		fmt.Printf("\n%s\n", title("👉 下一步"))
 		for i, s := range steps {
 			fmt.Printf("  %d. %s\n", i+1, s)
 		}
 	}
 	cfgPath := p.GlobalConfig()
-	fmt.Printf("\n配置层\n")
+	fmt.Printf("\n%s\n", title("⚙️ 配置层"))
 	if cfg, err := config.Load(p); err != nil {
 		fmt.Printf("  %s：读不了 —— %v\n", cfgPath, err)
 	} else if cfg.Exists {
@@ -346,7 +368,8 @@ func cmdRules(p inst.Paths, args []string) int {
 			return exitUsage
 		}
 		if rule == nil {
-			fmt.Printf("没有 %q 的规则（%s 下也没有同名文件）\n", key, p.RulesDir())
+			fmt.Printf("%s 没有 %q 的规则（%s 下也没有同名文件）\n",
+				outStyle.Mark(style.LevelSkip), key, p.RulesDir())
 			return exitOK
 		}
 		fmt.Printf("规则 %s\n  来源   %s\n", matched, orBuiltin(rule))
@@ -421,7 +444,7 @@ func cmdRulesInit(p inst.Paths, source string) int {
 			live++
 		}
 	}
-	fmt.Printf("已写出规则草稿 %s\n", path)
+	fmt.Printf("%s %s\n", outStyle.Green("✅ 已写出规则草稿"), path)
 	switch {
 	case live > 0:
 		fmt.Printf("  %d 条已生效（这台机器上目录真的存在），%d 条只是二进制里的字符串，被注释掉了。\n",
@@ -525,7 +548,7 @@ func cmdInspect(p inst.Paths, args []string) int {
 	}
 
 	t := insp.Traits
-	fmt.Printf("\n工具箱探测（按二进制内字符串）\n")
+	fmt.Printf("\n%s\n", title("🔧 工具箱探测（按二进制内字符串）"))
 	fmt.Printf("  Wayland 支持  %s\n", yn(t.Wayland))
 	fmt.Printf("  X11 支持      %s\n", yn(t.X11))
 	fmt.Printf("  Qt            %s\n", yn(t.Qt))
@@ -533,21 +556,22 @@ func cmdInspect(p inst.Paths, args []string) int {
 	fmt.Printf("  多合一二进制  %s\n", yn(t.MultiCall))
 	switch {
 	case insp.Rule != nil && len(insp.Rule.Tmpfs) > 0:
-		fmt.Printf("\n/tmp 策略：%s（来自应用规则 %s）\n",
+		fmt.Printf("\n📂 /tmp 策略：%s（来自应用规则 %s）\n",
 			strings.Join(insp.Rule.Tmpfs, " "), orBuiltin(insp.Rule))
 	case t.Wayland && t.X11:
-		fmt.Printf("\n/tmp 策略：可用 --tmpfs /tmp —— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
-		fmt.Printf("  ⚠️ 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X。\n")
+		fmt.Printf("\n📂 /tmp 策略：可用 --tmpfs /tmp —— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
+		fmt.Printf("  %s 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X。\n",
+			outStyle.Yellow("⚠️"))
 	case t.Wayland && cfg.Defaults.TmpfsUnlessX11:
-		fmt.Printf("\n/tmp 策略：可用 --tmpfs /tmp（该程序走 Wayland）\n")
+		fmt.Printf("\n📂 /tmp 策略：可用 --tmpfs /tmp（该程序走 Wayland）\n")
 	case t.Wayland:
-		fmt.Printf("\n/tmp 策略：不加 --tmpfs /tmp（config.toml 关掉了 tmpfs_unless_x11）\n")
+		fmt.Printf("\n📂 /tmp 策略：不加 --tmpfs /tmp（config.toml 关掉了 tmpfs_unless_x11）\n")
 	default:
-		fmt.Printf("\n/tmp 策略：**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）\n")
+		fmt.Printf("\n📂 /tmp 策略：%s\n", outStyle.Red("**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）"))
 	}
 
 	if len(insp.Notes) > 0 {
-		fmt.Printf("\n备注\n")
+		fmt.Printf("\n%s\n", title("📝 备注"))
 		for _, n := range insp.Notes {
 			fmt.Printf("  · %s\n", n)
 		}
@@ -592,6 +616,7 @@ func cmdNew(p inst.Paths, args []string) int {
 		level      = fs.String("level", "", "身份级别（留空则 config.toml → rules.d → alias）")
 		force      = fs.Bool("force", false, "覆盖非 twin 生成的产物")
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘")
+		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、规则模板、手工验证步骤）")
 		noTmpfs    = fs.Bool("no-tmpfs", false, "不要 tmpfs")
 		noTray     = fs.Bool("no-tray", false, "不要把托盘图标覆盖表指向本实例")
 	)
@@ -695,8 +720,16 @@ func cmdNew(p inst.Paths, args []string) int {
 		return exitFail
 	}
 
+	// A real run prints the short form: the paths, the mappings that are the one
+	// piece of programming knowledge a wrap can get wrong silently, the
+	// self-check, and the one thing the user still has to do. Everything else
+	// twin knows is either already on disk (instance.toml) or one command away
+	// (`twin rules --init`, `twin verify`), so printing it here only buries the
+	// lines that matter. --explain, and any --dry-run, prints the long form.
+	verbose := *dryRun || *explain
+
 	if *dryRun {
-		fmt.Printf("预演（--dry-run，未写盘）\n\n产物\n")
+		fmt.Printf("%s\n\n%s\n", title("🔍 预演（--dry-run，未写盘）"), title("📦 产物"))
 		fmt.Printf("  桌面项   %s\n", p.Desktop(it.ID))
 		fmt.Printf("  图标     %s\n", p.Icon(it.ID))
 		fmt.Printf("  启动器   %s\n", p.Launch(it.ID))
@@ -711,27 +744,28 @@ func cmdNew(p inst.Paths, args []string) int {
 		if plan.Bootstrap != "" {
 			fmt.Printf("  跳板脚本  %s\n", plan.Bootstrap)
 		}
-		fmt.Printf("\n身份\n  level=%s  app_id / 托盘 Id = %q\n", it.Level, it.EffectiveAlias())
+		fmt.Printf("\n%s\n  level=%s  app_id / 托盘 Id = %q\n",
+			title("🪪 身份"), it.Level, it.EffectiveAlias())
 		// The tray row is host state, not a file, but it is still part of what
 		// a real run would change — so the rehearsal has to show it too.
 		if !it.TrayOverride {
-			fmt.Printf("\n托盘覆盖\n  跳过（tray.override = false），不动宿主表\n")
+			fmt.Printf("\n%s\n  跳过（tray.override = false），不动宿主表\n", title("🔔 托盘覆盖"))
 		} else {
-			fmt.Printf("\n托盘覆盖\n  %s\n  将写入 [('%s', '%s', '%s')]（合并，不覆盖别人的条目）\n",
-				tray.Schema+" / "+tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
+			fmt.Printf("\n%s\n  %s\n  将写入 [('%s', '%s', '%s')]（合并，不覆盖别人的条目）\n",
+				title("🔔 托盘覆盖"), tray.Schema+" / "+tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
 		}
 		printDerived(der)
-		printPathMaps(p, it, insp, maps, rw)
+		printPathMaps(p, it, insp, maps, rw, verbose)
 		if plan.Bwrap != "" {
-			fmt.Printf("\nbwrap 调用\n%s\n", plan.String())
+			fmt.Printf("\n%s\n%s\n", title("🧱 bwrap 调用"), plan.String())
 		}
 		cfg2, err := it.Render()
 		if err != nil {
 			fail(err.Error())
 			return exitFail
 		}
-		fmt.Printf("\n实例定义（instance.toml）\n%s", indent(cfg2, "  "))
-		fmt.Printf("\n桌面项（%s）\n%s", filepath.Base(p.Desktop(it.ID)),
+		fmt.Printf("\n%s\n%s", title("📄 实例定义（instance.toml）"), indent(cfg2, "  "))
+		fmt.Printf("\n%s\n%s", title("📄 桌面项（"+filepath.Base(p.Desktop(it.ID))+"）"),
 			indent(generate.DesktopEntry(p, it, insp).Bytes(), "  "))
 		if it.Level == inst.LevelRedirect {
 			rule, err := generate.RuleJSON(it, p)
@@ -739,7 +773,7 @@ func cmdNew(p inst.Paths, args []string) int {
 				fail(err.Error())
 				return exitFail
 			}
-			fmt.Printf("\nL5 规则（%s）\n%s", filepath.Base(p.RuleFile(it.ID)), indent(rule, "  "))
+			fmt.Printf("\n%s\n%s", title("📄 L5 规则（"+filepath.Base(p.RuleFile(it.ID))+"）"), indent(rule, "  "))
 		}
 		return exitOK
 	}
@@ -755,7 +789,7 @@ func cmdNew(p inst.Paths, args []string) int {
 	trayLine := applyTray(p, it)
 
 	rep := verify.Run(it, p)
-	fmt.Printf("已生成 %s\n", it.ID)
+	fmt.Printf("%s %s\n", outStyle.Green(style.Glyph(style.LevelOK)+" 已生成"), outStyle.Bold(it.ID))
 	fmt.Printf("  桌面项   %s\n", res.Desktop)
 	fmt.Printf("  图标     %s\n", res.Icon)
 	fmt.Printf("  启动器   %s\n", res.Launch)
@@ -764,21 +798,32 @@ func cmdNew(p inst.Paths, args []string) int {
 		fmt.Printf("  L5 规则  %s\n", res.Rule)
 	}
 	fmt.Printf("  %s\n", trayLine)
-	printDerived(der)
+	if verbose {
+		// The derived values are all already in instance.toml, and their whole
+		// point is to be visible — visible is instance.toml, not a wall of
+		// output on every wrap.
+		printDerived(der)
+	}
 	for _, n := range res.Notes {
 		fmt.Printf("  · %s\n", n)
 	}
-	printPathMaps(p, it, insp, maps, rw)
+	printPathMaps(p, it, insp, maps, rw, verbose)
 
-	fmt.Printf("\n自检\n%s", formatFindings(rep))
+	fmt.Printf("\n%s\n%s", title("🔍 自检"), formatFindings(rep))
 
-	fmt.Printf("\n下一步\n")
-	fmt.Printf("  1. 桌面项是后写的，GNOME 不会给已经存在的窗口重算归属 —— 请**重新启动**这个实例。\n")
-	fmt.Printf("  2. 托盘图标已经写进宿主覆盖表（该表热重载，立刻生效，不用重登）。\n")
-	fmt.Printf("     若上面那条是 WARN，说明这次没写进去：把命令拿到图形会话的终端里跑一次即可。\n")
-	fmt.Printf("  3. 想确认身份，看这两个值是否都等于 %q：\n", it.EffectiveAlias())
-	fmt.Printf("     窗口 app_id ：WAYLAND_DEBUG=1 bash %s 2>&1 | grep set_app_id\n", p.Launch(it.ID))
-	fmt.Printf("     托盘 SNI Id ：busctl --user list | grep -i statusnotifier  （名字里带 pid）\n")
+	fmt.Printf("\n%s\n", title("👉 下一步"))
+	if verbose {
+		fmt.Printf("  1. 桌面项是后写的，GNOME 不会给已经存在的窗口重算归属 —— 请**重新启动**这个实例。\n")
+		fmt.Printf("  2. 托盘图标已经写进宿主覆盖表（该表热重载，立刻生效，不用重登）。\n")
+		fmt.Printf("     若上面那条是 WARN，说明这次没写进去：把命令拿到图形会话的终端里跑一次即可。\n")
+		fmt.Printf("  3. 想确认身份，看这两个值是否都等于 %q：\n", it.EffectiveAlias())
+		fmt.Printf("     窗口 app_id ：WAYLAND_DEBUG=1 bash %s 2>&1 | grep set_app_id\n", p.Launch(it.ID))
+		fmt.Printf("     托盘 SNI Id ：busctl --user list | grep -i statusnotifier  （名字里带 pid）\n")
+	} else {
+		fmt.Printf("  1. 桌面项是后写的 —— 请**重新启动**这个实例，否则窗口还是旧的名字和图标。\n")
+		fmt.Printf("  2. 确认身份与托盘：twin verify %s\n", it.ID)
+		fmt.Printf("     完整说明（推导值 / 规则模板 / 手工验证步骤）：twin new <source> --as %s --force --explain\n", it.ID)
+	}
 	printManual(rep)
 	if rt.NeedsProfile {
 		// The identity is complete and every file is on disk; what is missing
@@ -813,7 +858,7 @@ func cmdVerify(p inst.Paths, args []string) int {
 		return exitFail
 	}
 	rep := verify.Run(it, p)
-	fmt.Printf("实例 %s（level=%s，别名=%s）\n\n", it.ID, it.Level, it.EffectiveAlias())
+	fmt.Printf("%s %s（level=%s，别名=%s）\n\n", outStyle.Bold("🪪 实例"), it.ID, it.Level, it.EffectiveAlias())
 	fmt.Print(formatFindings(rep))
 	printManual(rep)
 	return exitFor(rep)
@@ -822,12 +867,24 @@ func cmdVerify(p inst.Paths, args []string) int {
 func formatFindings(rep *verify.Report) string {
 	var b strings.Builder
 	for _, f := range rep.Findings {
-		fmt.Fprintf(&b, "  %s %-22s %s\n", f.Status, f.Name, f.Detail)
+		fmt.Fprintf(&b, "%s %-22s %s\n", outStyle.Mark(levelOf(f.Status)), f.Name, f.Detail)
 		if f.Fix != "" {
-			fmt.Fprintf(&b, "       %-22s → %s\n", "", f.Fix)
+			fmt.Fprintf(&b, "   %-22s → %s\n", "", f.Fix)
 		}
 	}
 	return b.String()
+}
+
+// levelOf maps a check result onto the shared verdict vocabulary.
+func levelOf(s verify.Status) style.Level {
+	switch s {
+	case verify.StatusOK:
+		return style.LevelOK
+	case verify.StatusWarn:
+		return style.LevelWarn
+	default:
+		return style.LevelFail
+	}
 }
 
 // ---------------------------------------------------------------- list
@@ -839,19 +896,26 @@ func cmdList(p inst.Paths) int {
 		return exitFail
 	}
 	if len(items) == 0 {
-		fmt.Printf("还没有任何实例（%s 下为空）\n", filepath.Join(p.Home, ".local/share/twin"))
+		fmt.Printf("%s 还没有任何实例（%s 下为空）\n",
+			outStyle.Mark(style.LevelSkip), filepath.Join(p.Home, ".local/share/twin"))
+		fmt.Printf("   做第一个：twin new wechat\n")
 		return exitOK
 	}
+	fmt.Printf("%s\n", title("📋 实例"))
 	fmt.Printf("%-16s %-10s %-8s %-24s %s\n", "id", "level", "别名", "程序", "桌面项")
 	for _, it := range items {
 		desktop := filepath.Base(p.Desktop(it.ID))
 		mark := ""
 		if !sysx.Exists(p.Desktop(it.ID)) {
-			mark = "  ← 桌面项缺失"
+			mark = "  " + outStyle.Yellow("← 桌面项缺失，twin regen "+it.ID)
 		}
 		fmt.Printf("%-16s %-10s %-8s %-24s %s%s\n", it.ID, it.Level, it.EffectiveAlias(),
 			filepath.Base(it.Target), desktop, mark)
 	}
+	// The one thing you come to this table to do next is get rid of a row, and
+	// `remove` is the only verb that does it — so name it here rather than
+	// leaving it to be discovered in --help.
+	fmt.Printf("\n删除某一个：twin remove <id>（不加 --yes 只打印要删什么）\n")
 	return 0
 }
 
@@ -930,11 +994,12 @@ func cmdRegen(p inst.Paths, args []string) int {
 	}
 	trayLine := applyTray(p, it)
 	rep := verify.Run(it, p)
-	fmt.Printf("已重新落盘 %s\n  桌面项 %s\n  图标   %s\n  启动器 %s\n", it.ID, res.Desktop, res.Icon, res.Launch)
+	fmt.Printf("%s %s\n  桌面项 %s\n  图标   %s\n  启动器 %s\n",
+		outStyle.Green("✅ 已重新落盘"), it.ID, res.Desktop, res.Icon, res.Launch)
 	if res.Rule != "" {
 		fmt.Printf("  L5 规则 %s\n", res.Rule)
 	}
-	fmt.Printf("  %s\n\n自检\n%s", trayLine, formatFindings(rep))
+	fmt.Printf("  %s\n\n%s\n%s", trayLine, title("🔍 自检"), formatFindings(rep))
 	printManual(rep)
 	return exitFor(rep)
 }
@@ -959,7 +1024,7 @@ func runtimeFor(p inst.Paths, needNestedNS bool) sandbox.Runtime {
 // side effect a wrap must not have, and the user is one copy-paste away from
 // the same result — which is also why this path exists only as a fallback.
 func printProfileHint(copyPath string) {
-	fmt.Printf("\n还差一步：这台机器上没有可用的跳板\n")
+	fmt.Printf("\n%s\n", title("✋ 还差一步：这台机器上没有可用的跳板"))
 	fmt.Printf("  这个程序运行时要自己建一个嵌套 user namespace，而内核只放行\n")
 	fmt.Printf("  「profile 里写了 userns 许可」的程序（%s）。\n", userns.SysctlSource)
 	fmt.Printf("  私有 bwrap 副本故意不带 profile，所以它自己建不了。\n\n")
@@ -980,7 +1045,7 @@ func printRuntime(rt sandbox.Runtime) {
 	if len(rt.Notes) == 0 {
 		return
 	}
-	fmt.Printf("沙箱方案\n")
+	fmt.Printf("%s\n", title("🧱 沙箱方案"))
 	for _, n := range rt.Notes {
 		fmt.Printf("  · %s\n", n)
 	}
@@ -1015,17 +1080,25 @@ func cmdRemove(p inst.Paths, args []string) int {
 		return exitUsage
 	}
 	if !*yes {
-		fmt.Printf("将要删除（加 --yes 才真的删）：\n")
+		// The dry form is the whole safety mechanism: it lists exactly what the
+		// next command would delete, including the one thing that is not a file
+		// (`custom-icons` row) and the one thing that is irreversible (--purge).
+		fmt.Printf("%s\n", title("🗑️ 将要删除（加 --yes 才真的删）"))
 		for _, f := range []string{p.Desktop(id), p.Icon(id), p.InstanceDir(id), p.RuleFile(id)} {
-			state := ""
 			if !sysx.Exists(f) {
-				state = "  (不存在)"
+				fmt.Printf("  %s %s\n", outStyle.Dim("➖"), outStyle.Dim(f+"（不存在）"))
+				continue
 			}
-			fmt.Printf("  %s%s\n", f, state)
+			fmt.Printf("  %s %s\n", outStyle.Green("✅"), f)
 		}
-		fmt.Printf("私有状态目录 %s：%s\n", p.StateDir(id),
-			map[bool]string{true: "会删除（--purge）", false: "保留"}[*purge])
-		fmt.Printf("  %s\n", dropTray(id, true))
+		state := p.StateDir(id)
+		if *purge {
+			fmt.Printf("  %s %s\n", outStyle.Red("💣"), state+"（私有数据，--purge：不可逆地删掉）")
+		} else {
+			fmt.Printf("  %s %s\n", outStyle.Dim("💾"), state+"（私有数据，保留 —— 要一起删加 --purge）")
+		}
+		fmt.Printf("  %s %s\n", outStyle.Dim("🔔"), dropTray(id, true))
+		fmt.Printf("\n确认无误：twin remove %s --yes\n", id)
 		return exitOK
 	}
 	removed, err := generate.Unwrap(p, id, *purge)
@@ -1034,13 +1107,13 @@ func cmdRemove(p inst.Paths, args []string) int {
 		return exitFail
 	}
 	if len(removed.Paths) == 0 {
-		fmt.Printf("没有可删的东西（%s 从未生成过）\n", id)
+		fmt.Printf("%s 没有可删的东西（%s 从未生成过）\n", outStyle.Mark(style.LevelSkip), id)
 	}
 	for _, f := range removed.Paths {
-		fmt.Printf("已删除 %s\n", f)
+		fmt.Printf("%s 已删除 %s\n", outStyle.Red("🗑️"), f)
 	}
 	for _, k := range removed.Kept {
-		fmt.Printf("保留   %s\n", k)
+		fmt.Printf("%s 保留 %s\n", outStyle.Dim("💾"), k)
 	}
 	if line := dropTray(id, false); line != "" {
 		fmt.Println(line)
@@ -1113,7 +1186,7 @@ func printDerived(der []generate.Derivation) {
 	if len(der) == 0 {
 		return
 	}
-	fmt.Printf("\n推导出的默认值（都可用选项覆盖）\n")
+	fmt.Printf("\n%s\n", title("🧩 推导出的默认值（都可用选项覆盖）"))
 	for _, d := range der {
 		fmt.Printf("  %-9s %s   ← %s\n", d.Key, d.Value, d.Source)
 	}
@@ -1129,23 +1202,30 @@ func printDerived(der []generate.Derivation) {
 // profile. The built-in table is deliberately short for the same reason, so the
 // output has to hand the user the exact file to edit rather than trusting them
 // to find it (设计 §7).
-func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, cliMaps []inst.Bind, rw []string) {
+//
+// verbose adds what only matters once the user has decided the map is wrong:
+// the paste-ready template, and the three granularities at which it can be
+// corrected. The short form keeps the facts that decide whether to act — how
+// many maps, where the knowledge came from, which file holds it.
+func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, cliMaps []inst.Bind, rw []string, verbose bool) {
 	key := ruleKeyFor(insp)
 	rulePath := filepath.Join(p.RulesDir(), key+".toml")
 
-	fmt.Printf("\n路径映射\n")
+	fmt.Printf("\n%s\n", title("📁 路径映射"))
 	if len(it.Binds) == 0 {
 		// "twin redirected nothing" is a fact worth stating: it is the normal
 		// case for an unknown program, and the reason two instances of it may
 		// start interfering with each other.
-		fmt.Printf("  没有生效的映射：数据目录与源程序共用（本实例只做身份包裹）。\n")
+		fmt.Printf("  0 条：数据目录与源程序共用（本实例只做身份包裹）。\n")
 		if insp.Rule == nil {
-			fmt.Printf("  ⚠️ 这个程序没有规则。它若有单实例锁或共享配置（Electron / Qt / GTK 系很常见），\n")
-			fmt.Printf("     两个实例会互相干扰 —— 需要隔离时写一条规则。\n")
+			fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 这个程序没有规则：它若有单实例锁或共享配置"+
+				"（Electron / Qt / GTK 系很常见），两个实例会互相干扰。"))
 		}
 		printStateHints(p, insp, it, key)
-		fmt.Printf("\n  规则文件：%s\n", rulePath)
-		printRuleTemplate(p, it, key, nil)
+		printMapFix(p, it, key, rulePath, verbose)
+		if verbose {
+			printRuleTemplate(p, it, key, nil)
+		}
 		return
 	}
 
@@ -1171,20 +1251,33 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, c
 	}
 	for _, b := range it.Binds {
 		if b.Canonical == b.Private {
-			fmt.Printf("  共用  %s   （原地升回可写，数据不搬家）\n", b.Canonical)
+			fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）\n", outStyle.Cyan("共用"), b.Canonical)
 			continue
 		}
-		fmt.Printf("  私有  %-38s → %s\n", b.Canonical, b.Private)
+		fmt.Printf("  %s  %-38s → %s\n", outStyle.Green("私有"), b.Canonical, b.Private)
 	}
+	printStateHints(p, insp, it, key)
+	printMapFix(p, it, key, rulePath, verbose)
+	if verbose {
+		printRuleTemplate(p, it, key, it.Binds)
+	}
+}
 
+// printMapFix names the file that holds this program's knowledge. It is the one
+// line that turns "that mapping is wrong" into an action, so it survives into
+// the short form; the long form spells out the other two granularities.
+func printMapFix(p inst.Paths, it *inst.Instance, key, rulePath string, verbose bool) {
+	if !verbose {
+		fmt.Printf("  改：%s（或 twin rules --init %s 生成草稿），再 twin new <source> --as <id> --force\n",
+			rulePath, key)
+		return
+	}
 	fmt.Printf("\n  要改（挑一个粒度）：\n")
 	fmt.Printf("    · 影响这个程序以后新建的实例：写 %s，\n", rulePath)
 	fmt.Printf("      再 twin new <source> --as <id> --force 让这一个跟上\n")
 	fmt.Printf("    · 只改这一个实例（不动规则）：编辑 %s 里的 [[map.bind]]，再 twin regen %s\n",
 		p.Config(it.ID), it.ID)
 	fmt.Printf("    · 只改这一次（不落规则）：twin new <source> --as <id> --map '<canonical>:<private>'\n")
-	printStateHints(p, insp, it, key)
-	printRuleTemplate(p, it, key, it.Binds)
 }
 
 // printStateHints lists directories the program is likely to keep state in that
@@ -1201,7 +1294,7 @@ func printStateHints(p inst.Paths, insp *generate.Inspection, it *inst.Instance,
 	if len(hints) == 0 {
 		return
 	}
-	fmt.Printf("\n  这个程序可能的状态目录（**未应用**，仅供参考）\n")
+	fmt.Printf("\n  %s\n", title("💡 这个程序可能的状态目录（未应用，仅供参考）"))
 	for i, h := range hints {
 		if i == maxHints {
 			fmt.Printf("    …还有 %d 个（twin rules --init %s 会全部写上）\n", len(hints)-i, key)
@@ -1237,7 +1330,7 @@ func uncoverHints(hints []generate.StateHint, binds []inst.Bind) []generate.Stat
 // an empty template would make the user retype paths twin already knows, and
 // retyping is where the typos come from.
 func printRuleTemplate(p inst.Paths, it *inst.Instance, key string, binds []inst.Bind) {
-	fmt.Printf("\n  照抄下面这份（就是规则文件的全部内容）：\n")
+	fmt.Printf("\n  %s\n", title("📋 照抄下面这份（就是规则文件的全部内容）："))
 	fmt.Printf("\n    app = %q\n", key)
 	if len(binds) == 0 {
 		fmt.Printf("\n    [[bind]]\n")
@@ -1281,8 +1374,15 @@ func indent(b []byte, prefix string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func fail(msg string) { fmt.Fprintln(os.Stderr, "错误："+msg) }
-func warn(msg string) { fmt.Fprintln(os.Stderr, "提醒："+msg) }
+// fail and warn colour from the stderr style, not the stdout one: the two
+// streams are redirected independently, and a diagnostic that lands on a
+// terminal should be readable even when stdout went into a file.
+func fail(msg string) {
+	fmt.Fprintln(os.Stderr, errStyle.Red(style.Glyph(style.LevelFail)+" 错误：")+msg)
+}
+func warn(msg string) {
+	fmt.Fprintln(os.Stderr, errStyle.Yellow(style.Glyph(style.LevelWarn)+" 提醒：")+msg)
+}
 func orDash(s string) string {
 	if s == "" {
 		return "—"

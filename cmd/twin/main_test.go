@@ -2,6 +2,8 @@ package main
 
 import (
 	"flag"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -136,6 +138,52 @@ func TestRuleTemplateUnbakesInstanceID(t *testing.T) {
 	if got := dedupStateDir(p, it, "~/Documents/xwechat_files"); got != "~/Documents/xwechat_files" {
 		t.Errorf("dedupStateDir rewrote an unrelated path: %q", got)
 	}
+}
+
+// A wrap report has to be readable in one screen: the paths, the maps, the
+// self-check, and the one thing left to do. The paste-ready rules.d template is
+// the single longest block in it and the least urgent, so it belongs behind
+// --explain — but the pointer to `twin rules --init` has to stay, otherwise the
+// short form stops saying what to type next.
+func TestPathMapsShortFormDropsTheTemplate(t *testing.T) {
+	p := inst.Paths{Home: "/nonexistent-twin-home"}
+	it := &inst.Instance{ID: "demo"}
+	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
+
+	short := captureStdout(t, func() { printPathMaps(p, it, insp, nil, nil, false) })
+	if strings.Contains(short, "照抄下面这份") {
+		t.Errorf("默认输出不该带规则模板：\n%s", short)
+	}
+	if !strings.Contains(short, "twin rules --init fakeapp") {
+		t.Errorf("默认输出必须点出生成草稿的路子：\n%s", short)
+	}
+
+	long := captureStdout(t, func() { printPathMaps(p, it, insp, nil, nil, true) })
+	if !strings.Contains(long, "照抄下面这份") {
+		t.Errorf("--explain 输出应当带规则模板：\n%s", long)
+	}
+}
+
+// captureStdout runs fn with stdout redirected into a pipe. Colour is decided
+// once, for the process's real stdout, so a captured buffer is always plain
+// text — which is what the assertions above rely on.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	return string(out)
 }
 
 // The file name offered to the user is what twin will read back next time, so

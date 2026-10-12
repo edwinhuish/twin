@@ -85,19 +85,21 @@ internal/
   tray/                托盘覆盖表的 read-modify-write
   verify/              回读自证
   doctor/              环境自检
+  style/               终端着色判定（TTY / NO_COLOR）与状态字形
   sysx/                系统调用封装（Run / Which / FirstInstalled / EnsureDir / WriteFileAtomic …）
 ```
 
 依赖方向（**下层不知道上层存在**）：
 
 ```
-cmd → {doctor, verify, generate, sandbox, inst, config, tray, userns, sysx, desk}
-doctor → {inst, sandbox, verify, tray, userns, sysx}
+cmd → {doctor, verify, generate, sandbox, inst, config, tray, userns, sysx, desk, style}
+doctor → {inst, sandbox, verify, tray, userns, sysx, style}
 verify → {inst, desk, tray, userns, sysx}
 generate → {config, desk, icon, inst, sandbox, sysx}
 sandbox → {config, inst, userns, sysx}
 config → {icon, inst, tomlz}
 inst → {tomlz}
+style → {}    ← 只有标准库
 ```
 
 `inst` 不知道 bwrap，`sandbox` 不知道桌面项。唯一"反向"的知识是 `inst.CheckBwrapToken` ——
@@ -128,7 +130,13 @@ inst → {tomlz}
 7. **产物路径一律从 `$HOME` 派生**，且写进 `instance.toml` 的一律用 `~/` 相对形式
    （`RelStateDir`）—— 快照要能搬到另一台机器重放。启动器里则统一折叠成 `$HOME/...`，
    绝不把生成时刻的 HOME 烤进去。
-8. **`gofmt` 是硬门**，`-l` 必须为空。
+8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
+   stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
+   （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
+9. **默认输出是给人读的，不是给人查的。** 一次 `twin new` 打印产物、路径映射、自检、下一步四段；
+   其余细节（推导值、规则模板、手工验证命令）走 `--explain` 或本来就在 `instance.toml` 里。
+   加新输出前先问：这条不进精简版会不会让人做错事？会，才是默认；不会，就放进 `--explain`。
+10. **`gofmt` 是硬门**，`-l` 必须为空。
 
 ## 5. 常见任务怎么做
 

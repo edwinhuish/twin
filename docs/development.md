@@ -62,19 +62,21 @@ internal/
   tray/                 托盘覆盖表的 read-modify-write
   verify/               回读自证
   doctor/               环境自检
+  style/                终端着色判定（TTY / NO_COLOR）与状态字形
   sysx/                 系统调用封装（Run / Which / FirstInstalled / EnsureDir / WriteFileAtomic …）
 ```
 
 ### 依赖方向
 
 ```
-cmd → {doctor, verify, generate, sandbox, inst, config, tray, userns, sysx, desk}
-doctor → {inst, sandbox, verify, tray, userns, sysx}
+cmd → {doctor, verify, generate, sandbox, inst, config, tray, userns, sysx, desk, style}
+doctor → {inst, sandbox, verify, tray, userns, sysx, style}
 verify → {inst, desk, tray, userns, sysx}
 generate → {config, desk, icon, inst, sandbox, sysx}
 sandbox → {config, inst, userns, sysx}
 config → {icon, inst, tomlz}
 inst → {tomlz}
+style → {}    ← 只有标准库
 ```
 
 规则：**下层不知道上层存在**。`inst` 不知道 bwrap，`sandbox` 不知道桌面项。
@@ -205,6 +207,23 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 
 ⚠️ 记住 `parseFL`：位置参数可以出现在选项之间。`fs.Parse` 直接用会让文档里的
 `twin new <source> --as <id>` 静默忽略 `--as`。
+
+### 加/改一段终端输出
+
+全部着色判定在 `internal/style`，**不要在别处写转义序列，也不要自己判断 `isatty`**：
+
+1. 判定按**流**做：`style.For(f)` 只看 `f` 一个文件，`cmd/twin` 为此各留一个（stdout / stderr）；
+2. 状态行用 `st.Mark(style.LevelOK|Warn|Fail|Skip)` —— 字形与颜色一起给，纯文本里也不丢信息；
+3. 段落标题用 `cmd/twin` 的 `title()`（粗体），emoji 留在调用点，别塞进 helper 里。
+
+⚠️ 三条容易踩的：
+
+- **别跨流复用结论**：`twin new wechat > log` 时 stdout 是文件、stderr 还是终端，两个流的答案不同，
+  这也正是 `fail` / `warn` 用 `errStyle` 而不是 `outStyle` 的原因；
+- **别按字符设备判断终端**：`/dev/null` 也是字符设备。`internal/style` 里走的是 `TCGETS`，
+  换实现时别退回 `os.ModeCharDevice`；
+- **别用按字节补齐的列装字形**：emoji 是双宽，`%-6s` 那一套会把后面的列顶歪，改用
+  `"%s %-28s %s"` 这种"字形 ＋ 名字 ＋ 详情"的形状。
 
 ### 加一个自检项
 

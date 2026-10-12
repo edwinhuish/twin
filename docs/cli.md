@@ -74,17 +74,17 @@ Categories Utility;
 Keywords   微信;wechat;
            ← 源无 Keywords；由 Name[zh_CN]、Name 推得
 
-工具箱探测（按二进制内字符串）
+🔧 工具箱探测（按二进制内字符串）
   Wayland 支持  是
   X11 支持      是
   Qt            是
   GTK           否
   多合一二进制  否
 
-/tmp 策略：可用 --tmpfs /tmp —— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。
+📂 /tmp 策略：可用 --tmpfs /tmp —— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。
   ⚠️ 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X。
 
-备注
+📝 备注
   · /usr/bin/wechat 是指向 /opt/wechat/wechat 的链接 —— 别名要建在 /opt/wechat 里（$ORIGIN 与 /proc/self/exe 都看真实路径）
   · Wayland 原生 + 静态链接的 Qt：窗口 app_id 由 Qt 从可执行文件真实路径派生（已实测）
   · 同时含 Wayland 与 X11 平台插件：本会话有 WAYLAND_DISPLAY 时按 Wayland 走
@@ -101,32 +101,57 @@ Keywords   微信;wechat;
 
 生成一个实例。全部选项见 §3。
 
-- 落盘前会把**推导出的每个默认值连同来源**打印出来。
+- 落盘前会把**推导出的每个默认值连同来源**打印出来（`--explain` 才打印；精简输出不打印，因为那些
+  值就在 `instance.toml` 里）。
 - 会 lint 透传区（只警告，不改写）。
 - 会检查 id 冲突：显式 `--as` 撞到已存在的东西时拒绝，除非 `--force`。
 - 落盘后**自己**写宿主托盘覆盖表，然后跑一次自检。
 - 落盘后会打印一节 **`路径映射`**（`--dry-run` 同样打印）。
 
-路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
-抢同一个锁文件时才暴露。所以它必须出现在输出里，而不是只躺在 `instance.toml` 里。这一节会说明
-共有几条、知识来自哪一层（内置规则 / `rules.d` / `--map`）、**改它该编辑哪个文件**，并附上一份
-照抄即可的 `rules.d` 模板。程序没有规则时，它会明说"什么都没重定向"并点出这个风险，再列出
-**探测到的**候选目录（标着`未应用`，见下面的 `twin rules --init`）。
+**默认输出刻意短**：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步。一次 wrap 之后要读的只有这四段；
+"要动手时才需要"的东西（规则模板全文、推导值、手工验证命令）用 `--explain` 展开，
+`--dry-run` 也一并展开。
 
-```
-路径映射
+```console
+✅ 已生成 wechat2
+  桌面项   /home/you/.local/share/applications/wechat2.desktop
+  图标     /home/you/.local/share/appicons/wechat2.png
+  启动器   /home/you/.local/share/twin/wechat2/launch
+  实例定义 /home/you/.local/share/twin/wechat2/instance.toml
+  托盘覆盖 已写入 custom-icons（该表热重载，立刻生效）
+
+📁 路径映射
   3 条，来源：内置规则 wechat
   私有  ~/.xwechat                             → ~/.local/state/twin/wechat2/xwechat
   共用  ~/Documents/xwechat_files   （原地升回可写，数据不搬家）
   私有  ~/Documents/xwechat_files/all_users    → ~/.local/state/twin/wechat2/all_users
+  改：~/.config/twin/rules.d/wechat.toml（或 twin rules --init wechat 生成草稿），再 twin new <source> --as <id> --force
 
+🔍 自检
+✅ exec.target            /opt/wechat/wechat
+✅ 别名只在命名空间内              wechat 未污染宿主
+   …
+
+👉 下一步
+  1. 桌面项是后写的 —— 请**重新启动**这个实例，否则窗口还是旧的名字和图标。
+  2. 确认身份与托盘：twin verify wechat2
+     完整说明（推导值 / 规则模板 / 手工验证步骤）：twin new <source> --as wechat2 --force --explain
+```
+
+路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
+抢同一个锁文件时才暴露。所以它必须出现在输出里，而不是只躺在 `instance.toml` 里。这一节说明
+共有几条、知识来自哪一层（内置规则 / `rules.d` / `--map`）、以及**改它该编辑哪个文件**。
+
+`--explain` 把这一节摊开成可以照着做的样子 —— 三种修改粒度，外加一份照抄即可的模板：
+
+```console
   要改（挑一个粒度）：
     · 影响这个程序以后新建的实例：写 ~/.config/twin/rules.d/wechat.toml，
       再 twin new <source> --as <id> --force 让这一个跟上
     · 只改这一个实例（不动规则）：编辑 ~/.local/share/twin/wechat2/instance.toml 里的 [[map.bind]]，再 twin regen wechat2
     · 只改这一次（不落规则）：twin new <source> --as <id> --map '<canonical>:<private>'
 
-  照抄下面这份（就是规则文件的全部内容）：
+  📋 照抄下面这份（就是规则文件的全部内容）：
 
     app = "wechat"
 
@@ -149,19 +174,19 @@ Keywords   微信;wechat;
 模板里的 `private` 会把本实例的 id 写回成 `{id}` 占位符 —— 照抄出来的规则服务这个程序的**所有**
 实例，而不是被烤死在某一个 id 上。上面路径按 `$HOME` 缩写了，工具打印的是绝对路径。
 
-一个**没有规则**的程序长这样（模板部分省略）——`路径映射` 一节的职责就是把"没映射任何东西"
-这句话连同"那该映射什么"一起说清楚：
+一个**没有规则**的程序长这样 —— `路径映射` 一节的职责就是把"没映射任何东西"这句话连同
+"那该映射什么"一起说清楚（候选目录只列**未应用**的，见下面的 `twin rules --init`）：
 
-```
-路径映射
-  没有生效的映射：数据目录与源程序共用（本实例只做身份包裹）。
-  ⚠️ 这个程序没有规则。它若有单实例锁或共享配置（Electron / Qt / GTK 系很常见），
-     两个实例会互相干扰 —— 需要隔离时写一条规则。
+```console
+📁 路径映射
+  0 条：数据目录与源程序共用（本实例只做身份包裹）。
+  ⚠️ 这个程序没有规则：它若有单实例锁或共享配置（Electron / Qt / GTK 系很常见），两个实例会互相干扰。
 
-  这个程序可能的状态目录（**未应用**，仅供参考）
+  💡 这个程序可能的状态目录（未应用，仅供参考）
     ~/.config/foo                                目录存在
     ~/.local/state/foo                           目录存在
     要隔离就先生成一份规则草稿：twin rules --init foo
+  改：~/.config/twin/rules.d/foo.toml（或 twin rules --init foo 生成草稿），再 twin new <source> --as <id> --force
 ```
 
 ### `twin verify <id>`
@@ -188,10 +213,13 @@ Keywords   微信;wechat;
 
 列出全部实例。
 
-```
+```console
+📋 实例
 id               level      别名     程序                     桌面项
 wechat2          alias      wechat2  wechat                   wechat2.desktop
-foo3             redirect   foo3     foo                      foo3.desktop  ← 桌面项缺失
+foo3             redirect   foo3     foo                      foo3.desktop  ← 桌面项缺失，twin regen foo3
+
+删除某一个：twin remove <id>（不加 --yes 只打印要删什么）
 ```
 
 ### `twin regen <id> [--refresh]`
@@ -208,7 +236,8 @@ foo3             redirect   foo3     foo                      foo3.desktop  ← 
 
 删除产物。
 
-- **不加 `--yes` 只打印**：将要删的文件、私有状态目录（默认保留）、托盘表里那一条会怎样。
+- **不加 `--yes` 只打印**：将要删的文件（存在的打 `✅`、不存在打 `➖`）、私有状态目录
+  （默认保留）、托盘表里那一条会怎样，末尾给出那条下一步命令。
 - `--purge` 连私有状态目录一起删（那是**唯一**不可逆的部分）。
 - 不带 `--purge` 时状态目录保留 —— 下次同名重建会接着用。
 - 会顺带移除宿主托盘表里该 `id` 的条目：表是全局的，而这条是"一个即将不存在的程序"的声明，
@@ -305,6 +334,7 @@ Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把�
 | 选项 | 说明 |
 |---|---|
 | `--force` | 覆盖已存在但**不是** twin 生成的桌面项／实例 |
+| `--explain` | 打印完整说明：推导值、`路径映射` 的三种修改粒度与规则模板全文、手工验证命令 |
 | `--dry-run` | 只打印将要写什么（文件清单、桌面项全文、`instance.toml` 全文、bwrap 调用、托盘将写入的行、推导值），一个字节不落盘 |
 
 ### bwrap 透传
@@ -326,7 +356,28 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 
 ---
 
-## 4. 退出码
+## 4. 输出与颜色
+
+判定只有一条原则：**颜色是给人看的，纯文本是给机器看的。**
+
+| 情形 | 结果 |
+|---|---|
+| stdout / stderr 是终端 | 着色 ＋ emoji 字形 |
+| 重定向到文件、管道、`TERM=dumb` | 纯文本（**不含**任何转义序列） |
+| `NO_COLOR` 非空 | 强制关掉，优先级最高 |
+| `CLICOLOR_FORCE` 非空且不为 `0` | 强制打开（管道喂给会渲染转义的 pager 时用） |
+
+- **stdout 与 stderr 各自判断**：`twin new wechat > log` 里 `log` 是纯文本，而落在终端上的
+  `⚠️ 提醒` 依然有颜色。
+- 判断用的是 `TCGETS`，不是"是不是字符设备" —— `/dev/null` 也是字符设备，否则
+  `twin new wechat > /dev/null` 会拿到一堆转义序列。
+- 字形与颜色表达**同一件事**：`✅` 通过、`⚠️` 降级、`❌` 失败、`➖` 跳过（事实性跳过，不是失败）。
+  所以 `2>&1 | tee log` 之后依然读得出来哪一行失败。
+- 退出码不受颜色影响，`NO_COLOR` 也不改变退出码。
+
+---
+
+## 5. 退出码
 
 | 码 | 含义 |
 |---|---|
@@ -340,7 +391,7 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 
 ---
 
-## 5. 文件表
+## 6. 文件表
 
 | 路径 | 是什么 | 谁写 |
 |---|---|---|
@@ -360,7 +411,7 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 
 ---
 
-## 6. 拒绝清单（宁可不做，不做近似）
+## 7. 拒绝清单（宁可不做，不做近似）
 
 | 输入 | 为什么拒绝 |
 |---|---|
@@ -377,7 +428,7 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 
 ---
 
-## 7. 典型用法
+## 8. 典型用法
 
 ```bash
 # 最省事：全部推导
@@ -386,6 +437,9 @@ twin new wechat
 # 先看再写
 twin inspect wechat
 twin new wechat --dry-run
+
+# 输出默认是精简版；要推导值、规则模板、手工验证命令就加 --explain
+twin new wechat --explain
 
 # 明确指定身份
 twin new wechat --as wx-work --name "微信·工作" --badge W --badge-style number

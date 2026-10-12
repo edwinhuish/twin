@@ -9,6 +9,7 @@ import (
 	"github.com/edwinhuish/twin/internal/config"
 	"github.com/edwinhuish/twin/internal/desk"
 	"github.com/edwinhuish/twin/internal/inst"
+	"github.com/edwinhuish/twin/internal/sysx"
 )
 
 func clearLocale(t *testing.T, lang string) {
@@ -16,6 +17,60 @@ func clearLocale(t *testing.T, lang string) {
 	t.Setenv("LC_ALL", "")
 	t.Setenv("LC_MESSAGES", "")
 	t.Setenv("LANG", lang)
+}
+
+// Unwrap is the only destructive thing twin does, and its contract is narrow on
+// purpose: our own files go, the program's private data survives unless asked
+// for, and no other instance is touched. Every one of those is a way to lose
+// data if it regresses silently, so all three are asserted here.
+func TestUnwrapRemovesOursAndSparesTheRest(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	write := func(f string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ours := []string{p.Desktop("demo"), p.Icon("demo"), p.Launch("demo"), p.RuleFile("demo")}
+	other := []string{p.Desktop("other"), p.Config("other")}
+	for _, f := range append(append([]string{}, ours...), other...) {
+		write(f)
+	}
+	write(filepath.Join(p.StateDir("demo"), "profile"))
+
+	removed, err := Unwrap(p, "demo", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range ours {
+		if sysx.Exists(f) {
+			t.Errorf("%s 应当被删掉", f)
+		}
+	}
+	if !sysx.Exists(p.StateDir("demo")) {
+		t.Error("没给 --purge，私有状态目录必须留着（下次同名重建要接得上）")
+	}
+	if len(removed.Kept) == 0 {
+		t.Error("留下的东西必须报出来，否则用户以为已经删干净了")
+	}
+	for _, f := range other {
+		if !sysx.Exists(f) {
+			t.Errorf("%s 属于别的实例，不该被动到", f)
+		}
+	}
+
+	if _, err := Unwrap(p, "demo", true); err != nil {
+		t.Fatal(err)
+	}
+	if sysx.Exists(p.StateDir("demo")) {
+		t.Error("--purge 要连私有状态一起删")
+	}
+	if !sysx.Exists(p.Desktop("other")) {
+		t.Error("--purge 不该牵连别的实例")
+	}
 }
 
 func wechatInspection() *Inspection {

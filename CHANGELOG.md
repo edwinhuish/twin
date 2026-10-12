@@ -10,6 +10,26 @@
 
 ### Added
 
+- **终端输出着色 ＋ 状态字形**（新包 `internal/style`）：只在终端上着色，重定向 / 管道 /
+  `TERM=dumb` 一律纯文本；`NO_COLOR` 强制关闭、`CLICOLOR_FORCE` 强制打开；stdout 与 stderr
+  **各自判断**。判定走 `TCGETS` 而不是"是不是字符设备"（`/dev/null` 也是字符设备）。
+  状态行统一用 `✅ / ⚠️ / ❌ / ➖`，与颜色表达同一件事，纯文本里也不丢信息。
+- **`twin new --explain`**：展开完整说明（推导出的默认值、`路径映射` 的三种修改粒度、
+  照抄即可的 `rules.d` 模板、手工验证命令）。`--dry-run` 同样展开。
+
+### Changed
+
+- **`twin new` 的默认输出精简为一屏**：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步。推导值、规则
+  模板、手工验证步骤移入 `--explain`（它们本来就在 `instance.toml` 里，或一条命令可达）。
+  `路径映射` 的默认形态也压到"几条 / 来源 / 每条指向哪 / 改哪个文件"。
+- `twin list` / `twin remove` / `twin doctor` / `twin verify` / `twin inspect` 的输出统一带上
+  字形与段落标题；`twin remove` 的预演把存在的产物打 `✅`、不存在的打 `➖`，末尾给出下一步命令。
+- `twin list` 末尾点出 `twin remove <id>` —— 它是卸载分身的唯一动词，不该只藏在 `--help` 里。
+- `generate.Unwrap` 补上契约测试：只删本实例的产物、默认保留私有数据、**绝不牵连别的实例**
+  （它是 twin 唯一不可逆的操作，静默回归等于丢数据）。
+- 文档：`docs/cli.md` 新增"输出与颜色"一节与 `--explain` 说明；`docs/development.md` 与
+  `AGENTS.md` 补上 `internal/style`、依赖方向与"加/改一段终端输出"的约定。
+
 - 面向 AI 协作者的项目约定 [`AGENTS.md`](AGENTS.md)（构建、结构、硬性规则、常见任务），
   以及 [`CLAUDE.md`](CLAUDE.md) 入口。
 - 面向人类贡献者的 [`CONTRIBUTING.md`](CONTRIBUTING.md)：质量门、scratch HOME 验收流程、
