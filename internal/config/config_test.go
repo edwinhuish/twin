@@ -141,11 +141,11 @@ func TestFindRuleReturnsBuiltinWhenNoFile(t *testing.T) {
 	}
 	// ~/Documents/xwechat_files is the in-place writable upgrade: binding it to
 	// itself is not a no-op under --ro-bind / / (设计 §7).
-	if b := rule.Binds[1]; b.Canonical != b.Private {
-		t.Errorf("共享目录应原地升级可写，得到 %s → %s", b.Canonical, b.Private)
+	if b := rule.Binds[1]; b.Source != b.Target {
+		t.Errorf("共享目录应原地升级可写，得到 %s", b)
 	}
-	if b := rule.Binds[0]; !strings.Contains(b.Private, "{id}") {
-		t.Errorf("私有目录应带 {id} 占位，得到 %q", b.Private)
+	if b := rule.Binds[0]; !strings.Contains(b.Source, "{id}") {
+		t.Errorf("私有目录应带 {id} 占位，得到 %q", b.Source)
 	}
 }
 
@@ -176,7 +176,7 @@ keywords = "wechat;微信;im"
 		t.Errorf("文件里的 keywords 没生效：%q", rule.Keywords)
 	}
 	if len(rule.Binds) != 3 {
-		t.Errorf("没写 [[bind]] 时应继承内置的 3 条，得到 %d", len(rule.Binds))
+		t.Errorf("没写 bind 时应继承内置的 3 条，得到 %d", len(rule.Binds))
 	}
 	if rule.Builtin {
 		t.Error("来源是文件时 Builtin 应为 false")
@@ -186,17 +186,15 @@ keywords = "wechat;微信;im"
 	}
 }
 
-// Writing [[bind]] means "this is the whole mapping": half-inheriting would
-// make the file a lie.
+// Writing bind means "this is the whole mapping": half-inheriting would make
+// the file a lie.
 func TestRuleFileBindsReplaceBuiltin(t *testing.T) {
 	p := inst.Paths{Home: t.TempDir()}
 	write(t, p.Home, ".config/twin/rules.d/wechat.toml", `
-[[bind]]
-canonical = "~/.xwechat"
-private   = "~/.local/state/twin/{id}/xwechat"
-
-[[bind]]
-canonical = "~/.cache/wechat"
+bind = [
+  "~/.local/state/twin/{id}/xwechat:~/.xwechat",
+  "~/.cache/wechat",
+]
 `)
 	rule, _, err := FindRule(p, "wechat")
 	if err != nil {
@@ -205,19 +203,36 @@ canonical = "~/.cache/wechat"
 	if len(rule.Binds) != 2 {
 		t.Fatalf("Binds 应被文件整体替换，得到 %d 条", len(rule.Binds))
 	}
-	// A missing private means the in-place writable upgrade, spelled the same
+	// A one-path entry means the in-place writable upgrade, spelled the same
 	// way the hand-written wrapper did with `--bind A A`.
-	if b := rule.Binds[1]; b.Private != "~/.cache/wechat" {
-		t.Errorf("缺 private 时应回填 canonical，得到 %q", b.Private)
+	if b := rule.Binds[1]; b.Source != "~/.cache/wechat" || b.Target != "~/.cache/wechat" {
+		t.Errorf("单路径应回填两侧，得到 %s", b)
 	}
 }
 
-func TestRuleFileWithoutCanonicalIsAnError(t *testing.T) {
+// The pre-string-list spelling is refused by name. Reading `[[bind]]` as "no
+// mappings" would turn a file that says where the data is into a file that says
+// the data is shared.
+func TestRuleFileOldTableFormIsAnError(t *testing.T) {
 	p := inst.Paths{Home: t.TempDir()}
-	write(t, p.Home, ".config/twin/rules.d/wechat.toml", "[[bind]]\nprivate = \"/x\"\n")
+	write(t, p.Home, ".config/twin/rules.d/wechat.toml", `
+[[bind]]
+canonical = "~/.xwechat"
+private   = "~/.local/state/twin/{id}/xwechat"
+`)
 	_, _, err := FindRule(p, "wechat")
-	if err == nil || !strings.Contains(err.Error(), "canonical") {
-		t.Fatalf("应报 [[bind]] 缺 canonical，得到 %v", err)
+	if err == nil || !strings.Contains(err.Error(), "bind") {
+		t.Fatalf("旧的 [[bind]] 表应当报错，得到 %v", err)
+	}
+}
+
+// A version of the same mistake one step subtler: right key, wrong shape.
+func TestRuleFileBindMustBeAList(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	write(t, p.Home, ".config/twin/rules.d/wechat.toml", "bind = \"/a:/b\"\n")
+	_, _, err := FindRule(p, "wechat")
+	if err == nil {
+		t.Fatal("bind 写成单个字符串时应当报错，而不是被读成没有映射")
 	}
 }
 

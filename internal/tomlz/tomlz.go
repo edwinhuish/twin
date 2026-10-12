@@ -118,6 +118,33 @@ func (t *Tree) StrList(key string) []string {
 	return out
 }
 
+// StrListStrict returns key as a list of strings and refuses every other shape.
+//
+// StrList exists because a knob whose absence is harmless should not need error
+// handling. It is the wrong reader for a list that *is* the answer: a `bind`
+// written as a scalar would come back as "nothing is isolated", and nothing on
+// screen would say so. Absent stays (nil, nil) — "not written" is a legitimate
+// answer, "written as the wrong thing" is not.
+func (t *Tree) StrListStrict(key string) ([]string, error) {
+	v, ok := t.lookup(key)
+	if !ok {
+		return nil, nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s: expected a list of strings", key)
+	}
+	out := make([]string, 0, len(arr))
+	for i, e := range arr {
+		s, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d]: expected a string, got %T", key, i, e)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
 // Tree returns the sub-table at key (an empty Tree when absent).
 func (t *Tree) Tree(key string) *Tree {
 	v, _ := t.lookup(key)
@@ -205,7 +232,8 @@ func (t *Tree) ensure(path string) *Tree {
 func (t *Tree) Ensure(path string) *Tree { return t.ensure(path) }
 
 // Inline marks a table that must be written as a single-line {k = v} value.
-// `env = {}` in instance.toml is the reason this exists.
+// Kept because a hand-written TOML file may spell any table that way, and the
+// reader must not refuse something the user can see is legal.
 type Inline struct{ T *Tree }
 
 // NewInline returns an empty inline table.
@@ -359,9 +387,9 @@ func Parse(data []byte) (*Tree, error) {
 	root := New()
 	cur := root
 	lines := strings.Split(string(data), "\n")
-	for i, raw := range lines {
+	for i := 0; i < len(lines); i++ {
 		lineno := i + 1
-		line := strings.TrimSpace(stripComment(raw))
+		line := strings.TrimSpace(stripComment(lines[i]))
 		if line == "" {
 			continue
 		}
@@ -400,7 +428,20 @@ func Parse(data []byte) (*Tree, error) {
 			if strings.Contains(key, ".") {
 				return nil, fmt.Errorf("line %d: dotted keys are not supported (use [table] sections)", lineno)
 			}
-			v, err := parseValue(strings.TrimSpace(line[eq+1:]))
+			val := strings.TrimSpace(line[eq+1:])
+			// An array may run over several lines, and has to: a list of path
+			// maps is unreadable as one 150-column line, and unreadable is the
+			// same as unreviewed. Comments on the continuation lines are
+			// already gone — stripComment ran per line above.
+			for strings.HasPrefix(val, "[") && !bracketsClosed(val) && i+1 < len(lines) {
+				i++
+				next := strings.TrimSpace(stripComment(lines[i]))
+				if next == "" {
+					continue
+				}
+				val += " " + next
+			}
+			v, err := parseValue(val)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", lineno, err)
 			}
@@ -408,6 +449,32 @@ func Parse(data []byte) (*Tree, error) {
 		}
 	}
 	return root, nil
+}
+
+// bracketsClosed reports whether every bracket opened in s is closed, ignoring
+// brackets inside strings. It decides whether a value that starts with `[`
+// continues on the next line.
+func bracketsClosed(s string) bool {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if quote == '"' && c == '\\' {
+				i++ // skip the escaped byte
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '[' || c == '{':
+			depth++
+		case c == ']' || c == '}':
+			depth--
+		}
+	}
+	return depth == 0 && quote == 0
 }
 
 func headerName(line, open, close string) (string, error) {

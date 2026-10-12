@@ -126,7 +126,7 @@ func TestSplitPassthroughRefusesSecondSeparator(t *testing.T) {
 func snap(id string, published bool) generate.Snapshot {
 	return generate.Snapshot{
 		Instance:  &inst.Instance{ID: id},
-		Path:      "/home/someone/.local/share/twin/" + id + "/instance.toml",
+		Path:      "/home/someone/.local/share/twin/" + id + "/profile.yml",
 		Published: published,
 	}
 }
@@ -196,7 +196,7 @@ func TestConfigureTarget(t *testing.T) {
 func TestDerivationInputsLeavesTheInstallFlagsAlone(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	fs.String("name", "", "")
-	fs.String("map", "", "")
+	fs.String("keywords", "", "")
 	fs.Bool("force", false, "")
 	fs.Bool("dry-run", false, "")
 	fs.Bool("explain", false, "")

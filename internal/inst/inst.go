@@ -1,5 +1,5 @@
 // Package inst holds the twin instance schema — the single source of truth
-// that `instance.toml` reads and writes.
+// that `profile.yml` reads and writes.
 package inst
 
 import (
@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/edwinhuish/twin/internal/tomlz"
+	"github.com/edwinhuish/twin/internal/yamlz"
 )
 
 // Level is the rung of the identity ladder an instance relies on.
@@ -74,10 +74,76 @@ func levelNames() string {
 	return strings.Join(out, " | ")
 }
 
-// Bind is one path mapping applied inside the sandbox.
+// Bind is one directory mounted into the sandbox.
+//
+// It is written the way a Docker Compose volume is — "source:target[:ro]" —
+// because that is the shape everyone already reads: the left side is where the
+// data really is, the right side is where the program will look for it. That is
+// also bubblewrap's own `--bind SRC DEST` order, so profile.yml, rules.d and the
+// rendered launcher all run the same direction and none of them needs a mental
+// flip.
 type Bind struct {
-	Canonical string // the path the program sees (may start with ~)
-	Private   string // where the data really lives (may start with ~)
+	Source string // where the data lives (may start with ~)
+	Target string // the path the program sees (may start with ~)
+	// ReadOnly renders `--ro-bind` instead of `--bind`. It is the only reason
+	// this is not just a pair of strings: writable is what the private-copy
+	// isolation is for, while read-only is for handing a program somebody
+	// else's files without letting it touch them.
+	ReadOnly bool
+}
+
+// String renders the one-line form the config files carry.
+func (b Bind) String() string {
+	s := b.Source + ":" + b.Target
+	if b.ReadOnly {
+		s += ":ro"
+	}
+	return s
+}
+
+// ParseBind reads the one-line form: "source:target", "source:target:ro",
+// "source:target:rw", or a bare "path" meaning the same directory both ways.
+//
+// The bare form is not an optimisation. A directory bound onto itself is what
+// upgrades it to writable in place under `--ro-bind / /`, which is the one
+// mapping WeChat's received-files directory has always needed.
+//
+// The split is Docker's: a trailing ":ro"/":rw" is the mode, then the first
+// colon separates the two sides. A path that itself contains a colon is
+// therefore ambiguous, and — as in Docker — the ambiguity is resolved the
+// documented way rather than guessed at.
+func ParseBind(spec string) (Bind, error) {
+	parts := strings.Split(strings.TrimSpace(spec), ":")
+	if len(parts) == 2 && (parts[1] == "ro" || parts[1] == "rw") {
+		// `x:ro` has no target, only what looks like a mode. Reading it as
+		// "target named ro" would build a relative mount point out of a typo,
+		// so it is refused instead.
+		return Bind{}, fmt.Errorf("路径映射 %q 的右侧是访问模式而不是目标路径："+
+			"两侧写全（%s:%s:ro），或去掉模式（同一路径默认可写）", spec, parts[0], parts[0])
+	}
+	b := Bind{}
+	if len(parts) == 3 {
+		switch parts[2] {
+		case "ro":
+			b.ReadOnly = true
+		case "rw":
+		default:
+			return Bind{}, fmt.Errorf("路径映射 %q 的访问模式 %q 不认识（只有 ro 和 rw）", spec, parts[2])
+		}
+		parts = parts[:2]
+	}
+	if len(parts) > 3 {
+		return Bind{}, fmt.Errorf("路径映射 %q 的冒号太多（形如 \"源:目标[:ro|:rw]\"）", spec)
+	}
+	b.Source = parts[0]
+	b.Target = b.Source
+	if len(parts) == 2 {
+		b.Target = parts[1]
+	}
+	if b.Source == "" || b.Target == "" {
+		return Bind{}, fmt.Errorf("路径映射 %q 少了一侧路径", spec)
+	}
+	return b, nil
 }
 
 // Instance is one wrapped program.
@@ -150,13 +216,28 @@ func (p Paths) InstanceDir(id string) string {
 	return filepath.Join(p.Home, ".local/share/twin", id)
 }
 func (p Paths) Launch(id string) string { return filepath.Join(p.InstanceDir(id), "launch") }
-func (p Paths) Config(id string) string { return filepath.Join(p.InstanceDir(id), "instance.toml") }
+
+// Profile is the instance snapshot: the file a human is meant to read and edit.
+// YAML because the schema is nested (identity / exec / isolation / bwrap) and a
+// nested file reads as a hierarchy instead of as a wall of headers.
+func (p Paths) Profile(id string) string {
+	return filepath.Join(p.InstanceDir(id), "profile.yml")
+}
+
+// LegacyProfile is the pre-YAML snapshot name. Nothing reads it any more, but
+// finding one has to be reported rather than ignored: an instance whose file
+// silently stops being an instance is exactly the kind of failure twin exists
+// to prevent.
+func (p Paths) LegacyProfile(id string) string {
+	return filepath.Join(p.InstanceDir(id), "instance.toml")
+}
+
 func (p Paths) StateDir(id string) string {
 	return filepath.Join(p.Home, ".local/state/twin", id)
 }
 
 // RelStateDir is the state directory written with a leading ~ instead of an
-// absolute home. instance.toml is meant to be human-edited and replayed on
+// absolute home. profile.yml is meant to be human-edited and replayed on
 // another machine (设计 §5.1), so it must not bake in today's home; Expand
 // turns this back into a real path at use time.
 func (p Paths) RelStateDir(id string) string {
@@ -166,8 +247,8 @@ func (p Paths) RulesDir() string {
 	return filepath.Join(p.Home, ".config/twin/rules.d")
 }
 
-// GlobalConfig is the environment layer: machine-scoped defaults. It is not
-// the same file as Config(id), which is one instance's snapshot.
+// GlobalConfig is the environment layer: machine-scoped defaults. It is not the
+// same file as Profile(id), which is one instance's snapshot.
 func (p Paths) GlobalConfig() string {
 	return filepath.Join(p.Home, ".config/twin/config.toml")
 }
@@ -271,8 +352,8 @@ func (i *Instance) EffectiveAlias() string {
 // panel and the overview both scale down from without visible loss.
 const DefaultIconSize = 256
 
-// IconSizeOrDefault keeps the size out of instance.toml for now: it is
-// derivable, and a persisted copy would only invite drift.
+// IconSizeOrDefault keeps the size out of profile.yml for now: it is derivable,
+// and a persisted copy would only invite drift.
 func (i *Instance) IconSizeOrDefault() int { return DefaultIconSize }
 
 // TargetDir is the directory holding the real program (and the alias).
@@ -320,8 +401,8 @@ func (i *Instance) Check() error {
 		}
 	}
 	for n, b := range i.Binds {
-		if b.Canonical == "" || b.Private == "" {
-			return fmt.Errorf("map.bind[%d]: both canonical and private are required", n)
+		if b.Source == "" || b.Target == "" {
+			return fmt.Errorf("bind[%d] %q: 源和目标是两条路径，都要写", n, b)
 		}
 	}
 	for n, tok := range i.Bwrap {
@@ -368,66 +449,95 @@ func CheckBwrapToken(tok string) error {
 
 // ------------------------------------------------------------ serialisation
 
-// toTree renders the instance as the documented TOML layout.
-func (i *Instance) toTree() (*tomlz.Tree, error) {
-	t := tomlz.New()
+// toTree renders the instance as the documented YAML layout.
+//
+// Every key carries the note a human needs in order to decide whether to touch
+// it, because this file *is* the instance's documentation: `twin new` prints the
+// path and stops, and the terminal no longer repeats any of this.
+func (i *Instance) toTree() (*yamlz.Tree, error) {
+	t := yamlz.New()
+	t.SetComment("id", "实例 id：桌面项基名、别名文件名、这个目录名，三者都是它。")
 	t.Set("id", i.ID)
+	t.SetComment("name", "显示名（窗口标题与菜单里看到的）。name_en / comment_en 是可选英文版。")
 	t.Set("name", i.Name)
+	t.SetComment("name_en", "英文显示名。")
 	if i.NameEn != "" {
 		t.Set("name_en", i.NameEn)
 	}
+	t.SetComment("comment", "说明（菜单里那行副标题）。")
 	if i.Comment != "" {
 		t.Set("comment", i.Comment)
 	}
+	t.SetComment("comment_en", "英文说明。")
 	if i.CommentEn != "" {
 		t.Set("comment_en", i.CommentEn)
 	}
+	t.SetComment("keywords", "搜索关键词，`;` 分隔。留空则沿用源桌面项。")
 	if i.Keywords != "" {
 		t.Set("keywords", i.Keywords)
 	}
+	t.SetComment("categories", "桌面分类，`;` 分隔。留空则沿用源桌面项。")
 	if i.Categories != "" {
 		t.Set("categories", i.Categories)
 	}
+	t.SetComment("source", "源桌面项。`twin regen` 会重读它取 Categories / Keywords。")
 	if i.Source != "" {
 		t.Set("source", i.Source)
 	}
 
 	id := t.Ensure("identity")
+	id.SetComment("level", "none = 只写桌面项与图标、程序原样跑；alias = bwrap overlay 零拷贝改名（主力）；\n"+
+		"redirect = 改名，并多写一条把窗口 app_id 改回本实例的扩展规则。")
 	id.Set("level", string(i.Level))
+	id.SetComment("wm_class", "写进桌面项的 StartupWMClass，默认 = id。只在会改名时才需要。")
 	if i.WMClass != "" {
 		id.Set("wm_class", i.WMClass)
 	}
+	id.SetComment("notify", "写进桌面项的 StartupNotify=。")
 	id.Set("notify", i.Notify)
 
 	ic := t.Ensure("icon")
+	ic.SetComment("source", "源图标。")
 	if i.IconSource != "" {
 		ic.Set("source", i.IconSource)
 	}
+	ic.SetComment("badge", "图标上的角标文字。纯数字要加引号，否则会被读成数字。")
 	if i.Badge != "" {
 		ic.Set("badge", i.Badge)
 	}
+	ic.SetComment("style", "角标画法：corner 右下角贴文字 / number 居中大数字 / dot 圆点。")
 	ic.Set("style", i.BadgeStyle)
 
 	ex := t.Ensure("exec")
+	ex.SetComment("target", "真实程序的绝对路径。")
 	ex.Set("target", i.Target)
+	ex.SetComment("alias", "沙箱内建在 target 同目录下的别名文件名。窗口 app_id 取自真实路径名，\n"+
+		"托盘 SNI Id 取自 argv[0]，两者都等于它 —— 让它们分叉，就有一个找不到桌面项。")
 	if i.Level.Renames() {
 		ex.Set("alias", i.EffectiveAlias())
 	}
+	ex.SetComment("argv0", "保留字段：留空即让 argv[0] 自动取 alias；填了就必须等于 alias。")
 	if i.Argv0 != "" {
 		ex.Set("argv0", i.Argv0)
 	}
-	envT := tomlz.New()
+	// A nested mapping rather than TOML's one-line {k = v}: with YAML the
+	// hierarchy is free, and env is a hierarchy.
+	ex.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），写成 `键: 值`。")
+	envT := yamlz.New()
 	for _, k := range sortedKeys(i.Env) {
 		envT.Set(k, i.Env[k])
 	}
-	ex.Set("env", tomlz.Inline{T: envT})
+	ex.Set("env", envT)
 
 	iso := t.Ensure("isolation")
+	iso.SetComment("tmpfs", "在沙箱内被盖成空目录的路径。")
 	if len(i.Tmpfs) == 0 {
 		iso.Set("tmpfs", []string{})
 	} else {
 		iso.Set("tmpfs", i.Tmpfs)
 	}
+	iso.SetComment("unshare", "额外 unshare 的命名空间。含 `net` 会被拒绝：它切断网络，\n"+
+		"也打破基于 abstract socket 的单实例锁。")
 	if len(i.Unshare) == 0 {
 		iso.Set("unshare", []string{})
 	} else {
@@ -436,12 +546,16 @@ func (i *Instance) toTree() (*tomlz.Tree, error) {
 	// Written unconditionally. The machine-scoped half of this decision lives
 	// in config.toml, so a reader of this file must be able to tell "this
 	// program needs no trampoline" from "this file predates the field".
+	iso.SetComment("nested_ns", "这个程序自己要不要建嵌套 user namespace（Chromium / Electron 类）。\n"+
+		"它跟着程序走；用哪个跳板是机器属性，留在 config.toml 里。")
 	iso.Set("nested_ns", i.NestedNS)
 
 	// The passthrough region, stored in the same flat-token shape the CLI and
 	// the (future) rules.d use, so merging stays "concatenate the arrays"
 	// rather than "invent a quoting rule" (设计 §3.2).
 	bw := t.Ensure("bwrap")
+	bw.SetComment("extra", "逐 token 原样透传给 bwrap；twin 不解析它们（不猜 arity）。\n"+
+		"拼在基座之后、程序之前，所以同目标挂载会由后写的那个胜出。")
 	if len(i.Bwrap) == 0 {
 		bw.Set("extra", []string{})
 	} else {
@@ -451,28 +565,42 @@ func (i *Instance) toTree() (*tomlz.Tree, error) {
 	// Host integration. Written unconditionally: "we did not override the tray"
 	// is a decision worth seeing in the file, and an absent section would make
 	// it indistinguishable from a file written before this option existed.
-	t.Ensure("tray").Set("override", i.TrayOverride)
+	trayT := t.Ensure("tray")
+	trayT.SetComment("override", "要不要把宿主的托盘覆盖表指向本实例。false = 这台机器上不用 twin 管托盘\n"+
+		"（宿主的表是全局的，而有些程序的托盘 id twin 预测不了）。")
+	trayT.Set("override", i.TrayOverride)
 
+	// Written unconditionally too, empty case included. "twin redirected
+	// nothing" is the default decision, and once the terminal stopped printing
+	// it this comment became the only place the shared-state warning can live —
+	// so the key has to be there even when there is nothing to list.
+	t.SetComment("bind", "隔离哪个数据目录。整段替换内置规则（不是追加）。\n"+
+		"写法同 Docker Compose 的卷：源:目标[:ro]，源是数据实际所在，目标是程序看到它的位置。\n"+
+		"  源路径:目标路径        ⇒ 私有副本，两个实例互不干扰\n"+
+		"  只写一条路径           ⇒ 该路径挂回自己，只把只读升回可写（数据不搬家）\n"+
+		"  源路径:目标路径:ro     ⇒ 只读挂载，程序看得见但改不动\n"+
+		"空着 = 数据目录与源程序共用；程序若有单实例锁（Electron / Qt / GTK 系常见），\n"+
+		"两个实例会互相干扰。这里只影响这一个实例；要让这个程序以后新建的实例也用同样\n"+
+		"的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init 生成草稿）。")
+	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
-		e := t.AddTable("map.bind")
-		e.Set("canonical", b.Canonical)
-		e.Set("private", b.Private)
+		binds = append(binds, b.String())
 	}
+	t.Set("bind", binds)
 	return t, nil
 }
 
-// Render returns the TOML document for the instance.
+// Render returns the YAML document for the instance.
 func (i *Instance) Render() ([]byte, error) {
 	t, err := i.toTree()
 	if err != nil {
 		return nil, err
 	}
-	header := "# twin —— 真源文件。改完跑 `twin regen " + i.ID + "` 重新落盘。\n" +
-		"# level=alias 时窗口 app_id 取自 exec.target 的真实路径名，托盘 SNI Id 取自 argv[0]，\n" +
-		"# 两者都等于 exec.alias —— 所以别让它们分叉。\n" +
-		"# [bwrap] extra 是逐 token 原样透传给 bwrap 的选项，twin 不解析它们；\n" +
-		"# 它拼在基座之后、程序之前，所以同目标挂载会由后写的那个胜出。\n"
-	return append([]byte(header), tomlz.Encode(t)...), nil
+	header := "# twin —— 真源文件（YAML）。改完跑 `twin regen " + i.ID + "` 重新落盘。\n" +
+		"# 这个文件是这个实例的唯一定义：`twin new --publish` 与 `twin regen` 只重放它，\n" +
+		"# 不再看命令行。每个键的说明就写在它自己上面。\n" +
+		"# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。\n"
+	return append([]byte(header), yamlz.Encode(t)...), nil
 }
 
 // Load reads an instance definition from disk.
@@ -481,7 +609,7 @@ func Load(path string) (*Instance, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, err := tomlz.Parse(data)
+	root, err := yamlz.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -513,8 +641,16 @@ func Load(path string) (*Instance, error) {
 	for _, k := range env.Keys() {
 		it.Env[k] = env.Str(k)
 	}
-	for _, b := range root.TablesAt("map.bind") {
-		it.Binds = append(it.Binds, Bind{Canonical: b.Str("canonical"), Private: b.Str("private")})
+	specs, err := root.StrListStrict("bind")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, spec := range specs {
+		b, err := ParseBind(spec)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		it.Binds = append(it.Binds, b)
 	}
 	if it.BadgeStyle == "" {
 		it.BadgeStyle = "corner"
@@ -530,6 +666,33 @@ func Load(path string) (*Instance, error) {
 		it.Level = LevelAlias
 	}
 	return it, nil
+}
+
+// LoadProfile reads one instance's snapshot, and turns "there is no
+// profile.yml here" into an explanation when the pre-YAML file is what is
+// actually sitting there. A missing file would otherwise read as "this instance
+// never existed", which is a lie the user cannot see through.
+func LoadProfile(p Paths, id string) (*Instance, error) {
+	it, err := Load(p.Profile(id))
+	if err == nil {
+		return it, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if _, statErr := os.Stat(p.LegacyProfile(id)); statErr == nil {
+		return nil, legacyProfileError(p, id)
+	}
+	return nil, err
+}
+
+// legacyProfileError is the one thing to say about an instance.toml: this
+// version moved the snapshot to YAML, and the old parser is gone rather than
+// kept around as a second code path that could disagree with the new one.
+func legacyProfileError(p Paths, id string) error {
+	return fmt.Errorf("%s 还是旧的 TOML 快照（这个版本起快照叫 profile.yml，YAML 格式）："+
+		"请把内容改写成 YAML 存到 %s（键名不变），或者 twin remove %s 之后重新 twin new",
+		p.LegacyProfile(id), p.Profile(id), id)
 }
 
 // List returns every instance found under paths, sorted by id.
@@ -553,8 +716,15 @@ func List(p Paths) ([]*Instance, error) {
 		// has nothing to load and nothing to say. Treating them as broken
 		// instances made `twin list` fail on every machine that had ever
 		// wrapped a Chromium program.
-		path := p.Config(e.Name())
+		path := p.Profile(e.Name())
 		if _, err := os.Stat(path); err != nil {
+			// No profile.yml. A pre-YAML instance.toml is a *different* thing:
+			// a real instance this version cannot read, so it is reported
+			// instead of skipped — silently dropping it would make the
+			// instance disappear from `list` with no explanation.
+			if _, legacyErr := os.Stat(p.LegacyProfile(e.Name())); legacyErr == nil {
+				return nil, legacyProfileError(p, e.Name())
+			}
 			continue
 		}
 		it, err := Load(path)

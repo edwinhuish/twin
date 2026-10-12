@@ -132,7 +132,7 @@ func TestBuildRedirectRenamesLikeAlias(t *testing.T) {
 
 func TestRenderLauncherCarriesPassthroughAndSeparator(t *testing.T) {
 	i := passthroughInstance("--unshare-pid")
-	i.Binds = []inst.Bind{{Canonical: "~/.xwechat", Private: "~/.local/state/twin/wechat2/xwechat"}}
+	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestLintBwrapWarnsOnBindInPassthrough(t *testing.T) {
 	if !strings.Contains(joined, "--ro-bind") {
 		t.Errorf("the offending option is not named: %q", warns)
 	}
-	if !strings.Contains(joined, "--map") {
+	if !strings.Contains(joined, "bind") {
 		t.Errorf("the warning does not point at the supported route: %q", warns)
 	}
 }

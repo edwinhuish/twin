@@ -88,7 +88,7 @@ Keywords   微信;wechat;
   · /usr/bin/wechat 是指向 /opt/wechat/wechat 的链接 —— 别名要建在 /opt/wechat 里（$ORIGIN 与 /proc/self/exe 都看真实路径）
   · Wayland 原生 + 静态链接的 Qt：窗口 app_id 由 Qt 从可执行文件真实路径派生（已实测）
   · 同时含 Wayland 与 X11 平台插件：本会话有 WAYLAND_DISPLAY 时按 Wayland 走
-  · 应用规则 wechat：内置规则（3 条路径映射 ⇒ [[map.bind]]）
+  · 应用规则 wechat：内置规则（3 条路径映射 ⇒ 快照里的 bind）
 ```
 
 `显示名` / `说明` 打印的是**语言化**取值（`Name[<当前语言>]` 优先），因为 `wrap` 就是这么
@@ -106,8 +106,8 @@ Keywords   微信;wechat;
 
 | 命令 | 做什么 |
 |---|---|
-| `twin new wechat` | 只写 `~/.local/share/twin/wechat2/instance.toml`，然后说清改哪个文件、下一步敲什么 |
-| `$EDITOR …/wechat2/instance.toml` | 改 `[[map.bind]]` / `name` / `keywords` / `identity.level`；不改也行 |
+| `twin new wechat` | 只写 `~/.local/share/twin/wechat2/profile.yml`，然后说清改哪个文件、下一步敲什么 |
+| `$EDITOR …/wechat2/profile.yml` | 改 `bind` / `name` / `keywords` / `identity.level`；不改也行 |
 | `twin new wechat --publish` | 按那份配置落盘：桌面项 / 图标 / 启动器 / 宿主托盘 ＋ 自检 |
 | `twin new wechat --publish -- --unshare-pid` | 一步到位：没有待落盘的配置时，它就是一次完整生成，选项与 `--` 透传区照常生效 |
 
@@ -116,39 +116,41 @@ Keywords   微信;wechat;
 就被占用了（`--as` 撞上它会被拒绝），重新推导只会悄悄挪到 `wechat3`。待落盘的配置不止一份时
 （同源多实例），它拒绝猜，要求 `--as` 指名并把候选列出来。
 
-已经有一份待落盘的配置时，再给 `--name` / `--map` / `--level` 这类**描述实例**的选项会被**拒绝**
+已经有一份待落盘的配置时，再给 `--name` / `--keywords` / `--level` 这类**描述实例**的选项会被**拒绝**
 （退出码 2）：那份配置才是真源 —— 静默按选项重新推导会丢掉你刚改的内容，静默忽略选项又等于没说。
 要改就改文件；要另起一个实例，换一个 `--as`。
 
 ```console
 $ twin new wechat
 📝 已写出实例配置 wechat2
-  快照   /home/you/.local/share/twin/wechat2/instance.toml
-
-📁 路径映射
-  3 条，来源：内置规则 wechat
-  私有  ~/.xwechat                             → ~/.local/state/twin/wechat2/xwechat
-  共用  ~/Documents/xwechat_files   （原地升回可写，数据不搬家）
-  私有  ~/Documents/xwechat_files/all_users    → ~/.local/state/twin/wechat2/all_users
-  改：~/.config/twin/rules.d/wechat.toml —— 影响这个程序以后新建的实例（twin rules --init wechat 生成草稿）
-      只改这一个：编辑 /home/you/.local/share/twin/wechat2/instance.toml 里的 [[map.bind]]，再 twin regen wechat2
-
-✏️  要改就改这一个文件
-  [[map.bind]]       隔离哪个数据目录（见上面的路径映射）
-  name / comment     显示名与说明（现在：微信2 / 微信桌面版）
-  keywords           搜索关键词（现在：微信;wechat;）
-  identity.level     身份级别（现在：alias）
+  快照   /home/you/.local/share/twin/wechat2/profile.yml
 
 👉 下一步
-  1. 改上面那个文件（不改也行 —— 推导出来的默认值通常就够用）
+  1. 改上面那个文件 —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）
   2. 落盘：twin new wechat --as wechat2 --publish
-     想先看它会写什么，就在后面再加 --dry-run。
-  3. 从桌面项重新启动这个实例：桌面项是后写的，GNOME 不会给已经存在的窗口重算归属。
+     想先看它会写什么、或看完整说明，就在后面再加 --dry-run / --explain。
 ```
 
-配置阶段的输出刻意短，因为它这一阶段只做两件事：**只写一个文件**（桌面项、图标、启动器、私有
-状态目录都等 `--publish`），并且**把"该看哪"指出来**。已经有同一源程序的待落盘配置时，它只报告
-那一份，既不写第二份、也不重写它 —— 你改过的内容就是那个文件存在的理由。
+配置阶段的输出刻意短：它这一阶段只做两件事 —— **只写一个文件**（桌面项、图标、启动器、私有状态
+目录都等 `--publish`），并且**把路径指出来**。逐键的说明、`bind` 的语义、`rules.d` 的存在，
+全都写在**那份文件的注释里**：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件
+两处说法各表一套。要看完整的推导值与规则模板，加 `--explain`。
+
+终端上只多留一行，给"**一条映射都没有**"的程序：
+
+```console
+$ twin new foo
+📝 已写出实例配置 foo2
+  快照   /home/you/.local/share/twin/foo2/profile.yml
+  ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见快照里的 bind
+
+👉 下一步
+  …
+```
+
+它是这个命令唯一可能留下、而别处不会再报的后果（共享状态要到两个实例抢同一个锁文件时才暴露），
+所以它留在终端上；其余情况一律不多说。已经有同一源程序的待落盘配置时，它只报告那一份，既不写
+第二份、也不重写它 —— 你改过的内容就是那个文件存在的理由。
 
 ```console
 $ twin new wechat --publish
@@ -156,12 +158,12 @@ $ twin new wechat --publish
   桌面项   /home/you/.local/share/applications/wechat2.desktop
   图标     /home/you/.local/share/appicons/wechat2.png
   启动器   /home/you/.local/share/twin/wechat2/launch
-  实例定义 /home/you/.local/share/twin/wechat2/instance.toml
+  实例定义 /home/you/.local/share/twin/wechat2/profile.yml
   托盘覆盖 已写入 custom-icons（该表热重载，立刻生效）
 
 📁 路径映射
-  3 条，来源：实例快照 /home/you/.local/share/twin/wechat2/instance.toml
-  私有  ~/.xwechat                             → ~/.local/state/twin/wechat2/xwechat
+  3 条，来源：实例快照 /home/you/.local/share/twin/wechat2/profile.yml
+  私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
   …
 🔍 自检
 ✅ exec.target            /opt/wechat/wechat
@@ -176,44 +178,44 @@ $ twin new wechat --publish
 
 安装阶段的输出也刻意短：产物清单 ＋ `路径映射` ＋ 自检 ＋ 下一步。"要动手时才需要"的东西
 （规则模板全文、推导值、手工验证命令）用 `--explain` 展开。`--dry-run --publish` 是**完整落盘**的
-预演 —— 桌面项正文、`instance.toml` 正文、bwrap 调用、托盘将写入的那一行全都在，而且由真实落盘
+预演 —— 桌面项正文、`profile.yml` 正文、bwrap 调用、托盘将写入的那一行全都在，而且由真实落盘
 用的**同一份代码**渲染。
 
 路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
-抢同一个锁文件时才暴露。所以它必须出现在输出里，而不是只躺在 `instance.toml` 里。这一节说明
-共有几条、知识来自哪一层（内置规则 / `rules.d` / `--map` / **实例快照**）、以及**改它该编辑哪个文件** ——
-两条路都要说清楚：`rules.d` 管的是**以后新建**的实例，快照管的是**这一个**。
+抢同一个锁文件时才暴露。两半各有各的交代方式：`twin new` 把它写进 `profile.yml` 的 `bind`
+（连同"空着意味着什么"的注释），只在一条都没有时于终端补一句警告；`--publish` 仍是单独一节，
+因为它这时已经变成了启动器里的 `--bind`。这一节说明共有几条、知识来自哪一层（内置规则 /
+`rules.d` / **实例快照**）、以及**改它该编辑哪个文件** —— 两条路都要说清楚：`rules.d`
+管的是**以后新建**的实例，快照管的是**这一个**。
 
 `--explain` 把这一节再摊开一点，并附上一份照抄即可的规则模板：
 
 ```console
-  要改（挑一个粒度）：
-    · 影响这个程序以后新建的实例：写 ~/.config/twin/rules.d/wechat.toml（twin rules --init wechat 生成草稿）
-    · 只改这一个实例：编辑 ~/.local/share/twin/wechat2/instance.toml 里的 [[map.bind]]，再 twin regen wechat2
-    · 只想先看一眼、什么都不落：twin new <source> --as <tmp-id> --map '<canonical>:<private>' --dry-run
+📁 路径映射
+  3 条，来源：内置规则 wechat
+  私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
+  共用  ~/Documents/xwechat_files:~/Documents/xwechat_files   （原地升回可写，数据不搬家）
+  私有  ~/.local/state/twin/wechat2/all_users:~/Documents/xwechat_files/all_users
+  改：~/.config/twin/rules.d/wechat.toml —— 影响这个程序以后新建的实例（twin rules --init wechat 生成草稿）
+      只改这一个：编辑 ~/.local/share/twin/wechat2/profile.yml 里的 bind，再 twin regen wechat2
 
   📋 照抄下面这份（就是规则文件的全部内容）：
 
     app = "wechat"
 
-    [[bind]]
-    canonical = "~/.xwechat"
-    private   = "~/.local/state/twin/{id}/xwechat"
+    bind = [
+      "~/.local/state/twin/{id}/xwechat:~/.xwechat",
+      "~/Documents/xwechat_files",
+      "~/.local/state/twin/{id}/all_users:~/Documents/xwechat_files/all_users",
+    ]
 
-    [[bind]]
-    canonical = "~/Documents/xwechat_files"
-    private   = "~/Documents/xwechat_files"
-
-    [[bind]]
-    canonical = "~/Documents/xwechat_files/all_users"
-    private   = "~/.local/state/twin/{id}/all_users"
-
-  private 与 canonical 相同（或整个 private 留空）⇒ 与该目录共用，只把只读升回可写；
-  private 指向别处 ⇒ 私有副本，两个实例互不干扰。
+  源:目标 ⇒ 私有副本，两个实例互不干扰；单写一条路径 ⇒ 与该目录共用，只把只读升回可写；
+  源:目标:ro ⇒ 只读挂载。
 ```
 
-模板里的 `private` 会把本实例的 id 写回成 `{id}` 占位符 —— 照抄出来的规则服务这个程序的**所有**
-实例，而不是被烤死在某一个 id 上。上面路径按 `$HOME` 缩写了，工具打印的是绝对路径。
+模板里的 `{id}` 占位符 —— 本实例的私有状态目录会被写回成 `~/.local/state/twin/{id}` —— 照抄出来的
+规则服务这个程序的**所有**实例，而不是被烤死在某一个 id 上。上面路径按 `$HOME` 缩写了，工具打印的
+是绝对路径。
 
 一个**没有规则**的程序长这样 —— `路径映射` 一节的职责就是把"没映射任何东西"这句话连同
 "那该映射什么"一起说清楚（候选目录只列**未应用**的，见下面的 `twin rules --init`）：
@@ -228,7 +230,7 @@ $ twin new wechat --publish
     ~/.local/state/foo                           目录存在
     要隔离就先生成一份规则草稿：twin rules --init foo
   改：~/.config/twin/rules.d/foo.toml —— 影响这个程序以后新建的实例（twin rules --init foo 生成草稿）
-      只改这一个：编辑 …/twin/foo2/instance.toml 里的 [[map.bind]]，再 twin regen foo2
+      只改这一个：编辑 …/twin/foo2/profile.yml 里的 bind，再 twin regen foo2
 ```
 
 ### `twin verify <id>`
@@ -239,7 +241,7 @@ $ twin new wechat --publish
 并给出收尾命令，退出码 `1`：
 
 ```console
-➖ wechat3 还没落盘：只有配置 /home/you/.local/share/twin/wechat3/instance.toml，桌面项 / 图标 / 启动器都还没写
+➖ wechat3 还没落盘：只有配置 /home/you/.local/share/twin/wechat3/profile.yml，桌面项 / 图标 / 启动器都还没写
   落盘：twin new <source> --as wechat3 --publish    （等价的直接做法：twin regen wechat3）
 ```
 
@@ -274,12 +276,12 @@ foo3             alias      foo3     foo                      foo3.desktop  ← 
 删除某一个：twin remove <id>（不加 --yes 只打印要删什么）
 ```
 
-`← 未落盘` 不是"桌面项被谁删了"，而是两段式 wrap 的正常中间态：配置已经在 `instance.toml` 里，
+`← 未落盘` 不是"桌面项被谁删了"，而是两段式 wrap 的正常中间态：配置已经在 `profile.yml` 里，
 只差 `--publish`。
 
 ### `twin regen <id> [--refresh]`
 
-改了 `instance.toml` 后重新落盘 —— 也就是 `twin new <source> --as <id> --publish` 的另一条入口，
+改了 `profile.yml` 后重新落盘 —— 也就是 `twin new <source> --as <id> --publish` 的另一条入口，
 两者走**同一条安装路径**，所以不可能出现"publish 会做、regen 不做"的事。
 
 - **默认只读 CLI 与快照**（重放必须是确定性的）。碰一下 `config.toml` 不该静默改写一排实例。
@@ -323,7 +325,7 @@ twin config > ~/.config/twin/config.toml
 
 | 证据 | 强度 | 草稿里 |
 |---|---|---|
-| 这台机器上目录**真的存在**（`~/.config/<名>`、`~/.local/share/<名>`、`~/.cache/<名>`、`~/.local/state/<名>`、`~/.<名>`） | 事实：程序已经在那儿写过东西了 | 写成**生效**的 `[[bind]]`（`private` 默认给私有副本） |
+| 这台机器上目录**真的存在**（`~/.config/<名>`、`~/.local/share/<名>`、`~/.cache/<名>`、`~/.local/state/<名>`、`~/.<名>`） | 事实：程序已经在那儿写过东西了 | 写成**生效**的 `bind` 条目（默认按私有副本：源是私有目录，目标是这个真实路径） |
 | 同上，但目录名只是**相近**（`~/.xwechat` 对 `wechat`） | 也是事实（目录确实存在），但那句话里的"属于这个程序"是推断 | 同样生效，证据写成 `目录存在（名字相近）` |
 | 二进制里的 `~/…` 路径字面量 | 猜测：可能属于可选功能、别的平台，或一个只是被链接进来的库 | **注释掉** |
 
@@ -371,13 +373,13 @@ Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把�
 
 | 选项 | 可重复 | 说明 |
 |---|---|---|
-| `--map <canonical>:<private>` | ✅ | 路径映射。程序看到 `canonical`，数据实际存在 `private`。两端都会自动 `mkdir -p` |
-| `--rw <dir>` | ✅ | 把这个目录在沙箱内**升回可写**（等价于 `--map dir:dir`；在 `--ro-bind / /` 之后原地升级） |
 | `--tmpfs <dir>` | ✅ | 让该目录在沙箱内为空（一份 tmpfs 盖上去） |
 | `--no-tmpfs` | — | 完全不要 tmpfs。**X11 程序必须如此**（`--tmpfs /tmp` 会砍掉 `/tmp/.X11-unix/X0`） |
 
-> `--map` / `--rw` / `--tmpfs` 与透传区不同：它们**享受** `~/` 展开与 `mkdir` 补齐。
-> 数据路径请用 `--map`，不要塞进 `--` 后面的透传区。
+> **路径映射没有 CLI 选项**，两条路都是文件：`rules.d/<程序>.toml` 管这个程序**以后新建**的实例，
+> 实例快照的 `bind` 管**这一个**。一条映射正是最该在安装任何东西**之前**被读一遍的东西，而命令行
+> 参数没人会回头再看第二眼 —— 所以它先落成文件（见 [`configuration.md`](configuration.md)）。
+> `--tmpfs` 与透传区不同：它**享受** `~/` 展开与 `mkdir` 补齐。
 
 ### 托盘与覆盖
 
@@ -394,13 +396,13 @@ Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把�
 | `--publish` | 落盘：写桌面项 / 图标 / 启动器 / 宿主托盘，然后自检。已经有一份待落盘的配置时按它走 —— 此时再给上面那些**描述实例**的选项会被拒绝（退出码 2） |
 | `--force` | 覆盖已存在但**不是** twin 生成的桌面项／实例；也允许落盘时遮蔽同名的系统桌面项 |
 | `--explain` | 打印完整说明：推导值、`路径映射` 的修改粒度与规则模板全文、手工验证命令 |
-| `--dry-run` | 只打印将要写什么，一个字节不落盘。不带 `--publish` 时打印这份配置（含 `instance.toml` 正文）；带 `--publish` 时打印完整落盘（文件清单、桌面项全文、bwrap 调用、托盘将写入的行、推导值） |
+| `--dry-run` | 只打印将要写什么，一个字节不落盘。不带 `--publish` 时打印这份配置（含 `profile.yml` 正文）；带 `--publish` 时打印完整落盘（文件清单、桌面项全文、bwrap 调用、托盘将写入的行、推导值） |
 
 `--publish` 之后的选项分两类，因为两段式的两半问的是不同的问题：
 
 | 类别 | 选项 | 待落盘配置已存在时 |
 |---|---|---|
-| **描述实例**（会进快照） | `--name` `--name-en` `--comment` `--comment-en` `--keywords` `--categories` `--icon` `--badge` `--badge-style` `--level` `--map` `--rw` `--tmpfs` `--no-tmpfs` `--no-tray` 与 `--` 透传区 | **拒绝**：要改就改快照 |
+| **描述实例**（会进快照） | `--name` `--name-en` `--comment` `--comment-en` `--keywords` `--categories` `--icon` `--badge` `--badge-style` `--level` `--tmpfs` `--no-tmpfs` `--no-tray` 与 `--` 透传区 | **拒绝**：要改就改快照 |
 | **描述这次动作** | `--as` `--force` `--publish` `--dry-run` `--explain` | 照常生效 |
 
 ### bwrap 透传
@@ -470,7 +472,7 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 生成器 |
 | `~/.local/share/appicons/<id>.png` | 图标 | 生成器 |
 | `~/.local/share/twin/<id>/launch` | 薄启动器 | 生成器 |
-| `~/.local/share/twin/<id>/instance.toml` | 实例快照（真源；写出来就算"配置好了"） | 生成器（`twin new`），你改，再 `--publish` / `regen` |
+| `~/.local/share/twin/<id>/profile.yml` | 实例快照（真源；写出来就算"配置好了"） | 生成器（`twin new`），你改，再 `--publish` / `regen` |
 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本（共享，一台机器一份） | 生成器（仅需要时） |
 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（共享） | 生成器（仅需要时） |
 | `~/.local/state/twin/<id>/` | 私有数据（持久） | 运行期 |
@@ -502,7 +504,7 @@ twin new wechat -- --unshare-pid --setenv TWIN_FOO bar
 ```bash
 # 最省事（三行就是全部）
 twin new wechat                      # 写配置，打印"改哪个文件、下一步敲什么"
-$EDITOR ~/.local/share/twin/wechat2/instance.toml
+$EDITOR ~/.local/share/twin/wechat2/profile.yml
 twin new wechat --publish
 
 # 一模一样，只是不打算改配置（待落盘的配置不存在时）
@@ -519,19 +521,26 @@ twin new wechat --explain
 # 明确指定身份
 twin new wechat --as wx-work --name "微信·工作" --badge W --badge-style number --publish
 
-# 让两份实例彻底分家（连配置目录一起隔离）
-twin new wechat --as wx-alt \
-  --map '~/.config/wechat:~/.local/state/twin/wx-alt/config' \
-  --map '~/.xwechat:~/.local/state/twin/wx-alt/xwechat' --publish
+# 让两份实例彻底分家（连配置目录一起隔离）：映射写进快照，再落盘
+twin new wechat --as wx-alt
+$EDITOR ~/.local/share/twin/wx-alt/profile.yml
+#   bind:
+#     - ~/.local/state/twin/wx-alt/config:~/.config/wechat
+#     - ~/.local/state/twin/wx-alt/xwechat:~/.xwechat
+twin new wechat --as wx-alt --publish
 
 # 一个只想多开小号、其它全共享的浏览器
-twin google-chrome --as chrome-alt --map '~/.config/google-chrome:~/.local/state/twin/chrome-alt/profile' --publish
+twin new google-chrome --as chrome-alt
+$EDITOR ~/.local/share/twin/chrome-alt/profile.yml
+#   bind:
+#     - ~/.local/state/twin/chrome-alt/profile:~/.config/google-chrome
+twin new google-chrome --as chrome-alt --publish
 
 # 底层的额外隔离（透传）
 twin new wechat --publish -- --unshare-pid
 
 # 改完快照重放（regen 与 --publish 是同一条路）
-$EDITOR ~/.local/share/twin/wechat2/instance.toml
+$EDITOR ~/.local/share/twin/wechat2/profile.yml
 twin regen wechat2
 
 # 先看要删什么，再删

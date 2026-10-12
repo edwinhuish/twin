@@ -31,8 +31,6 @@ type Options struct {
 	Badge      string
 	BadgeStyle string
 	Level      inst.Level
-	Maps       []inst.Bind
-	RW         []string
 	Tmpfs      []string
 	// Cfg is the environment layer. A nil value means "built-in defaults",
 	// which is what `regen` uses: replaying a snapshot must not depend on a
@@ -92,7 +90,7 @@ type Result struct {
 	Desktop string
 	Icon    string
 	Launch  string
-	Config  string
+	Profile string
 	State   string
 	// Rule is the L5 redirection rule; empty unless level=redirect.
 	Rule  string
@@ -211,8 +209,9 @@ func Inspect(p inst.Paths, source string) (*Inspection, error) {
 		// concrete id is still a placeholder.
 		for _, b := range rule.Binds {
 			insp.Presets = append(insp.Presets, inst.Bind{
-				Canonical: expandID(b.Canonical, "<id>"),
-				Private:   expandID(b.Private, "<id>"),
+				Source:   expandID(b.Source, "<id>"),
+				Target:   expandID(b.Target, "<id>"),
+				ReadOnly: b.ReadOnly,
 			})
 		}
 		where := "内置规则"
@@ -220,11 +219,12 @@ func Inspect(p inst.Paths, source string) (*Inspection, error) {
 			where = rule.Path
 		}
 		insp.Notes = append(insp.Notes, fmt.Sprintf(
-			"应用规则 %s：%s（%d 条路径映射 ⇒ [[map.bind]]）", matched, where, len(insp.Presets)))
+			"应用规则 %s：%s（%d 条路径映射 ⇒ bind）", matched, where, len(insp.Presets)))
 	} else {
 		insp.Notes = append(insp.Notes,
-			"没有该程序的状态路径知识：本实例只做身份包裹。若它有单实例锁或共享配置，请用 --map 手工隔离，"+
-				"或在 "+p.RulesDir()+"/"+key+".toml 里写一条规则")
+			"没有该程序的状态路径知识：本实例只做身份包裹。若它有单实例锁或共享配置，"+
+				"在 "+p.RulesDir()+"/"+key+".toml 里写一条 bind（twin rules --init "+key+" 生成草稿），"+
+				"或只给这一个实例改快照里的 bind")
 	}
 	return insp, nil
 }
@@ -416,7 +416,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// Refuse a missing icon *before* anything is written. A desktop entry
 	// without a resolvable Icon= shows up as the gear placeholder, which is
 	// exactly the bug this tool exists to fix. Checking here rather than in
-	// Materialize matters: Materialize writes the launcher and instance.toml
+	// Materialize matters: Materialize writes the launcher and profile.yml
 	// first, so failing at the icon would leave a half-built instance behind
 	// (and the next wrap would then refuse with "建议先 unwrap").
 	if it.IconSource == "" {
@@ -449,20 +449,16 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		it.Tmpfs = nil
 	}
 
-	// Path maps, lowest priority first: rules.d (already expanded above) then
-	// CLI. An explicit --map replaces the rule's list rather than adding to it:
-	// the user who names paths is describing the whole mapping they want.
-	it.Binds = append(it.Binds, o.Maps...)
-	if len(o.Maps) == 0 {
-		for _, pr := range insp.Presets {
-			it.Binds = append(it.Binds, inst.Bind{
-				Canonical: expandID(pr.Canonical, id),
-				Private:   expandID(pr.Private, id),
-			})
-		}
-	}
-	for _, rw := range o.RW {
-		it.Binds = append(it.Binds, inst.Bind{Canonical: rw, Private: rw})
+	// Path maps come from the rule and from nowhere else. There is deliberately
+	// no CLI flag for them: a mapping is the one thing in a wrap that varies
+	// per program and is silently wrong when wrong, so it is written into a
+	// file the user reads before anything is installed (设计 §3.3).
+	for _, pr := range insp.Presets {
+		it.Binds = append(it.Binds, inst.Bind{
+			Source:   expandID(pr.Source, id),
+			Target:   expandID(pr.Target, id),
+			ReadOnly: pr.ReadOnly,
+		})
 	}
 
 	// Passthrough tail, low priority first (设计 §3.5 rule two). Later tokens
@@ -540,7 +536,7 @@ func freeID(p inst.Paths, base string) string {
 }
 
 func idTaken(p inst.Paths, id string) bool {
-	if sysx.Exists(p.Desktop(id)) || sysx.Exists(p.Config(id)) {
+	if sysx.Exists(p.Desktop(id)) || sysx.Exists(p.Profile(id)) {
 		return true
 	}
 	for _, dir := range []string{"/usr/local/share/applications", "/usr/share/applications"} {
@@ -575,7 +571,7 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 		Desktop: p.Desktop(it.ID),
 		Icon:    p.Icon(it.ID),
 		Launch:  p.Launch(it.ID),
-		Config:  p.Config(it.ID),
+		Profile: p.Profile(it.ID),
 		State:   p.StateDir(it.ID),
 	}
 
@@ -596,12 +592,17 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 		res.Notes = append(res.Notes, "跳板脚本 "+p.Bootstrap())
 	}
 
-	// 1. private state directories.
+	// 1. private state directories. A `:ro` source is skipped: it is somebody
+	//    else's directory, and creating it would turn "you gave the wrong path"
+	//    into an empty read-only mount that looks like it worked.
 	if err := sysx.EnsureDir(p.StateDir(it.ID)); err != nil {
 		return nil, err
 	}
 	for _, b := range it.Binds {
-		if err := sysx.EnsureDir(p.Expand(b.Private)); err != nil {
+		if b.ReadOnly {
+			continue
+		}
+		if err := sysx.EnsureDir(p.Expand(b.Source)); err != nil {
 			return nil, err
 		}
 	}
@@ -621,7 +622,7 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 	if err != nil {
 		return nil, err
 	}
-	if err := sysx.WriteFileAtomic(p.Config(it.ID), cfg, 0o644); err != nil {
+	if err := sysx.WriteFileAtomic(p.Profile(it.ID), cfg, 0o644); err != nil {
 		return nil, err
 	}
 
@@ -664,7 +665,7 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 	return res, nil
 }
 
-// WriteSnapshot writes only instance.toml — the first half of a two-phase wrap.
+// WriteSnapshot writes only profile.yml — the first half of a two-phase wrap.
 //
 // It shares Render with Materialize, so the file the user is invited to edit is
 // byte for byte the one a one-step wrap would have written: two renderers would
@@ -676,14 +677,14 @@ func WriteSnapshot(p inst.Paths, it *inst.Instance) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path := p.Config(it.ID)
+	path := p.Profile(it.ID)
 	if err := sysx.WriteFileAtomic(path, body, 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-// Snapshot is one instance.toml found by scanning, plus the one piece of state
+// Snapshot is one profile.yml found by scanning, plus the one piece of state
 // a two-phase wrap needs in order to interpret it.
 type Snapshot struct {
 	Instance *inst.Instance
@@ -717,7 +718,7 @@ func SnapshotsFor(p inst.Paths, sourceDesktop string) ([]Snapshot, error) {
 		}
 		out = append(out, Snapshot{
 			Instance:  it,
-			Path:      p.Config(it.ID),
+			Path:      p.Profile(it.ID),
 			Published: sysx.Exists(p.Desktop(it.ID)),
 		})
 	}
@@ -898,7 +899,7 @@ func CheckCollision(p inst.Paths, id string, force bool) error {
 	}
 	ours := p.Desktop(id)
 	if sysx.Exists(ours) {
-		if _, err := inst.Load(p.Config(id)); err == nil {
+		if _, err := inst.Load(p.Profile(id)); err == nil {
 			return nil // our own previous output; regenerating is the point
 		}
 		return fmt.Errorf("%s 已存在，但不是 twin 生成的 —— 加 --force 才会覆盖", ours)
@@ -908,10 +909,10 @@ func CheckCollision(p inst.Paths, id string, force bool) error {
 			return fmt.Errorf("系统的 %s 已占用这个 id —— 换一个 --as", cand)
 		}
 	}
-	if sysx.Exists(p.Config(id)) {
+	if sysx.Exists(p.Profile(id)) {
 		return fmt.Errorf("%s 已存在、桌面项却不在：这是一份写好但还没落盘的配置 —— "+
 			"落盘用 twin new <source> --as %s --publish；要按新参数重写它，先 twin remove %s",
-			p.Config(id), id, id)
+			p.Profile(id), id, id)
 	}
 	return nil
 }
@@ -1043,7 +1044,7 @@ func Refresh(it *inst.Instance, insp *Inspection, cfg *config.Config) ([]string,
 			return notes, err
 		}
 		it.Bwrap = append(it.Bwrap, tok)
-		notes = append(notes, "[bwrap] extra += "+tok)
+		notes = append(notes, "bwrap.extra += "+tok)
 	}
 
 	if len(notes) > 0 {

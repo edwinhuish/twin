@@ -235,7 +235,7 @@ sudo apparmor_parser -r /etc/apparmor.d/twin-bwrap
 |---|---|---|
 | `config.toml` | `[tools] bwrap_copy` | `"auto"`（默认）／`""` 不做副本（Electron 会起不来，会警告）／显式路径 |
 | `config.toml` | `[userns] trampoline` | `"auto"`（默认）／`"off"`（→ 路线 C）／显式路径（必须是 Electron） |
-| `instance.toml` | `[isolation] nested_ns` | 这个程序要不要嵌套 ns。**总是写**：它是应用知识，跟快照走 |
+| `profile.yml` | `isolation.nested_ns` | 这个程序要不要嵌套 ns。**总是写**：它是应用知识，跟快照走 |
 
 `nested_ns` 与"用哪个跳板"分隔在两个文件里是刻意的：前者跟着**程序**，后者跟着**机器**。
 

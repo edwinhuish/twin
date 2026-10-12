@@ -32,8 +32,8 @@ func TestWriteSnapshotWritesOnlyTheConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if path != p.Config(it.ID) {
-		t.Errorf("path = %q，期望 %q", path, p.Config(it.ID))
+	if path != p.Profile(it.ID) {
+		t.Errorf("path = %q，期望 %q", path, p.Profile(it.ID))
 	}
 	for _, f := range []string{p.Desktop(it.ID), p.Icon(it.ID), p.Launch(it.ID), p.StateDir(it.ID)} {
 		if sysx.Exists(f) {
@@ -68,7 +68,7 @@ func TestSnapshotsForMatchesBySource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := sysx.WriteFileAtomic(p.Config(id), body, 0o644); err != nil {
+		if err := sysx.WriteFileAtomic(p.Profile(id), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if desktop {
@@ -156,7 +156,7 @@ func TestUnwrapRemovesOursAndSparesTheRest(t *testing.T) {
 		}
 	}
 	ours := []string{p.Desktop("demo"), p.Icon("demo"), p.Launch("demo"), p.RuleFile("demo")}
-	other := []string{p.Desktop("other"), p.Config("other")}
+	other := []string{p.Desktop("other"), p.Profile("other")}
 	for _, f := range append(append([]string{}, ours...), other...) {
 		write(f)
 	}
@@ -587,7 +587,7 @@ func derivationFor(der []Derivation, key string) string {
 func ruleInspection() *Inspection {
 	insp := wechatInspection()
 	insp.Presets = []inst.Bind{
-		{Canonical: "~/.xwechat", Private: "~/.local/state/twin/<id>/xwechat"},
+		{Source: "~/.local/state/twin/<id>/xwechat", Target: "~/.xwechat"},
 	}
 	insp.Rule = &config.Rule{
 		App:        "wechat",
@@ -629,8 +629,8 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 		t.Error("规则提供的 tmpfs 必须出现在推导来源里")
 	}
 	// {id} / <id> are substituted with the concrete instance id.
-	if it.Binds[0].Private != "~/.local/state/twin/wechat2/xwechat" {
-		t.Errorf("bind private = %q", it.Binds[0].Private)
+	if it.Binds[0].Source != "~/.local/state/twin/wechat2/xwechat" {
+		t.Errorf("bind source = %q", it.Binds[0].Source)
 	}
 }
 

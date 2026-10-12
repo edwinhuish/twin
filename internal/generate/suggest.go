@@ -16,8 +16,8 @@ import (
 // Hints are never applied on their own. A wrong guess that gets bound away
 // silently is exactly the failure this tool exists to prevent: the instance
 // still starts, it just reads the other instance's data, or nobody's. So
-// discovery only prints, and only an explicit rules.d file or --map acts
-// (设计 §7).
+// discovery only prints, and only an explicit rules.d file or snapshot bind
+// acts (设计 §7).
 type StateHint struct {
 	// Path is `~/`-relative, spelled the way rules.d spells it.
 	Path string
@@ -25,7 +25,7 @@ type StateHint struct {
 	Evidence string
 	// Strong marks "this directory exists on this machine": the program has
 	// already written there, so it is a fact about the program rather than a
-	// guess about it. `twin rules --init` writes only these as live [[bind]].
+	// guess about it. `twin rules --init` writes only these as live bind entries.
 	Strong bool
 }
 
@@ -409,25 +409,26 @@ func normalizeName(s string) string {
 
 // RuleDraft renders the file `twin rules --init` writes.
 //
-// Only hints backed by a real directory become live [[bind]] entries; the rest
-// stay commented out. That split is the point of the file: "this directory
-// exists" is a fact about the program on this machine, "this string is in the
-// binary" is a guess about it, and the user should not have to tell the two
-// apart from prose before deciding what their data layout is.
+// Only hints backed by a real directory become live bind entries; the rest stay
+// commented out. That split is the point of the file: "this directory exists" is
+// a fact about the program on this machine, "this string is in the binary" is a
+// guess about it, and the user should not have to tell the two apart from prose
+// before deciding what their data layout is.
 func RuleDraft(key, source string, hints []StateHint) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# twin —— %s 的应用规则草稿\n", key)
 	fmt.Fprintf(&b, "# 由 `twin rules --init %s` 写出（源桌面项 %s）。\n", key, source)
 	b.WriteString(`#
-# 这是草稿，不是结论。请逐条确认：下面每一条 [[bind]] 都会：
-#   · 整体**替换**内置规则里的映射（不是追加）；
-#   · 出现在每个新建实例的 instance.toml 里，并变成启动器里的一个 --bind。
+# 这是草稿，不是结论。请逐条确认下面每一条 bind ——
+# 写法同 Docker Compose 的卷：源:目标[:ro]，源是数据实际所在，目标是程序看到它的位置
+# （bwrap 的 --bind 也是这个方向）。
+#   源:目标      ⇒ 私有副本，两个实例互不干扰
+#   只写一条路径 ⇒ 该路径挂回自己，只把只读升回可写（数据不搬家）
+#   源:目标:ro   ⇒ 只读挂载，程序看得见但改不动
 #
-#   private 指向别处            ⇒ 私有副本，两个实例互不干扰
-#   private 与 canonical 相同   ⇒ 与该目录共用，只把只读升回可写
-#   private 留空                ⇒ 同上（原地升回可写）
+# 这份列表整体替换内置规则里的映射（不是追加）：你写下的就是全部。
 #
-# 生效范围：只影响**以后新建**的实例。已存在的实例请改它的 instance.toml
+# 生效范围：只影响以后新建的实例。已存在的实例请改它的 profile.yml
 # 再跑 twin regen <id>，或者 twin new <source> --as <id> --force 重来一次。
 `)
 	fmt.Fprintf(&b, "# 写完验证：twin rules %s\n", key)
@@ -442,18 +443,6 @@ func RuleDraft(key, source string, hints []StateHint) string {
 		pending = append(pending, h)
 	}
 
-	for _, h := range live {
-		fmt.Fprintf(&b, "\n# %s\n[[bind]]\ncanonical = %q\nprivate   = %q\n",
-			h.Evidence, h.Path, PrivateFor(h.Path))
-	}
-
-	if len(pending) > 0 {
-		b.WriteString("\n# 下面这些只是二进制里出现的字符串，没有别的证据 —— 需要时再打开\n")
-		for _, h := range pending {
-			fmt.Fprintf(&b, "# [[bind]]\n# canonical = %q\n# private   = %q\n#\n", h.Path, PrivateFor(h.Path))
-		}
-	}
-
 	if len(hints) == 0 {
 		b.WriteString(`
 # 没有发现任何证据：这台机器上没有 ~/.config/<程序名> 这类目录，二进制里也没有
@@ -461,11 +450,21 @@ func RuleDraft(key, source string, hints []StateHint) string {
 # 若它有单实例锁或共享配置（Electron / Qt / GTK 系很常见），两个实例会互相干扰。
 #
 # 形状示例（路径请换成它真正用的那个）：
-# [[bind]]
-# canonical = "~/.config/` + key + `"
-# private   = "~/.local/state/twin/{id}/config"
 `)
+		fmt.Fprintf(&b, "#   \"~/.local/state/twin/{id}/config:~/.config/%s\",\n", key)
 	}
+	// One array, live entries on and guesses commented out. A separate array per
+	// group would read as two settings; the difference between them is only how
+	// much evidence there is.
+	fmt.Fprintf(&b, "\nbind = [\n")
+	for _, h := range live {
+		fmt.Fprintf(&b, "  # %s\n  %q,\n", h.Evidence, PrivateFor(h.Path)+":"+h.Path)
+	}
+	for _, h := range pending {
+		fmt.Fprintf(&b, "  # 只是二进制里出现过的字符串，证据较弱 —— 需要时去掉下面的 #\n"+
+			"  # %q,\n", PrivateFor(h.Path)+":"+h.Path)
+	}
+	fmt.Fprintf(&b, "]\n")
 	return b.String()
 }
 
@@ -473,10 +472,10 @@ func RuleDraft(key, source string, hints []StateHint) string {
 // Naming the private copy after the *purpose* of the directory it replaces
 // (config / share / state / cache) rather than after the program keeps a
 // program's several directories from colliding inside one private root.
-func PrivateFor(canonical string) string {
-	rest, ok := strings.CutPrefix(canonical, "~/")
+func PrivateFor(path string) string {
+	rest, ok := strings.CutPrefix(path, "~/")
 	if !ok {
-		return canonical
+		return path
 	}
 	parts := strings.Split(rest, "/")
 	for _, root := range [][2]string{

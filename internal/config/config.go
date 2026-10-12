@@ -10,7 +10,7 @@
 // Nothing here is authoritative on its own. Precedence is resolved by
 // generate.Plan, which sees the CLI too:
 //
-//	CLI > instance.toml (snapshot) > rules.d/<app> > config.toml > built-in
+//	CLI > profile.yml (snapshot) > rules.d/<app> > config.toml > built-in
 //
 // and array-shaped values (bwrap extra, tmpfs, binds) are concatenated low
 // priority first, so a later mount shadows an earlier one on the same
@@ -29,7 +29,7 @@ import (
 )
 
 // Defaults are the machine-scoped knobs. They describe "this computer", never
-// "this instance" — which is exactly why they never reach instance.toml.
+// "this instance" — which is exactly why they never reach profile.yml.
 type Defaults struct {
 	Level          string
 	IconSize       int
@@ -248,8 +248,8 @@ func FindRule(p inst.Paths, keys ...string) (*Rule, string, error) {
 // not silently drop the state paths that ship with the tool.
 //
 // Array-shaped fields (binds, tmpfs, bwrap extra) replace rather than append
-// when the file sets them: a user who writes [[bind]] is describing the whole
-// set of paths they want, and half-inheriting would make the file a lie.
+// when the file sets them: a user who writes bind = [...] is describing the
+// whole set of paths they want, and half-inheriting would make the file a lie.
 func loadRule(p inst.Paths, key string) (*Rule, error) {
 	builtin, hasBuiltin := BuiltinRules()[key]
 	out := &Rule{App: key}
@@ -291,20 +291,24 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 	if root.Has("tmpfs") {
 		out.Tmpfs = root.StrList("tmpfs")
 	}
-	if binds := root.TableList("bind"); len(binds) > 0 {
+	// The pre-string-list `[[bind]]` form is refused by name. Reading it as "no
+	// mappings" would turn a file that says where the data is into a file that
+	// says the data is shared, and nothing on screen would say so — the exact
+	// silent failure rules.d exists to prevent.
+	if len(root.TableList("bind")) > 0 {
+		return nil, fmt.Errorf("%s: bind 现在是一句式字符串列表（\"源:目标[:ro]\"），"+
+			"不再是 [[bind]] 表 —— 请改成 bind = [\"源:目标\", …]", path)
+	}
+	if specs, err := root.StrListStrict("bind"); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	} else if specs != nil {
 		out.Binds = nil
-		for _, b := range binds {
-			canon, priv := b.Str("canonical"), b.Str("private")
-			if canon == "" {
-				return nil, fmt.Errorf("%s: [[bind]] 缺 canonical", path)
+		for _, spec := range specs {
+			b, err := inst.ParseBind(spec)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
 			}
-			if priv == "" {
-				// Same meaning as the hand-written wrapper's `--bind A A`:
-				// upgrade the directory to writable in place instead of
-				// replacing it with a private copy.
-				priv = canon
-			}
-			out.Binds = append(out.Binds, inst.Bind{Canonical: canon, Private: priv})
+			out.Binds = append(out.Binds, b)
 		}
 	}
 	if root.Tree("bwrap").Has("extra") {
@@ -327,22 +331,23 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 // twin, stored in the same shape a user's rules.d file would be.
 //
 // It is deliberately short: guessing a wrong path silently is worse than
-// asking for a --map. WeChat is here because it is the tested case.
+// asking the user to write one down. WeChat is here because it is the tested
+// case.
 //
 // The split is not arbitrary. WeChat keeps per-account data in
 // ~/Documents/xwechat_files/<wxid>/ and machine-wide provider state in
 // .../all_users. The hand-written 微信2 shares the former (received files stay
 // common to both logins) and isolates the latter — all_users is what actually
-// collides between two accounts. "private == canonical" is the in-place
+// collides between two accounts. A source equal to its target is the in-place
 // writable upgrade, not a no-op (设计 §7).
 func BuiltinRules() map[string]*Rule {
 	return map[string]*Rule{
 		"wechat": {
 			App: "wechat",
 			Binds: []inst.Bind{
-				{Canonical: "~/.xwechat", Private: "~/.local/state/twin/{id}/xwechat"},
-				{Canonical: "~/Documents/xwechat_files", Private: "~/Documents/xwechat_files"},
-				{Canonical: "~/Documents/xwechat_files/all_users", Private: "~/.local/state/twin/{id}/all_users"},
+				{Source: "~/.local/state/twin/{id}/xwechat", Target: "~/.xwechat"},
+				{Source: "~/Documents/xwechat_files", Target: "~/Documents/xwechat_files"},
+				{Source: "~/.local/state/twin/{id}/all_users", Target: "~/Documents/xwechat_files/all_users"},
 			},
 		},
 	}

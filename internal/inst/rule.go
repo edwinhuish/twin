@@ -48,7 +48,7 @@ type RedirectMatch struct {
 // only place that decides where artefacts live.
 func NewRedirectRule(it *Instance, iconPath, aliasPath string) *RedirectRule {
 	return &RedirectRule{
-		Comment:  "twin 生成 —— 不要手改；改 instance.toml 后跑 `twin regen " + it.ID + "`。",
+		Comment:  "twin 生成 —— 不要手改；改 profile.yml 后跑 `twin regen " + it.ID + "`。",
 		ID:       it.ID,
 		Enabled:  true,
 		Target:   it.ID + ".desktop",

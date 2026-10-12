@@ -224,7 +224,7 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 			add("L5 规则文件", StatusFail, err.Error(), fmt.Sprintf("twin regen %s", i.ID))
 		case !rule.Carries(i.AliasPath()):
 			// The evidence no longer names this instance's alias — the usual
-			// cause is a hand-edited instance.toml that moved the target, with
+			// cause is a hand-edited profile.yml that moved the target, with
 			// no regen since.
 			add("L5 规则文件", StatusFail,
 				fmt.Sprintf("规则的证据里找不到别名路径 %s", i.AliasPath()),

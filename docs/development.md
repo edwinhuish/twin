@@ -49,7 +49,8 @@ TWIN_REAL_PROBE=1 go test ./internal/userns/ -run RealProbe -v
 ```
 cmd/twin/            CLI 入口：动词分派、flag 解析、全部终端输出
 internal/
-  tomlz/                TOML 子集的编解码（自写，见 §3）
+  tomlz/                TOML 子集的编解码（自写，见 §3；config.toml 与 rules.d 用它）
+  yamlz/                YAML 子集的编解码（自写，见 §3；profile.yml 用它）
   inst/                 实例 schema（真源）＋ Paths（一切产物路径）＋ 语义校验
   desk/                 .desktop 读写（含 Name[xx] / Comment[xx] / Keywords[xx]）
   config/               环境层（config.toml）＋ 应用知识层（rules.d）
@@ -75,13 +76,13 @@ verify → {inst, desk, tray, userns, sysx}
 generate → {config, desk, icon, inst, sandbox, sysx}
 sandbox → {config, inst, userns, sysx}
 config → {icon, inst, tomlz}
-inst → {tomlz}
+inst → {yamlz}
 style → {}    ← 只有标准库
 ```
 
 规则：**下层不知道上层存在**。`inst` 不知道 bwrap，`sandbox` 不知道桌面项。
 唯一"反向"的知识是 `inst.CheckBwrapToken` —— 它校验 bwrap token，因为那是**实例 schema
-的合法性**（写进 `instance.toml` 的东西必须合法），而不是 bwrap 的实现细节。
+的合法性**（写进 `profile.yml` 的东西必须合法），而不是 bwrap 的实现细节。
 
 ---
 
@@ -93,13 +94,18 @@ style → {}    ← 只有标准库
 
 | 收益 | 代价 |
 |---|---|
-| `go build` 永远不需要网络 | 要自己写一个 TOML 子集（`internal/tomlz`，692 行） |
+| `go build` 永远不需要网络 | 要自己写一个 TOML 子集（`internal/tomlz`）与一个 YAML 子集（`internal/yamlz`） |
 | 没有供应链风险 —— 这个工具会跑在用户的**桌面会话**里 | 图标合成要自己写缩放与蒙版 |
-| 二进制自包含，拷到别的机器就能用 | 不能用现成的 TOML/图像库 |
+| 二进制自包含，拷到别的机器就能用 | 不能用现成的 TOML/YAML/图像库 |
 | 不会因为上游 breaking change 半夜坏掉 | — |
 
 `tomlz` 只实现了实际用到的子集：表、内联表、字符串数组、数组表（`[[x]]`）、bool、int、
 字符串、`#` 注释。**它不需要成为一个通用 TOML 库。**
+
+`yamlz` 同样只管 `profile.yml` 会写出的那些形状：缩进映射、块序列、`[]` / `{}`、单行 flow
+序列、引号与纯量、bool / int。**它拒绝** Tab 缩进、文档标记、锚点别名、块标量、多行 flow、
+重复键，以及 YAML 里含义有歧义的布尔拼法（`yes` / `no` / `on` / `off`）—— 歧义处一律硬报错，
+因为一个被悄悄读错的身份文件比一个被拒绝的更糟。它也不需要一个通用 YAML 库。
 
 图标同理：PNG/JPEG 用标准库解码，缩放与角标是自绘位图蒙版（`image.RGBA` ＋ 覆盖率表）。
 只有 SVG 这类"长尾格式"交给外部工具（`python3-gi` → `rsvg-convert` → ImageMagick，
@@ -131,7 +137,7 @@ style → {}    ← 只有标准库
 
 工具的存在理由是"防止静默失败"，所以它自己也必须不制造静默失败：
 
-- `config.toml` 语法坏了 ⇒ **硬报错**，不静默回退到内置默认。
+- `config.toml` / `profile.yml` 语法坏了 ⇒ **硬报错**，不静默回退到内置默认、也不猜测歧义写法。
 - 找不到源图标 ⇒ **拒绝生成**，不静默出一个齿轮占位图。
 - 托盘写不进去 ⇒ **打印具体命令 ＋ 退出码 3**，不假装成功。
 - 没会话总线 ⇒ 报事实（跳过），不报一条跑不了的修复命令。
@@ -194,7 +200,7 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 `internal/config/config.go` 的 `BuiltinRules()`。它是**同一种形状**的用户文件，所以
 `twin rules <app>` 能直接打印出来。
 
-⚠️ 内置表刻意很短。**静默猜错一个路径，比开口要一个 `--map` 更糟** —— 加之前先确认这条
+⚠️ 内置表刻意很短。**静默猜错一个路径，比开口要用户自己写一条 `bind` 更糟** —— 加之前先确认这条
 路径是真的实测过。
 
 ### 加一个 `wrap` 选项

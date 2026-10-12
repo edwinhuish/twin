@@ -189,7 +189,7 @@ func TestRuleDraftKeepsGuessesCommentedOut(t *testing.T) {
 		{Path: "~/.config/foo", Evidence: "目录存在", Strong: true},
 		{Path: "~/.cache/foo", Evidence: "二进制内有这个字符串"},
 	})
-	if !strings.Contains(draft, "# [[bind]]\n# canonical = \"~/.cache/foo\"") {
+	if !strings.Contains(draft, "# \"~/.local/state/twin/{id}/cache:~/.cache/foo\",") {
 		t.Errorf("the guessed entry is not commented out:\n%s", draft)
 	}
 
@@ -202,15 +202,15 @@ func TestRuleDraftKeepsGuessesCommentedOut(t *testing.T) {
 	if got := root.Str("app"); got != "foo" {
 		t.Errorf("app = %q, want foo", got)
 	}
-	binds := root.TableList("bind")
+	binds, err := root.StrListStrict("bind")
+	if err != nil {
+		t.Fatalf("草稿里的 bind 读不出来：%v", err)
+	}
 	if len(binds) != 1 {
 		t.Fatalf("live binds = %d, want 1 (the guessed one must stay inert)", len(binds))
 	}
-	if got := binds[0].Str("canonical"); got != "~/.config/foo" {
-		t.Errorf("live bind canonical = %q", got)
-	}
-	if got := binds[0].Str("private"); got != "~/.local/state/twin/{id}/config" {
-		t.Errorf("live bind private = %q", got)
+	if got, want := binds[0], "~/.local/state/twin/{id}/config:~/.config/foo"; got != want {
+		t.Errorf("live bind = %q, want %q", got, want)
 	}
 }
 

@@ -71,7 +71,8 @@ HOME=/tmp/scratch-home ./twin verify wechat2
 ```
 cmd/twin/            CLI 入口：动词分派、flag 解析、全部终端输出
 internal/
-  tomlz/               TOML 子集的编解码（自写，非通用库）
+  tomlz/               TOML 子集的编解码（自写，非通用库；config.toml 与 rules.d 用它）
+  yamlz/               YAML 子集的编解码（自写，非通用库；profile.yml 用它）
   inst/                实例 schema（真源）＋ Paths（全部产物路径）＋ 语义校验
   desk/                .desktop 读写（含 Name[xx] / Comment[xx] / Keywords[xx]）
   config/              环境层（config.toml）＋ 应用知识层（rules.d）＋ 内置规则
@@ -98,7 +99,7 @@ verify → {inst, desk, tray, userns, sysx}
 generate → {config, desk, icon, inst, sandbox, sysx}
 sandbox → {config, inst, userns, sysx}
 config → {icon, inst, tomlz}
-inst → {tomlz}
+inst → {yamlz}
 style → {}    ← 只有标准库
 ```
 
@@ -127,17 +128,19 @@ style → {}    ← 只有标准库
 6. **CLI 用 `parseFL`，不要直接 `fs.Parse`。** Go 的 `flag` 在第一个非 flag token 处停止，
    而文档里的写法是 `twin new <source> --as <id>` —— 直接用会让 `--as` 及其后的所有选项被
    **静默忽略**。位置参数可以出现在选项之间，这是文档承诺的行为。
-7. **产物路径一律从 `$HOME` 派生**，且写进 `instance.toml` 的一律用 `~/` 相对形式
+7. **产物路径一律从 `$HOME` 派生**，且写进 `profile.yml` 的一律用 `~/` 相对形式
    （`RelStateDir`）—— 快照要能搬到另一台机器重放。启动器里则统一折叠成 `$HOME/...`，
    绝不把生成时刻的 HOME 烤进去。
 8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
    stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
    （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
-9. **默认输出是给人读的，不是给人查的。** 一次 `twin new --publish` 打印产物、路径映射、自检、
-   下一步四段；其余细节（推导值、规则模板、手工验证命令）走 `--explain` 或本来就在
-   `instance.toml` 里。加新输出前先问：这条不进精简版会不会让人做错事？会，才是默认；不会，
-   就放进 `--explain`。
-10. **一条命令只做一件事，安装是显式的。** `twin new` 默认**只写 `instance.toml`**，`--publish`
+9. **默认输出是给人读的，不是给人查的。** `twin new` 只打印快照路径与下一步；逐键说明用
+   `yamlz.SetComment` 写在 `profile.yml` 里，人读到它的那一刻正在编辑它 —— 同一件事在终端和
+   文件里各说一遍，就是两处将来会各表一套。唯一的例外是"一条映射都没有"的警告：它描述的是
+   别处不会再报的后果，所以留在终端上。`twin new --publish` 打印产物、路径映射、自检、下一步
+   四段；其余细节（推导值、规则模板、手工验证命令）走 `--explain`。加新输出前先问：这条不进
+   精简版会不会让人做错事？会，才是默认；不会，就写进注释或 `--explain`。
+10. **一条命令只做一件事，安装是显式的。** `twin new` 默认**只写 `profile.yml`**，`--publish`
     才安装。理由见 §5"加一个 `new` 选项"：一次 wrap 里唯一随程序而变、又猜错了不出声的东西是
     路径映射，它该先落成一份能读能改的文件。
 11. **快照一旦存在，它就是真源。** 安装半段（`--publish` / `regen`）只重放快照，不再从 CLI 重新
@@ -148,12 +151,12 @@ style → {}    ← 只有标准库
 
 ### 加一条内置规则
 `internal/config/config.go` 的 `BuiltinRules()`。内置表刻意很短：**静默猜错一个路径，比开口要
-一个 `--map` 更糟** —— 加之前必须确认这条路径真的实测过。
+用户自己写一条 `bind` 更糟** —— 加之前必须确认这条路径真的实测过。
 
 想让用户不必自己猜路径时，不要往内置表里加：那正是 `internal/generate/suggest.go` 的活儿。
 `SuggestStateDirs` 只报"这台机器上目录真的存在"（事实，`twin new` 每次都打印），
 `SuggestStateDirsDeep` 再叠加二进制里的 `~/…` 字面量（猜测，只有 `twin rules --init` 会读），
-`RuleDraft` 把前者写成生效的 `[[bind]]`、后者全部注释掉。**任何探测结果都不得自动生效** ——
+`RuleDraft` 把前者写成生效的 `bind` 条目、后者全部注释掉。**任何探测结果都不得自动生效** ——
 `--init` 是唯一的出口，因为它是一条显式命令。
 
 ### 加一个 `new` 选项
@@ -163,11 +166,15 @@ style → {}    ← 只有标准库
    `--force` / `--dry-run` / `--explain`）。前者在一份已存在的快照面前必须被拒绝 ——
    加进那张表就是加进这条规则；
 3. `internal/generate/generate.go` 的 `Options` 与 `Plan`：决定优先级与默认值来源；
-4. 会进快照的字段还要动 `internal/inst` 的 `toTree` / `Load`，并补一个往返测试。
+4. 会进快照的字段还要动 `internal/inst` 的 `toTree` / `Load`，补一个往返测试，并给它加一条
+   `SetComment` 说明 —— 终端不再解释任何键，注释是它唯一的说明书（`TestEverySnapshotKeyIsExplained`
+   会拦下漏写的）。
 
 ### 两段式（`twin new` / `--publish`）
 - 前半段只有 `generate.WriteSnapshot` 一个写点，**没有第二个渲染器**：快照与一步到位写出来的是
   同一份字节（`Render` 共用）。`--dry-run` 也必须由 `Materialize` 用的那套代码渲染。
+- 快照的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
+  **丢掉**注释 —— 手改进来的说明不会被下一次 `regen` 带偏，也所以往返必须是逐字节稳定的。
 - 前后两半靠 `generate.SnapshotsFor` 按**解析后的源桌面项路径**相认，绝不重新推导 id：快照一写
   出来那个 id 就被占用了，重新推导只会悄悄挪到 `wechat3`。
 - "待落盘" = 快照在、桌面项不在（`Snapshot.Published` 的反面）。它是正常中间态，不是缺文件：

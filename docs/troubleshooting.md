@@ -120,7 +120,7 @@ twin new <source> --no-tmpfs
 
 ### C3. 程序起不来，报 `Can't create file: Read-only file system`
 
-**根因**：`--map` 的 `canonical` 路径的**父目录**在沙箱里是只读的（因为基座是
+**根因**：一条路径映射的**目标**（程序看到那一侧）的**父目录**在沙箱里是只读的（因为基座是
 `--ro-bind / /`）。
 
 `twin` 会自动 `mkdir -p` 两端，所以正常情况不会遇到。若你在**透传区**手工写了 bind，
@@ -130,8 +130,10 @@ twin new <source> --no-tmpfs
 # ❌ 透传区不会替你建目录
 twin myapp -- --bind /some/new/dir /some/new/dir
 
-# ✅ 用 --map（享受 mkdir ＋ ~/ 展开）
-twin myapp --map '/some/new/dir:~/.local/state/twin/myapp2/data'
+# ✅ 写进 bind（享受 mkdir ＋ ~/ 展开）
+#    ~/.config/twin/rules.d/myapp.toml
+#    bind = [ "~/.local/state/twin/myapp2/data:/some/new/dir" ]
+twin rules myapp
 ```
 
 ### C4. 网络断了，或程序报"已在运行"
@@ -142,7 +144,7 @@ twin myapp --map '/some/new/dir:~/.local/state/twin/myapp2/data'
 twin verify <id>    # 会说明这一条被拒绝
 ```
 
-改 `instance.toml` 去掉它，或接受"这个程序无法被这样隔离"。`net` 切断网络，也会打破基于
+改 `profile.yml` 去掉它，或接受"这个程序无法被这样隔离"。`net` 切断网络，也会打破基于
 abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 
 ### C5. `错误：HOME is not set`

@@ -98,11 +98,11 @@ func printManual(rep *verify.Report) {
 const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 / 图标 / 私有数据）
 
 用法:
-  twin new <source> [选项]                写出一份实例配置（instance.toml）
+  twin new <source> [选项]                写出一份实例配置（profile.yml）
   twin new <source> --publish [选项]      按配置落盘：桌面项 / 图标 / 启动器 / 托盘
   twin inspect <source> [--name 显示名]   只看：源程序是什么、身份该怎么做
   twin verify <id>                        自检一个实例的身份链路
-  twin regen <id> [--refresh]             改了 instance.toml 后重新落盘
+  twin regen <id> [--refresh]             改了 profile.yml 后重新落盘
   twin remove <id> [--yes] [--purge]      删除产物
   twin list                               列出全部实例
   twin doctor                             环境自检（先跑这个）
@@ -115,9 +115,9 @@ const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 /
 
 两段式（默认）—— 一次 wrap 里唯一随程序而变、又猜错了不出声的东西是路径映射，
 所以先把它落成一份可以读、可以改的文件，再安装：
-  twin new wechat                    只写 ~/.local/share/twin/wechat2/instance.toml（id、显示名、
-                                     路径映射全部推导并打印来源），然后告诉你改哪个文件。
-  $EDITOR …/wechat2/instance.toml    改 [[map.bind]] / name / keywords / identity.level；
+  twin new wechat                    只写 ~/.local/share/twin/wechat2/profile.yml（id、显示名、
+                                     路径映射全部推导出来写进去），并告诉你改哪个文件。
+  $EDITOR …/wechat2/profile.yml      改 bind / name / keywords / identity.level；
                                      不改也行，推导出来的默认值通常够用。
   twin new wechat --publish          按那份配置落盘，再自检。
 
@@ -126,10 +126,10 @@ const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 /
 待落盘的配置不止一份时（同源多实例），加 --as <id> 指名要做哪一个。
 
 配置三层（越具体越优先；数组类低位在前拼接，后者遮蔽前者）:
-  CLI 参数 > instance.toml（实例快照）> rules.d/<app>.toml（应用知识）> config.toml（环境）
+  CLI 参数 > profile.yml（实例快照）> rules.d/<app>.toml（应用知识）> config.toml（环境）
   ~/.config/twin/config.toml        这台机器的默认（bwrap 路径、图标尺寸、全局透传）
   ~/.config/twin/rules.d/<app>.toml 某程序的知识（状态路径、keywords），支持 {id} 占位
-  ~/.local/share/twin/<id>/instance.toml   这一个实例的意图（真源）
+  ~/.local/share/twin/<id>/profile.yml   这一个实例的意图（真源）
   ⚠️ regen 只读 CLI 与快照（要确定性）；要重读上面两层，加 --refresh，且只补快照里为空的字段。
 
 退出码:
@@ -168,17 +168,15 @@ new 选项:
                          redirect 用于程序把 app_id 写死、改名不起作用的场合：除改名外再写一条
                          ~/.config/twin/rules.d/<id>.json，交给 shell 扩展改判窗口归属。
                          留空则由 rules.d → config.toml → alias 逐层决定
-  --map <canonical>:<private>   路径映射，可重复
-  --rw <dir>             把该目录在沙箱内升回可写（等价于 bind dir dir）
   --tmpfs <dir>          让该目录在沙箱内为空，可重复
   --no-tmpfs             完全不要 tmpfs（X11 程序必须如此）
   --no-tray              不写宿主托盘覆盖表（这个实例的托盘图标保持程序自己的）
   --force                覆盖已存在但不是 twin 生成的桌面项；也允许落盘遮蔽同名的系统桌面项
   --publish              落盘：写桌面项 / 图标 / 启动器 / 宿主托盘，然后自检。
-                         已经有一份待落盘的配置时，它按那份配置走 —— 此时再给
-                         --name / --map / --level 这类描述实例的选项会被拒绝（要改就改那个文件）
+                        已经有一份待落盘的配置时，它按那份配置走 —— 此时再给
+                        --name / --level 这类描述实例的选项会被拒绝（要改就改那个文件）
   --explain              连推导出的默认值、规则模板、手工验证步骤一起打印
-                         （默认只打印路径、路径映射、自检与下一步）
+                         （默认只打印快照路径与下一步）
   --dry-run              只打印将要写什么；与 --publish 一起用就是完整落盘的预演
 
   -- <bwrap 选项…>       第一个 -- 之后的 token **原样**透传给 bwrap，拼在基座之后、程序之前：
@@ -396,7 +394,7 @@ func cmdRules(p inst.Paths, args []string) int {
 			fmt.Printf("  tmpfs      %s\n", strings.Join(rule.Tmpfs, " "))
 		}
 		for _, b := range rule.Binds {
-			fmt.Printf("  bind       %s  ←  %s\n", b.Canonical, b.Private)
+			fmt.Printf("  bind       %s\n", b)
 		}
 		if len(rule.Bwrap) > 0 {
 			fmt.Printf("  bwrap      %s\n", strings.Join(rule.Bwrap, " "))
@@ -414,9 +412,9 @@ func cmdRules(p inst.Paths, args []string) int {
   keywords = "k1;k2;"
   tmpfs = ["/tmp"]
 
-  [[bind]]
-  canonical = "~/.config/<app>"
-  private   = "~/.local/state/twin/{id}/config"
+  bind = [
+    "~/.local/state/twin/{id}/config:~/.config/<app>",
+  ]
 `)
 	fmt.Printf("\n不想凭空猜路径，就让 twin 先探测一遍再写草稿：\n  twin rules --init <源桌面项|程序名>\n")
 	return exitOK
@@ -462,10 +460,10 @@ func cmdRulesInit(p inst.Paths, source string) int {
 	case live > 0:
 		fmt.Printf("  %d 条已生效（这台机器上目录真的存在），%d 条只是二进制里的字符串，被注释掉了。\n",
 			live, len(hints)-live)
-		fmt.Printf("  请逐条确认该私有还是共用 —— 草稿里的 private 默认按「私有副本」写。\n")
+		fmt.Printf("  请逐条确认该私有还是共用 —— 草稿里的映射默认按「私有副本」写（源=私有目录，目标=程序看到的路径）。\n")
 	case len(hints) > 0:
 		fmt.Printf("  没有目录存在的证据，%d 条都只是二进制里的字符串 —— 全部被注释掉了。\n", len(hints))
-		fmt.Printf("  请挑出真正的状态目录，填上 private 再取消注释。\n")
+		fmt.Printf("  请挑出真正的状态目录，按「源:目标」补上映射再取消注释。\n")
 	default:
 		fmt.Printf("  什么都没探测到：这台机器上没有 ~/.config/<程序名> 这类目录，二进制里也没有相关的\n")
 		fmt.Printf("  ~/ 路径字面量。草稿里只有一份形状示例 —— 路径要你自己判断。\n")
@@ -594,18 +592,7 @@ func cmdInspect(p inst.Paths, args []string) int {
 
 // ---------------------------------------------------------------- wrap
 
-type bindFlag []inst.Bind
 type listFlag []string
-
-func (b *bindFlag) String() string { return "" }
-func (b *bindFlag) Set(v string) error {
-	parts := strings.SplitN(v, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("--map 需要 <canonical>:<private>，收到 %q", v)
-	}
-	*b = append(*b, inst.Bind{Canonical: parts[0], Private: parts[1]})
-	return nil
-}
 
 func (l *listFlag) String() string { return "" }
 func (l *listFlag) Set(v string) error {
@@ -634,10 +621,7 @@ func cmdNew(p inst.Paths, args []string) int {
 		noTmpfs    = fs.Bool("no-tmpfs", false, "不要 tmpfs")
 		noTray     = fs.Bool("no-tray", false, "不要把托盘图标覆盖表指向本实例")
 	)
-	var maps bindFlag
-	var rw, tmpfs listFlag
-	fs.Var(&maps, "map", "路径映射 canonical:private")
-	fs.Var(&rw, "rw", "沙箱内升回可写的目录")
+	var tmpfs listFlag
 	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录")
 	// Cut the bwrap passthrough off before twin's own parser runs: tokens
 	// after `--` are not twin's to interpret (设计 §2.2).
@@ -694,8 +678,6 @@ func cmdNew(p inst.Paths, args []string) int {
 		Badge:      *badge,
 		BadgeStyle: *badgeStyle,
 		Level:      lvl,
-		Maps:       maps,
-		RW:         rw,
 		Tmpfs:      tmpfs,
 		Cfg:        cfg,
 		Bwrap:      bwrapTokens,
@@ -705,7 +687,7 @@ func cmdNew(p inst.Paths, args []string) int {
 	}
 	// Both halves of the wrap answer "which instance is this?" the same way, and
 	// never by re-deriving the id: the first half has already taken it (freeID
-	// counts instance.toml as taken, precisely so two instances cannot share an
+	// counts profile.yml as taken, precisely so two instances cannot share an
 	// id), so a re-derivation would quietly move on to wechat3.
 	snaps, err := generate.SnapshotsFor(p, insp.SourceDesktop)
 	if err != nil {
@@ -773,7 +755,7 @@ type newRun struct {
 // the "show me everything" mode.
 func (r newRun) verbose() bool { return r.dry || r.explain }
 
-// configure is the first half of a wrap: instance.toml, and nothing else.
+// configure is the first half of a wrap: profile.yml, and nothing else.
 //
 // This is the default on purpose. Which of a program's own directories to
 // isolate, and what to call the instance, is knowledge about the *program* — the
@@ -817,27 +799,37 @@ func (r newRun) configure() int {
 	} else {
 		lead = title("🔍 将要写出实例配置（--dry-run，未写盘）")
 	}
-	r.printConfig(it, r.p.Config(it.ID), lead, mapsOrigin(r.opts.Maps, r.opts.RW, r.insp.Rule), der)
+	r.printConfig(it, r.p.Profile(it.ID), lead, mapsOrigin(r.insp.Rule), der)
 	return exitOK
 }
 
-// printConfig says where the configuration is, what is worth editing in it, and
-// how to install it. The heading differs between "just written", "would be
-// written" and "already there"; the body does not, because it is the same file
-// in all three cases.
+// printConfig says where the configuration is and how to install it. The heading
+// differs between "just written", "would be written" and "already there"; the
+// body does not, because it is the same file in all three cases.
+//
+// The default body is two lines plus the next step, because every explanation
+// this used to print now lives in the file itself as a comment on the key it is
+// about. Repeating it here is how the two halves drift apart, and a comment the
+// user reads *while editing* beats a paragraph they scrolled past. The one thing
+// that stays is the shared-state warning: it is the only failure this command
+// can leave behind that nothing else will surface.
 func (r newRun) printConfig(it *inst.Instance, path, lead, origin string, der []generate.Derivation) {
 	fmt.Printf("%s %s\n", lead, outStyle.Bold(it.ID))
 	fmt.Printf("  快照   %s\n", path)
 	if r.explain {
 		printDerived(der)
 	}
-	printPathMaps(r.p, it, r.insp, origin, r.verbose())
-
-	fmt.Printf("\n%s\n", title("✏️  要改就改这一个文件"))
-	fmt.Printf("  %-18s %s\n", "[[map.bind]]", "隔离哪个数据目录（见上面的路径映射）")
-	fmt.Printf("  %-18s %s\n", "name / comment", "显示名与说明（现在："+it.Name+" / "+orDash(it.Comment)+"）")
-	fmt.Printf("  %-18s %s\n", "keywords", "搜索关键词（现在："+orDash(it.Keywords)+"）")
-	fmt.Printf("  %-18s %s\n", "identity.level", "身份级别（现在："+string(it.Level)+"）")
+	if r.verbose() {
+		printPathMaps(r.p, it, r.insp, origin, true)
+		fmt.Printf("\n%s\n", title("✏️  要改就改这一个文件"))
+		fmt.Printf("  %-18s %s\n", "bind", "隔离哪个数据目录（见上面的路径映射）")
+		fmt.Printf("  %-18s %s\n", "name / comment", "显示名与说明（现在："+it.Name+" / "+orDash(it.Comment)+"）")
+		fmt.Printf("  %-18s %s\n", "keywords", "搜索关键词（现在："+orDash(it.Keywords)+"）")
+		fmt.Printf("  %-18s %s\n", "identity.level", "身份级别（现在："+string(it.Level)+"）")
+	} else if len(it.Binds) == 0 {
+		fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 没有隔离任何数据目录：这个程序若有单实例锁"+
+			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见快照里的 bind"))
+	}
 
 	if r.dry {
 		body, err := it.Render()
@@ -845,7 +837,7 @@ func (r newRun) printConfig(it *inst.Instance, path, lead, origin string, der []
 			fail(err.Error())
 			return
 		}
-		fmt.Printf("\n%s\n%s", title("📄 实例定义（instance.toml）"), indent(body, "  "))
+		fmt.Printf("\n%s\n%s", title("📄 实例定义（profile.yml）"), indent(body, "  "))
 	}
 	fmt.Printf("\n%s\n", title("👉 下一步"))
 	if r.dry {
@@ -853,10 +845,9 @@ func (r newRun) printConfig(it *inst.Instance, path, lead, origin string, der []
 		fmt.Printf("    twin new %s --as %s --publish\n", r.source, it.ID)
 		return
 	}
-	fmt.Printf("  1. 改上面那个文件（不改也行 —— 推导出来的默认值通常就够用）\n")
+	fmt.Printf("  1. 改上面那个文件 —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）\n")
 	fmt.Printf("  2. 落盘：twin new %s --as %s --publish\n", r.source, it.ID)
-	fmt.Printf("     想先看它会写什么，就在后面再加 --dry-run。\n")
-	fmt.Printf("  3. 从桌面项重新启动这个实例：桌面项是后写的，GNOME 不会给已经存在的窗口重算归属。\n")
+	fmt.Printf("     想先看它会写什么、或看完整说明，就在后面再加 --dry-run / --explain。\n")
 }
 
 // installTarget is the instance the install half will act on, plus where its
@@ -913,7 +904,7 @@ func (r newRun) target() (installTarget, int) {
 		fail(err.Error())
 		return installTarget{}, exitFail
 	}
-	return installTarget{it: it, der: der, origin: mapsOrigin(r.opts.Maps, r.opts.RW, r.insp.Rule)}, exitOK
+	return installTarget{it: it, der: der, origin: mapsOrigin(r.insp.Rule)}, exitOK
 }
 
 // planInstance derives the instance and refuses the collisions that would make
@@ -1015,7 +1006,7 @@ func snapshotByID(snaps []generate.Snapshot, id string) (generate.Snapshot, bool
 var derivationFlags = map[string]bool{
 	"name": true, "name-en": true, "comment": true, "comment-en": true,
 	"keywords": true, "categories": true, "icon": true, "badge": true,
-	"badge-style": true, "level": true, "map": true, "rw": true, "tmpfs": true,
+	"badge-style": true, "level": true, "tmpfs": true,
 	"no-tmpfs": true, "no-tray": true,
 }
 
@@ -1038,25 +1029,17 @@ func derivationInputs(fs *flag.FlagSet, bwrap []string) []string {
 }
 
 // mapsOrigin names the layer a path map came from, or "" when no layer claims
-// it (a mapping that is neither in a rule nor on this command line can only
-// have come from the snapshot the user edited).
-func mapsOrigin(cliMaps []inst.Bind, rw []string, rule *config.Rule) string {
-	origin := ""
-	switch {
-	case len(cliMaps) > 0:
-		// --map does not add to the rule's list, it replaces it, and the user
-		// should know that before they wonder why the rule stopped applying.
-		origin = "命令行 --map（已整体替换规则里的映射）"
-	case rule != nil:
-		origin = orBuiltin(rule)
+// it — a mapping no rule recognises can only have come from the snapshot the
+// user edited, and saying so is how "why is this mapped?" gets an answer.
+//
+// Only a rule can claim one. The command line used to be a second source, and
+// that was the wrong way round: a mapping is precisely the thing worth reading
+// in a file before anything is installed (设计 §3.3).
+func mapsOrigin(rule *config.Rule) string {
+	if rule == nil {
+		return ""
 	}
-	if len(rw) > 0 {
-		if origin != "" {
-			origin += " ＋ "
-		}
-		origin += fmt.Sprintf("--rw %s", strings.Join(rw, " --rw "))
-	}
-	return origin
+	return orBuiltin(rule)
 }
 
 // ---------------------------------------------------------------- verify
@@ -1072,9 +1055,15 @@ func cmdVerify(p inst.Paths, args []string) int {
 		return exitUsage
 	}
 	id := pos[0]
-	it, err := inst.Load(p.Config(id))
+	it, err := inst.LoadProfile(p, id)
 	if err != nil {
-		fail(fmt.Sprintf("读不到 %s：%v", p.Config(id), err))
+		// A legacy instance.toml already carries its own full explanation;
+		// prefixing it with "读不到 <profile.yml>" would name the wrong file.
+		if os.IsNotExist(err) {
+			fail(fmt.Sprintf("读不到 %s：%v", p.Profile(id), err))
+		} else {
+			fail(err.Error())
+		}
 		return exitFail
 	}
 	// A configured-but-unpublished instance is one state, not five missing
@@ -1083,7 +1072,7 @@ func cmdVerify(p inst.Paths, args []string) int {
 	// that nothing is broken.
 	if !sysx.Exists(p.Desktop(id)) {
 		fmt.Printf("%s %s 还没落盘：只有配置 %s，桌面项 / 图标 / 启动器都还没写\n",
-			outStyle.Mark(style.LevelSkip), it.ID, p.Config(id))
+			outStyle.Mark(style.LevelSkip), it.ID, p.Profile(id))
 		fmt.Printf("  落盘：twin new <source> --as %s --publish    （等价的直接做法：twin regen %s）\n", id, id)
 		return exitFail
 	}
@@ -1171,9 +1160,14 @@ func cmdRegen(p inst.Paths, args []string) int {
 		return exitUsage
 	}
 	id := pos[0]
-	it, err := inst.Load(p.Config(id))
+	it, err := inst.LoadProfile(p, id)
 	if err != nil {
-		fail(fmt.Sprintf("读不到 %s：%v", p.Config(id), err))
+		// Same as verify: a legacy snapshot's error already says everything.
+		if os.IsNotExist(err) {
+			fail(fmt.Sprintf("读不到 %s：%v", p.Profile(id), err))
+		} else {
+			fail(err.Error())
+		}
 		return exitFail
 	}
 	if err := it.Check(); err != nil {
@@ -1183,7 +1177,7 @@ func cmdRegen(p inst.Paths, args []string) int {
 	insp := snapshotInspection(p, it)
 
 	// Replaying a snapshot is deterministic by design: it reads the CLI and
-	// instance.toml only. Touching config.toml must not silently rewrite a
+	// profile.yml only. Touching config.toml must not silently rewrite a
 	// shelf of existing instances — that is what --refresh is for, and even
 	// then it only fills fields the snapshot left empty (设计 §3.5).
 	if *refresh {
@@ -1220,7 +1214,7 @@ func cmdRegen(p inst.Paths, args []string) int {
 	// code would be two chances to drift.
 	return installAndCheck(p, it, insp, rt, plan, iconSizeFor(p), installReport{
 		lead:    outStyle.Green("✅ 已重新落盘") + " " + outStyle.Bold(it.ID),
-		origin:  "实例快照 " + p.Config(it.ID),
+		origin:  "实例快照 " + p.Profile(it.ID),
 		verbose: false,
 	})
 }
@@ -1245,14 +1239,14 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	fmt.Printf("  桌面项   %s\n", res.Desktop)
 	fmt.Printf("  图标     %s\n", res.Icon)
 	fmt.Printf("  启动器   %s\n", res.Launch)
-	fmt.Printf("  实例定义 %s\n", res.Config)
+	fmt.Printf("  实例定义 %s\n", res.Profile)
 	if res.Rule != "" {
 		fmt.Printf("  L5 规则  %s\n", res.Rule)
 	}
 	fmt.Printf("  %s\n", trayLine)
 	if report.verbose {
-		// The derived values are all already in instance.toml, and their whole
-		// point is to be visible — visible is instance.toml, not a wall of
+		// The derived values are all already in profile.yml, and their whole
+		// point is to be visible — visible is profile.yml, not a wall of
 		// output on every wrap.
 		printDerived(report.der)
 	}
@@ -1318,7 +1312,7 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 	fmt.Printf("  桌面项   %s\n", p.Desktop(it.ID))
 	fmt.Printf("  图标     %s\n", p.Icon(it.ID))
 	fmt.Printf("  启动器   %s\n", p.Launch(it.ID))
-	fmt.Printf("  实例定义 %s\n", p.Config(it.ID))
+	fmt.Printf("  实例定义 %s\n", p.Profile(it.ID))
 	fmt.Printf("  私有状态 %s\n", p.StateDir(it.ID))
 	if it.Level == inst.LevelRedirect {
 		fmt.Printf("  L5 规则  %s\n", p.RuleFile(it.ID))
@@ -1349,7 +1343,7 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 		fail(err.Error())
 		return
 	}
-	fmt.Printf("\n%s\n%s", title("📄 实例定义（instance.toml）"), indent(body, "  "))
+	fmt.Printf("\n%s\n%s", title("📄 实例定义（profile.yml）"), indent(body, "  "))
 	fmt.Printf("\n%s\n%s", title("📄 桌面项（"+filepath.Base(p.Desktop(it.ID))+"）"),
 		indent(generate.DesktopEntry(p, it, insp).Bytes(), "  "))
 	if it.Level == inst.LevelRedirect {
@@ -1374,7 +1368,7 @@ func snapshotInspection(p inst.Paths, it *inst.Instance) *generate.Inspection {
 			warn("重新解析源桌面项失败（用空值继续）：" + err.Error())
 		}
 	} else {
-		warn("instance.toml 里的 source 不存在，Categories/Keywords 将为空")
+		warn("profile.yml 里的 source 不存在，Categories/Keywords 将为空")
 	}
 	return &generate.Inspection{Entry: &desk.Entry{}}
 }
@@ -1602,7 +1596,7 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, o
 				"（Electron / Qt / GTK 系很常见），两个实例会互相干扰。"))
 		}
 		printStateHints(p, insp, it, key)
-		printMapFix(p, it, key, rulePath, verbose)
+		printMapFix(p, it, key, rulePath)
 		if verbose {
 			printRuleTemplate(p, it, key, nil)
 		}
@@ -1615,14 +1609,19 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, o
 		fmt.Printf("  %d 条，来源：%s\n", len(it.Binds), origin)
 	}
 	for _, b := range it.Binds {
-		if b.Canonical == b.Private {
-			fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）\n", outStyle.Cyan("共用"), b.Canonical)
-			continue
+		// Printed in the file's own spelling, so the line can be pasted into
+		// profile.yml or rules.d without a translation step in between.
+		switch {
+		case b.ReadOnly:
+			fmt.Printf("  %s  %s\n", outStyle.Cyan("只读"), b)
+		case b.Source == b.Target:
+			fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）\n", outStyle.Cyan("共用"), b)
+		default:
+			fmt.Printf("  %s  %s\n", outStyle.Green("私有"), b)
 		}
-		fmt.Printf("  %s  %-38s → %s\n", outStyle.Green("私有"), b.Canonical, b.Private)
 	}
 	printStateHints(p, insp, it, key)
-	printMapFix(p, it, key, rulePath, verbose)
+	printMapFix(p, it, key, rulePath)
 	if verbose {
 		printRuleTemplate(p, it, key, it.Binds)
 	}
@@ -1630,27 +1629,17 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection, o
 
 // printMapFix names the two files that can hold this program's knowledge. It is
 // what turns "that mapping is wrong" into an action, so it survives into the
-// short form; the long form adds the rehearsal spelling.
+// short form.
 //
 // The two routes are the same in both halves of a wrap, which is why this does
 // not have to know which half it is printing for: a rules.d file is for the
 // instances the user has not created yet, the snapshot is for this one, and
 // `twin regen` installs whatever the snapshot says.
-func printMapFix(p inst.Paths, it *inst.Instance, key, rulePath string, verbose bool) {
-	if !verbose {
-		fmt.Printf("  改：%s —— 影响这个程序以后新建的实例（twin rules --init %s 生成草稿）\n",
-			rulePath, key)
-		fmt.Printf("      只改这一个：编辑 %s 里的 [[map.bind]]，再 twin regen %s\n",
-			p.Config(it.ID), it.ID)
-		return
-	}
-	fmt.Printf("\n  要改（挑一个粒度）：\n")
-	fmt.Printf("    · 影响这个程序以后新建的实例：写 %s（twin rules --init %s 生成草稿）\n",
+func printMapFix(p inst.Paths, it *inst.Instance, key, rulePath string) {
+	fmt.Printf("  改：%s —— 影响这个程序以后新建的实例（twin rules --init %s 生成草稿）\n",
 		rulePath, key)
-	fmt.Printf("    · 只改这一个实例：编辑 %s 里的 [[map.bind]]，再 twin regen %s\n",
-		p.Config(it.ID), it.ID)
-	fmt.Printf("    · 只想先看一眼、什么都不落：twin new <source> --as <tmp-id> " +
-		"--map '<canonical>:<private>' --dry-run\n")
+	fmt.Printf("      只改这一个：编辑 %s 里的 bind，再 twin regen %s\n",
+		p.Profile(it.ID), it.ID)
 }
 
 // printStateHints lists directories the program is likely to keep state in that
@@ -1686,7 +1675,9 @@ func uncoverHints(hints []generate.StateHint, binds []inst.Bind) []generate.Stat
 	for _, h := range hints {
 		covered := false
 		for _, b := range binds {
-			if h.Path == b.Canonical || strings.HasPrefix(h.Path, strings.TrimSuffix(b.Canonical, "/")+"/") {
+			// Against the target, not the source: a hint is a path the program
+			// looks for, and that is exactly what a target is.
+			if h.Path == b.Target || strings.HasPrefix(h.Path, strings.TrimSuffix(b.Target, "/")+"/") {
 				covered = true
 				break
 			}
@@ -1705,24 +1696,25 @@ func uncoverHints(hints []generate.StateHint, binds []inst.Bind) []generate.Stat
 func printRuleTemplate(p inst.Paths, it *inst.Instance, key string, binds []inst.Bind) {
 	fmt.Printf("\n  %s\n", title("📋 照抄下面这份（就是规则文件的全部内容）："))
 	fmt.Printf("\n    app = %q\n", key)
+	fmt.Printf("\n    bind = [\n")
 	if len(binds) == 0 {
-		fmt.Printf("\n    [[bind]]\n")
-		fmt.Printf("    canonical = %q      # ← 换成这个程序真正的状态目录\n", "~/.config/"+key)
-		fmt.Printf("    private   = \"~/.local/state/twin/{id}/config\"\n")
+		fmt.Printf("      %q,   # ← 换成这个程序真正的状态目录\n",
+			"~/.local/state/twin/{id}/config:~/.config/"+key)
 	} else {
 		for _, b := range binds {
-			fmt.Printf("\n    [[bind]]\n    canonical = %q\n    private   = %q\n",
-				b.Canonical, dedupStateDir(p, it, b.Private))
+			b.Source = dedupStateDir(p, it, b.Source)
+			fmt.Printf("      %q,\n", b.String())
 		}
 	}
-	fmt.Printf("\n  private 与 canonical 相同（或整个 private 留空）⇒ 与该目录共用，只把只读升回可写；\n")
-	fmt.Printf("  private 指向别处 ⇒ 私有副本，两个实例互不干扰。\n")
+	fmt.Printf("    ]\n")
+	fmt.Printf("\n  源:目标 ⇒ 私有副本，两个实例互不干扰；单写一条路径 ⇒ 与该目录共用，只把只读升回可写；\n")
+	fmt.Printf("  源:目标:ro ⇒ 只读挂载。\n")
 }
 
 // dedupStateDir rewrites this instance's state directory back to the {id}
 // placeholder. A template that froze "wechat2" into the path would make the
 // pasted rule serve exactly one instance — the opposite of what a rules.d file
-// is for (设计 §3.3), and the same reason instance.toml stores `~` paths.
+// is for (设计 §3.3), and the same reason profile.yml stores `~` paths.
 func dedupStateDir(p inst.Paths, it *inst.Instance, s string) string {
 	return strings.ReplaceAll(s, p.RelStateDir(it.ID), "~/.local/state/twin/{id}")
 }

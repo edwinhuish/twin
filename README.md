@@ -51,11 +51,11 @@ twin doctor
 # 1. 只看不写：这个程序会被包成什么样
 twin inspect wechat
 
-# 2. 只写配置：告诉你路径映射是什么、改哪个文件、下一步敲什么
+# 2. 只写配置：打印那份配置的路径与下一步；每个键的说明都写在文件里的注释里
 twin new wechat
 
 # 3. 看一眼（可选）：路径映射是最容易猜错的一条，改完再往下走
-$EDITOR ~/.local/share/twin/wechat2/instance.toml
+$EDITOR ~/.local/share/twin/wechat2/profile.yml
 
 # 4. 落盘 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
 twin new wechat --publish
@@ -70,7 +70,7 @@ twin new wechat --publish --as wx-work --name "微信·工作" -- --unshare-pid
 ```
 
 **为什么是两步**：一次 wrap 里唯一随程序而变、又猜错了不出声的，是"隔离哪些数据目录"。所以先把它
-落成一份能读能改的 `instance.toml`，再安装 —— 而不是先装好、再在一屏输出里让你事后发现映射是错的。
+落成一份能读能改的 `profile.yml`，再安装 —— 而不是先装好、再在一屏输出里让你事后发现映射是错的。
 `--publish` 不会重新猜 id：配置一旦写出来，那个 id 就被占用了，重新推导只会悄悄变成 `wechat3`。
 
 生成后你会发现多了这些东西：
@@ -79,7 +79,7 @@ twin new wechat --publish --as wx-work --name "微信·工作" -- --unshare-pid
 ~/.local/share/applications/wechat2.desktop     ← 身份锚点
 ~/.local/share/appicons/wechat2.png             ← 带角标的图标
 ~/.local/share/twin/wechat2/launch           ← 薄启动器（bash，exec bwrap）
-~/.local/share/twin/wechat2/instance.toml    ← 真源文件，手改这个然后 --publish / regen
+~/.local/share/twin/wechat2/profile.yml      ← 真源文件，手改这个然后 --publish / regen
 ~/.local/state/twin/wechat2/                 ← 这个实例的私有数据目录
 ```
 
@@ -87,7 +87,7 @@ twin new wechat --publish --as wx-work --name "微信·工作" -- --unshare-pid
 归属。生成完之后要**完全退出**再从这个新桌面项启动一次，才会看到新的图标与名字。
 
 **数据目录也值得看一眼**：`twin new` 一结束就打印一节 `路径映射`，说明这次重定向了哪些目录、
-这份知识从哪来（内置规则 / `rules.d` / `--map` / 实例快照），以及**改它该编辑哪个文件** ——
+这份知识从哪来（内置规则 / `rules.d` / 实例快照），以及**改它该编辑哪个文件** ——
 两条路是分开的：`rules.d` 管这个程序**以后新建**的实例，快照管**这一个**。不同程序的数据目录
 完全不同，而隔离错一个目录要等到两个实例抢同一个锁文件才暴露。改完快照重放：`twin regen <id>`
 （与 `--publish` 走同一条安装路径）。要一份照抄即可的规则模板、看到推导出的每个默认值，
@@ -110,8 +110,8 @@ twin new wechat                  ← 前半段：只配置
       ├─ 1. 解析源桌面项 → 找到真实程序 /opt/wechat/wechat、图标、语言化的 Name/Keywords
       ├─ 2. 推导默认值   → id=wechat2  name=微信2  badge=2  keywords=微信;wechat;
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
-      ├─ 4. 从内置规则 / rules.d / --map 算出路径映射
-      └─ 5. 写出 instance.toml（唯一一个文件），并打印"改哪个文件、下一步敲什么"
+      ├─ 4. 从内置规则 / rules.d 算出路径映射
+      └─ 5. 写出 profile.yml（唯一一个文件），并打印"改哪个文件、下一步敲什么"
 
 twin new wechat --publish        ← 后半段：按快照安装（regen 也走这条路）
       │
@@ -165,7 +165,7 @@ exec '/usr/bin/bwrap' \
    会话总线、PipeWire 全断；
 3. 程序名写成 `/opt/wechat/wechat2`（别名，只在命名空间里存在）⇒ `/proc/self/exe` 的
    basename 就是 `wechat2`，`argv[0]` 默认也是它 ⇒ **窗口与托盘的 id 天然一致**；
-4. 每个 bind 的**两端**都先 `mkdir -p`：bwrap 要从 private 端 bind，而 canonical 端的父目录在
+4. 每个 bind 的**两端**都先 `mkdir -p`：bwrap 要从源端 bind，而目标端的父目录在
    `--ro-bind / /` 之后是只读的 —— 不先建出来，挂载点就创建不了。
 
 ## Electron / Chromium 的特殊情况
@@ -193,11 +193,11 @@ Electron 程序（通常是 VS Code），让内核在 exec 时**替换**掉 AppA
 
 | 命令 | 作用 |
 |---|---|
-| `twin new <source> [选项]` | **最常用**：写出一份实例配置（`instance.toml`）；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin new <source> [选项]` | **最常用**：写出一份实例配置（`profile.yml`）；id / 名字 / 角标 / 状态路径全部推导 |
 | `twin new <source> --publish` | 按那份配置落盘：桌面项 / 图标 / 启动器 / 托盘 ＋ 自检。没有待落盘的配置时就是一次完整生成 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
 | `twin verify <id>` | 自检一个实例的身份链路 |
-| `twin regen <id> [--refresh]` | 改了 `instance.toml` 后重新落盘 |
+| `twin regen <id> [--refresh]` | 改了 `profile.yml` 后重新落盘 |
 | `twin remove <id> [--yes] [--purge]` | 删除产物（默认只打印，不动手） |
 | `twin list` | 列出全部实例 |
 | `twin doctor` | 环境自检（先跑这个），输出末尾直接告诉你下一步敲什么 |
@@ -217,7 +217,7 @@ Electron 程序（通常是 VS Code），让内核在 exec 时**替换**掉 AppA
 
 ```
 CLI 参数
-  > ~/.local/share/twin/<id>/instance.toml   实例快照（真源）
+  > ~/.local/share/twin/<id>/profile.yml     实例快照（真源）
     > ~/.config/twin/rules.d/<app>.toml      应用知识（支持 {id} 占位）
       > ~/.config/twin/config.toml           这台机器的环境
         > 编译进二进制里的内置默认
@@ -227,7 +227,7 @@ CLI 参数
 |---|---|---|
 | `~/.config/twin/config.toml` | **这台机器**：bwrap 路径、图标尺寸、是否维护托盘表 | 你，换机器时 |
 | `~/.config/twin/rules.d/<app>.toml` | **某个程序**：状态路径、关键词、tmpfs | 你，了解新程序时 |
-| `~/.local/share/twin/<id>/instance.toml` | **这一个实例**：全部意图 | 你改，然后 `regen` |
+| `~/.local/share/twin/<id>/profile.yml` | **这一个实例**：全部意图 | 你改，然后 `regen` |
 
 `config.toml` 不存在是正常的（用内置默认）。数组类字段（`tmpfs` / `bind` / `bwrap.extra`）
 按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。

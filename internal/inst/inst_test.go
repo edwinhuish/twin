@@ -29,7 +29,7 @@ func base() *Instance {
 		Tmpfs:      []string{"/tmp"},
 		Bwrap:      []string{"--unshare-pid", "--setenv", "TWIN_FOO", "bar"},
 		Binds: []Bind{
-			{Canonical: "~/.xwechat", Private: "~/.local/state/twin/wechat2/xwechat"},
+			{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
 		},
 	}
 }
@@ -58,7 +58,7 @@ func TestListSkipsDirectoriesThatAreNotInstances(t *testing.T) {
 	if err := os.MkdirAll(p.InstanceDir("wechat2"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.Config("wechat2"), data, 0o644); err != nil {
+	if err := os.WriteFile(p.Profile("wechat2"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +78,7 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	path := filepath.Join(dir, "instance.toml")
+	path := filepath.Join(dir, "profile.yml")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	if out.Target != in.Target || out.Alias != in.Alias {
 		t.Errorf("exec lost: %q / %q", out.Target, out.Alias)
 	}
-	if len(out.Binds) != 1 || out.Binds[0].Canonical != in.Binds[0].Canonical {
+	if len(out.Binds) != 1 || out.Binds[0].Source != in.Binds[0].Source {
 		t.Errorf("binds lost: %+v", out.Binds)
 	}
 	if len(out.Tmpfs) != 1 || out.Tmpfs[0] != "/tmp" {
@@ -116,16 +116,15 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRenderHasNoEmptyParentSections(t *testing.T) {
+// The Docker Compose spelling, source first: the private copy is where the data
+// lives, ~/.xwechat is where the program looks for it.
+func TestRenderWritesBindsAsDockerSpecs(t *testing.T) {
 	data, err := base().Render()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "[map]\n") {
-		t.Errorf("[[map.bind]] should not drag an empty [map] header along:\n%s", data)
-	}
-	if !strings.Contains(string(data), "[[map.bind]]") {
-		t.Errorf("[[map.bind]] missing:\n%s", data)
+	if !strings.Contains(string(data), "- ~/.local/state/twin/wechat2/xwechat:~/.xwechat") {
+		t.Errorf("bind 条目没写进快照：\n%s", data)
 	}
 }
 
@@ -138,12 +137,12 @@ func TestRenderAlwaysWritesBwrapExtra(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "[bwrap]") || !strings.Contains(string(data), "extra = []") {
+	if !strings.Contains(string(data), "extra: []") {
 		t.Errorf("empty passthrough is not visible in the snapshot:\n%s", data)
 	}
 	// And it must round-trip as empty, not as a one-element list.
 	dir := t.TempDir()
-	path := filepath.Join(dir, "instance.toml")
+	path := filepath.Join(dir, "profile.yml")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -311,12 +310,12 @@ func TestTrayOverrideIsPartOfTheSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "[tray]") || !strings.Contains(string(data), "override = false") {
+	if !strings.Contains(string(data), "override: false") {
 		t.Fatalf("关掉的状态必须看得见：\n%s", data)
 	}
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "instance.toml")
+	path := filepath.Join(dir, "profile.yml")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +328,7 @@ func TestTrayOverrideIsPartOfTheSnapshot(t *testing.T) {
 	}
 }
 
-// 没有 [tray] 段的老快照等于"要覆盖"：它们全都写于这个选项存在之前，
+// 没有 tray 段的老快照等于"要覆盖"：它们全都写于这个选项存在之前，
 // 把它们的语义翻成"不管"会让已经写进宿主表的条目悄悄失去维护。
 func TestTrayOverrideDefaultsToTrueForOldSnapshots(t *testing.T) {
 	it := base()
@@ -338,13 +337,18 @@ func TestTrayOverrideDefaultsToTrueForOldSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := strings.Replace(string(data), "[tray]\noverride = true\n", "", 1)
+	old := dropBlock(t, string(data), "tray")
 	if old == string(data) {
-		t.Fatalf("测试前提不成立：快照里没有 [tray] 段\n%s", data)
+		t.Fatalf("测试前提不成立：快照里没有 tray 段\n%s", data)
+	}
+	// The section must be gone with its keys *and* its comment — a file that
+	// still carried the `override:` line would not be an old file at all.
+	if strings.Contains(old, "override:") {
+		t.Fatalf("tray 段没删干净：\n%s", old)
 	}
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "instance.toml")
+	path := filepath.Join(dir, "profile.yml")
 	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -353,6 +357,188 @@ func TestTrayOverrideDefaultsToTrueForOldSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !out.TrayOverride {
-		t.Error("缺 [tray] 段应当按 true 处理")
+		t.Error("缺 tray 段应当按 true 处理")
+	}
+}
+
+// dropBlock returns doc without the top-level `key:` mapping and everything
+// indented under it — the shape a file written before that section existed has.
+// It walks lines rather than matching text because the section now carries
+// multi-line comments of its own.
+func dropBlock(t *testing.T, doc, key string) string {
+	t.Helper()
+	var out []string
+	dropping := false
+	for _, ln := range strings.Split(doc, "\n") {
+		if ln == key+":" {
+			dropping = true
+			continue
+		}
+		if dropping && (ln == "" || ln[0] == ' ' || ln[0] == '#') {
+			continue
+		}
+		dropping = false
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n")
+}
+
+// 只有旧的 instance.toml 时必须报"这个实例读不了"，不能读成"这个实例不存在" ——
+// 一个真实例从所有命令里悄悄消失，正是 twin 存在的意义所在的反面。
+func TestLoadProfileExplainsLegacyTomlSnapshot(t *testing.T) {
+	p := Paths{Home: t.TempDir()}
+	if err := os.MkdirAll(p.InstanceDir("wechat2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.LegacyProfile("wechat2"), []byte("id = \"wechat2\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadProfile(p, "wechat2")
+	if err == nil {
+		t.Fatal("只有旧的 instance.toml 时必须报错，而不是当作实例不存在")
+	}
+	if !strings.Contains(err.Error(), "profile.yml") {
+		t.Errorf("报错要点名新的快照文件：%v", err)
+	}
+}
+
+// 两个文件都不在是"没有这个实例"，这个语义要保留：CLI 靠 os.IsNotExist 区分
+// "没写过"和"文件坏了"。
+func TestLoadProfileKeepsNotExistMeaning(t *testing.T) {
+	p := Paths{Home: t.TempDir()}
+	if _, err := LoadProfile(p, "nope"); !os.IsNotExist(err) {
+		t.Fatalf("两个文件都不在时应保持 os.IsNotExist，得到 %v", err)
+	}
+}
+
+// 旧快照也不能从 list 里消失：跳过它就等于这个实例从来没存在过。
+func TestListReportsLegacyTomlSnapshot(t *testing.T) {
+	p := Paths{Home: t.TempDir()}
+	if err := os.MkdirAll(p.InstanceDir("wechat2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.LegacyProfile("wechat2"), []byte("id = \"wechat2\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := List(p); err == nil {
+		t.Fatal("旧快照不能让实例从 list 里悄悄消失")
+	}
+}
+
+// 快照现在是实例的说明书：`twin new` 只报路径，逐键的解释全在这份文件里。
+// 所以"每个带值的键上面都有一行说明"是它必须守住的性质 —— 删掉注释就等于把
+// 文件变回一堆没人知道含义的键。
+//
+// 两类行不在断言里：小节标题（`identity:`）的含义由它下面的键给出；序列项
+// （`- 源:目标` 这种 bind 条目）由它们所属键的那条说明统管。
+func TestEverySnapshotKeyIsExplained(t *testing.T) {
+	data, err := base().Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		switch {
+		case trimmed == "",
+			strings.HasPrefix(trimmed, "#"),
+			strings.HasPrefix(trimmed, "- "),
+			strings.HasSuffix(ln, ":"):
+			continue
+		}
+		if i == 0 || !strings.HasPrefix(strings.TrimSpace(lines[i-1]), "#") {
+			t.Errorf("键 %q 上面没有说明", trimmed)
+		}
+	}
+}
+
+// "一条映射都没有"是默认决定，而且终端不再重复它了 —— 这句话只剩下文件里这一个
+// 落点，所以 bind 必须无条件写出，空的时候写成 bind: []。
+func TestSnapshotWritesBindEvenWhenEmpty(t *testing.T) {
+	it := base()
+	it.Binds = nil
+	data, err := it.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "bind: []") {
+		t.Errorf("空映射要写成 bind: []，不能整段消失：\n%s", data)
+	}
+	if !strings.Contains(string(data), "数据目录与源程序共用") {
+		t.Errorf("空的 bind 必须把共享状态的后果写在文件里：\n%s", data)
+	}
+	// 而且空映射必须能原样读回来（往返稳定是 `regen` 不做无谓 diff 的前提）。
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profile.yml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Binds) != 0 {
+		t.Errorf("空映射读回来变成 %+v", out.Binds)
+	}
+	again, err := out.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != string(data) {
+		t.Errorf("空映射的往返不稳定：\n--- 第一次 ---\n%s\n--- 第二次 ---\n%s", data, again)
+	}
+}
+
+// The one-line form is the whole on-disk contract for a mapping, so every shape
+// it accepts has to survive being written back out: `regen` re-renders from the
+// same value, and a spelling that drifts would show up as a diff the user did
+// not make.
+func TestParseBindRoundTrips(t *testing.T) {
+	for _, spec := range []string{
+		"~/.local/state/twin/wechat2/xwechat:~/.xwechat",
+		"~/.xwechat",
+		"/src:/dst:ro",
+		"/src:/dst:rw",
+		"/src:/dst",
+	} {
+		got, err := ParseBind(spec)
+		if err != nil {
+			t.Errorf("ParseBind(%q): %v", spec, err)
+			continue
+		}
+		again, err := ParseBind(got.String())
+		if err != nil {
+			t.Errorf("%q → %q 解析不回去：%v", spec, got, err)
+			continue
+		}
+		if again != got {
+			t.Errorf("%q → %q → %+v", spec, got, again)
+		}
+	}
+
+	// The bare form means the same directory both ways — the in-place writable
+	// upgrade WeChat's shared directory needs.
+	if b, err := ParseBind("~/.xwechat"); err != nil || b.Source != "~/.xwechat" || b.Target != "~/.xwechat" {
+		t.Errorf("单路径：%+v / %v", b, err)
+	}
+	if b, err := ParseBind("/src:/dst:ro"); err != nil || !b.ReadOnly {
+		t.Errorf(":ro：%+v / %v", b, err)
+	}
+}
+
+// Every shape that would otherwise be read as something it is not.
+func TestParseBindRefusesAmbiguousShapes(t *testing.T) {
+	for _, spec := range []string{
+		"",           // 空
+		"/x:",        // 缺一侧
+		":/y",        // 缺一侧
+		"/x:ro",      // 右侧看着像模式，其实是漏写了目标
+		"/x:rw",      // 同上
+		"/x:/y:rx",   // 不认识的模式
+		"/x:/y:ro:9", // 冒号太多
+	} {
+		if got, err := ParseBind(spec); err == nil {
+			t.Errorf("ParseBind(%q) 应当报错，得到 %+v", spec, got)
+		}
 	}
 }

@@ -190,7 +190,7 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	// Tmpfs entries are applied verbatim. Whether /tmp belongs in this list is
 	// decided by `twin inspect`/`wrap`, because only that stage knows
 	// whether the program talks to the X server (a tmpfs /tmp takes
-	// /tmp/.X11-unix/X0 with it). Persisting the decision in instance.toml
+	// /tmp/.X11-unix/X0 with it). Persisting the decision in profile.yml
 	// keeps it visible to whoever reads the file.
 	for _, t := range i.Tmpfs {
 		plan.Groups = append(plan.Groups, []string{"--tmpfs", t})
@@ -207,8 +207,15 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	}
 
 	for _, b := range i.Binds {
+		// `:ro` is the whole reason the flag is not a constant. Read-only is for
+		// handing a program somebody else's directory; writable is what the
+		// private-copy isolation is for.
+		flag := "--bind"
+		if b.ReadOnly {
+			flag = "--ro-bind"
+		}
 		plan.Groups = append(plan.Groups,
-			[]string{"--bind", p.Expand(b.Private), p.Expand(b.Canonical)})
+			[]string{flag, p.Expand(b.Source), p.Expand(b.Target)})
 	}
 
 	plan.Groups = append(plan.Groups, []string{"--setenv", "TWIN_INSTANCE", i.ID})
@@ -240,7 +247,7 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
-	b.WriteString("# twin 生成 —— 不要手改。改 instance.toml 后跑 `twin regen " + i.ID + "` 重新落盘。\n")
+	b.WriteString("# twin 生成 —— 不要手改。改 profile.yml 后跑 `twin regen " + i.ID + "` 重新落盘。\n")
 	b.WriteString("#\n")
 	b.WriteString("# 身份两条通道必须同名：窗口 app_id 取自真实路径的 basename（overlay 别名），\n")
 	b.WriteString("# 托盘 SNI Id 取自 argv[0]（默认就是 exec 的那条路径）。\n")
@@ -256,12 +263,14 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 		return []byte(b.String()), nil
 	}
 
-	// Every end of a bind has to exist on the host: a private path because
-	// bwrap binds *from* it, a canonical path because under `--ro-bind / /`
-	// its parent is read-only and the mount point cannot be created later.
+	// The target of a bind has to exist on the host: under `--ro-bind / /` its
+	// parent is read-only and the mount point cannot be created later. So does
+	// a writable source, which is twin's own private copy. A `:ro` source is
+	// *not* created — twin did not put it there, and manufacturing an empty
+	// directory would hand the program nothing while looking like success.
 	// When both ends coincide (an in-place rw upgrade) one mkdir suffices, so
 	// the list is de-duplicated.
-	for _, d := range uniqueDirs(privateDirs(i, p), canonicalDirs(i, p)) {
+	for _, d := range uniqueDirs(sourceDirs(i, p), targetDirs(i, p)) {
 		fmt.Fprintf(&b, "mkdir -p %s\n", shHome(p.Home, d))
 	}
 	b.WriteString("\n")
@@ -299,10 +308,17 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	return []byte(b.String()), nil
 }
 
-func privateDirs(i *inst.Instance, p inst.Paths) []string {
+// sourceDirs are the directories twin has to create before bwrap can bind from
+// them: the instance's own state root plus the private copy of every writable
+// bind. A `:ro` source is deliberately absent — it is somebody else's directory,
+// and a missing one should make bwrap fail rather than turn into an empty mount.
+func sourceDirs(i *inst.Instance, p inst.Paths) []string {
 	out := []string{p.StateDir(i.ID)}
-	for _, bd := range i.Binds {
-		out = append(out, p.Expand(bd.Private))
+	for _, b := range i.Binds {
+		if b.ReadOnly {
+			continue
+		}
+		out = append(out, p.Expand(b.Source))
 	}
 	return out
 }
@@ -323,10 +339,10 @@ func uniqueDirs(groups ...[]string) []string {
 	return out
 }
 
-func canonicalDirs(i *inst.Instance, p inst.Paths) []string {
+func targetDirs(i *inst.Instance, p inst.Paths) []string {
 	out := make([]string, 0, len(i.Binds))
-	for _, bd := range i.Binds {
-		out = append(out, p.Expand(bd.Canonical))
+	for _, b := range i.Binds {
+		out = append(out, p.Expand(b.Target))
 	}
 	return out
 }

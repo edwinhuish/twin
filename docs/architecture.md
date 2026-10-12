@@ -75,7 +75,7 @@
 |---|---|---|
 | **T1** | 桌面项 ＋ 图标 ＋（`redirect` 时）L5 规则 | 零特权，`level=none` 时连 bwrap 都不需要 |
 | **T2** | T1 ＋ bwrap 只读基座（含 overlay 别名） | 能建非特权 user namespace |
-| **T3** | T2 ＋ 路径映射（`--map` / `--rw`）＋ tmpfs | 同上 |
+| **T3** | T2 ＋ 路径映射（`rules.d` / 实例快照）＋ tmpfs | 同上 |
 
 `twin` 默认给 T3；`level=none` 时退到 T1。
 
@@ -136,60 +136,62 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 | 1 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 总是 |
 | 2 | `~/.local/share/appicons/<id>.png` | 合成好的图标（256×256 默认） | 总是 |
 | 3 | `~/.local/share/twin/<id>/launch` | 薄启动器（bash，`exec` bwrap） | 总是 |
-| 4 | `~/.local/share/twin/<id>/instance.toml` | **真源文件** | 总是 |
+| 4 | `~/.local/share/twin/<id>/profile.yml` | **真源文件** | 总是 |
 | 5 | `~/.config/twin/rules.d/<id>.json` | L5 规则（扩展读） | 仅 `level=redirect` |
 | 6 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
 | 7 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
 | 8 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本 | 同上 |
 
-### 5.1 `instance.toml`
+### 5.1 `profile.yml`
 
-```toml
-id       = "wechat2"
-name     = "微信2"
-name_en  = "WeChat2"
-comment  = "微信"
-keywords = "微信;wechat;WeChat;"
-source   = "/usr/share/applications/wechat.desktop"
+```yaml
+# twin —— 真源文件（YAML）。改完跑 `twin regen wechat2` 重新落盘。
+id: wechat2
+name: 微信2
+name_en: WeChat2
+comment: 微信
+keywords: 微信;wechat;WeChat;
+source: /usr/share/applications/wechat.desktop
 
-[identity]
-level    = "alias"
-wm_class = "wechat2"     # = id，仅当 level 会改名时写；X11/XWayland 才真正需要
-notify   = true          # → 桌面项 StartupNotify=true
+identity:
+  level: alias
+  wm_class: wechat2     # = id，仅当 level 会改名时写；X11/XWayland 才真正需要
+  notify: true          # → 桌面项 StartupNotify=true
 
-[icon]
-source = "/usr/share/icons/hicolor/512x512/apps/wechat.png"
-badge  = "2"
-style  = "corner"
+icon:
+  source: /usr/share/icons/hicolor/512x512/apps/wechat.png
+  badge: "2"
+  style: corner
 
-[exec]
-target = "/opt/wechat/wechat"
-alias  = "wechat2"
-env    = {}
+exec:
+  target: /opt/wechat/wechat
+  alias: wechat2
+  env: {}
 
-[isolation]
-tmpfs      = ["/tmp"]
-unshare    = []
-nested_ns  = false
+isolation:
+  tmpfs:
+    - /tmp
+  unshare: []
+  nested_ns: false
 
-[bwrap]
-extra = []
+bwrap:
+  extra: []
 
-[tray]
-override = true
+tray:
+  override: true
 
-[[map.bind]]
-canonical = "~/.xwechat"
-private   = "~/.local/state/twin/wechat2/xwechat"
+bind:
+  - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
 ```
 
-它是**人类可编辑的真源**：改完跑 `twin regen <id>` 重新落盘。
+它是**人类可编辑的真源**：改完跑 `twin regen <id>` 重新落盘。真实文件里**每个键上面都有一行
+说明**（`twin new` 不在终端重复它们），上面这份骨架把注释省掉了。
 
 注意几处刻意的设计：
 
 - **状态目录用 `~/` 而非绝对路径**（`RelStateDir`）：文件要能搬到另一台机器重放，不能把今天的
   HOME 烤进去。
-- **`[tray] override` 总是写**（即使值是 `true`）："不覆盖托盘"本身也是一个决定，缺这段会让它
+- **`tray.override` 总是写**（即使值是 `true`）："不覆盖托盘"本身也是一个决定，缺这段会让它
   和"这个字段存在之前写的老文件"无法区分。缺段的老文件按 `true` 读。
 - **`nested_ns` 总是写**：它是**应用知识**（这个程序要不要自己建 ns），跟快照走；而"用哪个跳板、
   副本放哪"是**机器状态**，留在 `config.toml` 里，让下一台机器自己决定。
@@ -252,7 +254,7 @@ bwrap
   --overlay-src <targetdir>
   --tmp-overlay <targetdir>         # ⚠️ 必须在创建别名之前
   --ro-bind <target> <alias path>
-  [--bind <private> <canonical>]…   # 路径映射
+  [--bind <源> <目标>]…             # 路径映射（源是数据实际所在）
   --setenv TWIN_INSTANCE <id>
   --die-with-parent
   [用户透传的 token…]                # 放最后，同目标挂载由它胜出
@@ -275,9 +277,9 @@ bwrap
 原则：**透传 token，不重新解析**。`twin` 不知道也不想知道任何 bwrap 选项的元数（arity）——
 那是 bwrap 的事，在这里再实现一张表只会随每个 bwrap 版本腐烂。
 
-- 分隔符是 `--`：它**之后**的 token 原样进 `[bwrap] extra`，拼在基座之后、程序之前。
+- 分隔符是 `--`：它**之后**的 token 原样进 `bwrap.extra`，拼在基座之后、程序之前。
 - 透传区**不享受**三件事（在别处都有的）：`mkdir` 自动补齐、`~/` 展开、语义校验。
-  ⇒ 数据路径请用 `--map`，不要写进透传区。
+  ⇒ 数据路径请写进 `rules.d` 或实例快照的 `bind`，不要写进透传区。
 - 三条硬边界（拒绝，不是警告）：
   - `--`（会截断 bwrap 自己的选项解析，后面全被当成程序名）；
   - `--argv0`（会破坏"窗口 app_id 与托盘 Id 同名"的不变量）；
