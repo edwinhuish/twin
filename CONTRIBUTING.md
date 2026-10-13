@@ -48,6 +48,12 @@ go test ./...
 gofmt -l . && go vet ./... && go test ./...
 ```
 
+同样的三条也在 [`Taskfile.yml`](Taskfile.yml) 里，本地和 CI 都跑它（省得记那串命令）：
+
+```bash
+task check
+```
+
 ⚠️ 若 `/tmp` 是小容量 tmpfs，`go test` 会报 `no space left on device`（Go 链接每个测试二进制
 都要在临时目录落一个几 MB 的文件）。换个临时目录即可：
 

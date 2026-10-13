@@ -37,6 +37,14 @@ go test ./...
 gofmt -l . && go vet ./... && go test ./...
 ```
 
+同一个门也在 `Taskfile.yml` 里，`.github/workflows/ci.yml` 调的就是它 —— **本地绿就等于 CI 绿**，
+所以别在 CI 里另抄一份命令（`GOTMPDIR` 那个坑也在里面处理掉了）：
+
+```bash
+task check          # = gofmt -l ＋ go vet ＋ go test
+task build          # = go build -ldflags "-X main.version=$(git describe …)" -o twin ./cmd/twin
+```
+
 已知的环境坑（**不是**代码问题，别去改代码修它们）：
 
 - ⚠️ `/tmp` 是小容量 tmpfs 时，Go 链接测试二进制会 `no space left on device`：

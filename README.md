@@ -269,7 +269,7 @@ twin config > ~/.config/twin/config.toml   # 生成一份带注释的模板
 
 ```bash
 git clone <this repo> && cd twin
-go build -o ~/.local/bin/twin ./cmd/twin
+go build -o ~/.local/bin/twin ./cmd/twin     # 或 task build（见 Taskfile.yml）
 
 # 或者装到系统目录
 sudo install -m755 twin /usr/local/bin/twin
@@ -324,7 +324,8 @@ go build -ldflags "-X main.version=$(git describe --tags --always)" -o twin ./cm
 tmpfs 时要设 `GOTMPDIR`、依赖真实机器状态的诊断性测试默认跳过）与构建细节一起写在
 [`docs/development.md`](docs/development.md) —— 那里还有代码组织、各包的职责边界，以及开发过程中撞
 出来的坑（Go `flag` 的解析行为、多合一二进制、`/usr/share/code/bin/code` 是 sh 脚本……）。贡献者的
-环境准备、手工验收与提交规范：[`CONTRIBUTING.md`](CONTRIBUTING.md)。
+环境准备、手工验收与提交规范：[`CONTRIBUTING.md`](CONTRIBUTING.md)。构建与质量门有
+[`Taskfile.yml`](Taskfile.yml) 收口：`task build` / `task check` —— GitHub Actions 跑的也是同一条。
 
 ## 许可
 

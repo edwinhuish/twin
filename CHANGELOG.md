@@ -10,6 +10,12 @@
 
 ### Added
 
+- **`Taskfile.yml`**：构建与质量门收在一处 —— `task build`（版本号取 `git describe` 注入
+  `main.version`）、`task check`（= `gofmt -l` ＋ `go vet` ＋ `go test`）。`task test` 自己把
+  `GOTMPDIR` / `TMPDIR` 指到 `$HOME/.cache/gotmp`，本机那个"`/tmp` 只有 10 MB、链接测试二进制会
+  `no space left`"的坑不必再手写环境变量。
+- **`.github/workflows/ci.yml`**：push 到 `main` 与 PR 时装 Go（版本读 `go.mod`）、跑 `task check`，
+  再 `task build` 并冒烟一次 `./twin version` —— 质量门只有 `Taskfile.yml` 一份定义，CI 不另抄。
 - **终端输出着色 ＋ 状态字形**（新包 `internal/style`）：只在终端上着色，重定向 / 管道 /
   `TERM=dumb` 一律纯文本；`NO_COLOR` 强制关闭、`CLICOLOR_FORCE` 强制打开；stdout 与 stderr
   **各自判断**。判定走 `TCGETS` 而不是"是不是字符设备"（`/dev/null` 也是字符设备）。

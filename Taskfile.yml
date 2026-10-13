@@ -1,0 +1,86 @@
+# 本地与 CI 共用的那一套动作。GitHub Actions 调的是这里的 `task check`，不再另抄一份命令 ——
+# 两处各写一份的话，迟早一处绿一处红（AGENTS.md §2 那条质量门就是这份文件）。
+version: '3'
+
+vars:
+  BINARY: twin
+  # Go 不在 PATH 上时覆盖（如本机 ~/.g/go/bin/go）：task build GO=$HOME/.g/go/bin/go
+  GO: 'go'
+  # 版本号进 main.version —— 里面的默认值只在不是 git 仓库时才用得上
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || printf '0.2.0-dev'
+  # 本机 /tmp 是 10 MB 的 tmpfs，Go 链接测试二进制会 "no space left on device"，
+  # 所以测试一律用 $HOME/.cache/gotmp —— AGENTS.md §2 记的就是这个坑。
+  GOTMPDIR:
+    sh: printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/gotmp"
+
+tasks:
+  default:
+    desc: 列出全部任务
+    silent: true
+    cmds:
+      - task --list
+
+  build:
+    desc: 构建 ./{{.BINARY}}，把 git describe 的结果注入 main.version
+    cmds:
+      - '{{.GO}} build -ldflags "-X main.version={{.VERSION}}" -o {{.BINARY}} ./cmd/twin'
+
+  fmt:
+    desc: 按 gofmt 格式化（改文件）
+    cmds:
+      - gofmt -w .
+
+  fmtcheck:
+    desc: gofmt 校验：有文件需要格式化就失败
+    # 静默：这段脚本只在失败时才有话说（失败时 task 仍会把脚本和 stderr 一起打出来）。
+    # 不用 `gofmt -l . | diff - /dev/null`：那样失败时看不见是哪几个文件。
+    silent: true
+    cmds:
+      - |
+        out="$(gofmt -l .)"
+        if [ -n "$out" ]; then
+          printf 'gofmt 需要处理这些文件：\n%s\n' "$out" >&2
+          exit 1
+        fi
+
+  vet:
+    desc: go vet ./...
+    cmds:
+      - '{{.GO}} vet ./...'
+
+  test:
+    desc: 单元测试（GOTMPDIR / TMPDIR 指向 $HOME/.cache/gotmp）
+    deps: [gotmp]
+    env:
+      GOTMPDIR: '{{.GOTMPDIR}}'
+      TMPDIR: '{{.GOTMPDIR}}'
+    cmds:
+      - '{{.GO}} test ./...'
+
+  test:real:
+    desc: 依赖真实机器状态的诊断测试（默认不跑，因为结果随机器而变）
+    cmds:
+      - 'TWIN_REAL_PROBE=1 {{.GO}} test ./internal/userns/ -run RealProbe -v'
+
+  check:
+    desc: 质量门：gofmt ＋ vet ＋ test（CI 跑的也是这一条）
+    # 一条一条来而不是 deps 并行：失败时先看见的是最早那条，输出也不会交叉。
+    cmds:
+      - task: fmtcheck
+      - task: vet
+      - task: test
+
+  clean:
+    desc: 删掉构建产物 ./{{.BINARY}}
+    cmds:
+      - rm -f {{.BINARY}}
+
+  # 只被 test 依赖：GOTMPDIR 指向的目录不存在时，Go 建临时目录会直接失败。
+  gotmp:
+    internal: true
+    silent: true
+    status:
+      - test -d '{{.GOTMPDIR}}'
+    cmds:
+      - mkdir -p '{{.GOTMPDIR}}'

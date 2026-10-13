@@ -1,5 +1,6 @@
 # 编译产物
 /bin/
+/twin
 
 # Go
 *.test
@@ -12,5 +13,6 @@ coverage.*
 *.swp
 .DS_Store
 
-# 试运行产物
+# 试运行产物（twin gen 默认往当前目录写 config.yml）—— Taskfile.yml 是仓库文件，要除外
 /*.yml
+!/Taskfile.yml

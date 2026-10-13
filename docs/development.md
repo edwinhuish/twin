@@ -13,6 +13,25 @@ go test ./...
 gofmt -l . && go vet ./... && go test ./...
 ```
 
+这套命令由 [`Taskfile.yml`](../Taskfile.yml) 收口，**本地与 CI 用的是同一条**（两处各写一份的话，
+迟早一处绿一处红）：
+
+```bash
+task --list         # 全部任务
+task check          # = 上面那一条：gofmt ＋ vet ＋ test，按顺序遇错即停
+task build          # 构建 ./twin，版本号取 git describe 注入 main.version
+task fmt            # gofmt -w .
+task clean          # 删掉 ./twin
+task test:real      # 依赖真实机器状态的诊断测试（默认不跑）
+```
+
+`task test` 自己把 `GOTMPDIR` / `TMPDIR` 指向 `$HOME/.cache/gotmp`（就是下面那个坑），所以本机不必再
+手写那串环境变量。Go 不在 PATH 上时：`task build GO=$HOME/.g/go/bin/go`。
+
+`.github/workflows/ci.yml` 只做三件事：装 Go（版本**读 `go.mod`**，不另写一个）、装 task、跑
+`task check` 与 `task build`（后者顺带冒烟一次 `./twin version`）。质量门本身定义在 `Taskfile.yml` 里，
+CI 不再抄第二份。
+
 ⚠️ **`/tmp` 是小容量 tmpfs 的机器上，`go test` 会报 `no space left on device`** ——
 Go 链接每个测试二进制都要在临时目录里落一个几 MB 的文件。改到别的目录：
 
