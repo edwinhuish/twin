@@ -110,7 +110,7 @@ Keywords   微信;wechat;
 | 命令 | 做什么 |
 |---|---|
 | `twin gen wechat` | 在当前目录写 `config.yml`（id、显示名、路径映射全部推导出来写进去），然后说清下一步敲什么 |
-| `$EDITOR config.yml` | 改 `bind` / `name` / `keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
+| `$EDITOR config.yml` | 改 `bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
 | `twin install` | 读那份配置：写实例快照 → 落盘（桌面项 / 图标 / 启动器 / 宿主托盘）＋ 自检 |
 | `twin gen wechat -o ~/w/wechat.yml` | 写到别处；之后用 `twin install -c ~/w/wechat.yml` 装它 |
 
@@ -125,20 +125,15 @@ Keywords   微信;wechat;
 $ twin gen wechat
 ✅ 已写出配置 config.yml
 
-📁 路径映射
-  3 条，来源：内置规则 wechat
-  …
-
 👉 下一步
-  1. 改 config.yml —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）
+  1. 改 config.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
   2. 安装：twin install
-     想先看它会写什么、或看完整说明，就在后面再加 --dry-run / --explain。
 ```
 
 `gen` 的输出刻意短：它只做两件事 —— **只写一个文件**（桌面项、图标、启动器、私有状态目录都等
 `install`），并且**把路径指出来**。逐键的说明、`bind` 的语义、`rules.d` 的存在，全都写在**那份文件
 的注释里**：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件两处说法各表一套。
-要看完整的推导值与规则模板，加 `--explain`。
+要看推导值与**这一份配置的**路径映射一节，加 `--explain`。
 
 终端上只多留一行，给"**一条映射都没有**"的程序：
 
@@ -385,8 +380,8 @@ twin config > ~/.config/twin/config.toml
 Chromium 会写 `~/.config/autostart`、Qt 会读 `~/.config/fontconfig`，把它们当"这个程序的私有数据"
 绑掉，会让半个桌面跟着坏，而症状看起来像是 twin 的 bug。
 
-探测到的东西也可以只看不写：`twin gen` 打印的 `路径映射` 一节里同样列出"**未应用**"的候选目录
-（只含存在性证据那一条，因为它在每次生成时都要跑一遍）。
+探测到的东西也可以只看不写：`twin gen --explain` 打印的 `路径映射` 一节里同样列出"**未应用**"的
+候选目录（只含存在性证据那一条，因为它在每次生成时都要跑一遍）。
 
 ### `twin version`
 
@@ -517,8 +512,12 @@ twin gen wechat -- --unshare-pid --setenv TWIN_FOO bar
 |---|---|
 | `0` | 成功。**包括事实性跳过**：`--no-tray` / 整机 `tray_override = false` / 这台机器根本没有托盘宿主 |
 | `1` | 失败，或自检里有 ❌ |
-| `2` | 用法错误（未知选项、非法 `--level`、`--` 之后不是 bwrap 选项、`-o` 与 `--output` 同时给出、`HOME` 未设置…） |
+| `2` | 用法错误（未知子命令、未知选项、非法 `--level`、`--` 之后不是 bwrap 选项、`-o` 与 `--output` 同时给出、`HOME` 未设置…） |
 | `3` | **身份已经成立，但还差一步必须由人执行。** 目前两个来源：<br>① 托盘覆盖表写不进去（无会话总线 —— 安装脚本、无图形会话）<br>② 内核限制 `userns` 而机器上既没有跳板、`install` 也没法装 profile（没有 `sudo`，或标准输入不是终端、问不了密码）⇒ profile 全文已经打印给你 |
+
+用法错误**只打印那一行错误**，不复述整份帮助：帮助的出口是 `twin --help`，某个命令的选项表是
+`twin <命令> -h`（退出码 `0`，那是提问不是犯错）。把一份 `usage` 倒在一处笔误下面，只会把真正
+有用的那一行顶出屏幕。
 
 退出码 3 的意义在于把**"去图形会话里跑一下"**和**"这东西坏了"**分开。脚本可以据此决定是
 提示用户、还是报错退出。

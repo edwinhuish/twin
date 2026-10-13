@@ -7,8 +7,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -120,8 +122,8 @@ const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 /
   twin config                             打印 config.toml 模板（不存在时）
   twin version                            版本
 
-第一个 token 永远是动词，第二个是它的宾语 —— 位置即含义，没有例外，也没有保留字表。
-所以程序真名就算叫 list / gen / doctor，照常写：twin gen list 就是包一个叫 list 的程序。
+第一个 token 永远是动词，没有保留字表 —— 程序真名就算叫 list / gen / doctor 也照常写：
+twin gen list 就是包一个叫 list 的程序。
 
 两步（推荐）—— 一次 wrap 里唯一随程序而变、又猜错了不出声的东西是路径映射，
 所以先把它落成一份可以读、可以改、能进版本库的文件，再安装：
@@ -201,10 +203,9 @@ install 选项:
   --dry-run              只打印将要写什么，一个字节不落盘。
                          本机需要 AppArmor profile 时，它也只会说要装什么，不会碰 /etc
 
-install 会在本机限制非特权 userns、而私有 bwrap 副本又拿不到许可时，
-自己把一份 AppArmor profile 装好（写 /etc/apparmor.d/twin-bwrap 并加载）——
-那一步要 root，所以会通过 sudo 要求你输入密码。没有 sudo、或标准输入不是终端
-（脚本里跑）时，它退回打印 profile 全文并以退出码 3 结束。
+install 在本机限制非特权 userns、而私有 bwrap 副本又拿不到许可时，会自己用 sudo 装好
+一份挂在副本上的 profile（写 /etc/apparmor.d/twin-bwrap 并加载）—— 那一步要 root。
+装不上时怎么办，见下面的退出码 3。
 
 source 可以是 .desktop 路径、桌面项 id（wechat），或程序名。
 `
@@ -263,8 +264,11 @@ func main() {
 		// No implicit verb and no reserved-word table: an unknown first token is
 		// a usage error, never a guess. `twin gen list` is how you wrap a program
 		// that happens to be named after a subcommand.
-		fail(fmt.Sprintf("未知子命令 %q", cmd))
-		fmt.Fprint(os.Stderr, usage)
+		//
+		// The usage block is not repeated here: it is a screenful, and it would
+		// push the one line naming the typo off the top of the terminal. Bare
+		// `twin` still prints it — there the user asked for nothing else.
+		fail(fmt.Sprintf("未知子命令 %q（帮助：twin --help）", cmd))
 		os.Exit(exitUsage)
 	}
 }
@@ -292,6 +296,49 @@ func parseFL(fs *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, rest[0])
 		args = rest[1:]
 	}
+}
+
+// newFlags builds the FlagSet every verb parses its options with.
+//
+// The difference from a bare flag.NewFlagSet is that this one says nothing on
+// its own. Go's flag package answers a mistake with the error *and* the whole
+// "Usage of gen:" flag list, printed straight to stderr — which is two things
+// twin does not want: the list belongs to `twin --help`, and printing it under
+// a one-line typo buries the line that matters. It also bypasses internal/style,
+// so a typo would come out plain while every other diagnostic respects NO_COLOR
+// and the per-stream decision. usageError does the talking instead.
+func newFlags(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+// usageError reports a command line the flag package rejected.
+//
+// Errors get one line — what was wrong, nothing else. `-h` gets the flag list,
+// because that is a question rather than a mistake, and it is the only answer
+// to it. Both forms go out through twin's own printers so the output stays one
+// stream, one style.
+func usageError(fs *flag.FlagSet, err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		fmt.Printf("%s 的选项：\n", fs.Name())
+		fs.SetOutput(os.Stdout)
+		fs.PrintDefaults()
+		fs.SetOutput(io.Discard)
+		return exitOK
+	}
+	// The flag package's own wording is English and aimed at Go programmers
+	// ("flag provided but not defined: -nope"). Two phrases carry almost every
+	// real typo; the rest is left verbatim rather than guessed at.
+	msg := err.Error()
+	switch {
+	case strings.HasPrefix(msg, "flag provided but not defined: "):
+		msg = "没有这个选项：" + strings.TrimPrefix(msg, "flag provided but not defined: ")
+	case strings.HasPrefix(msg, "flag needs an argument: "):
+		msg = "选项缺一个值：" + strings.TrimPrefix(msg, "flag needs an argument: ")
+	}
+	fail(msg)
+	return exitUsage
 }
 
 // splitPassthrough cuts args at the first `--`. Everything left of it belongs
@@ -381,15 +428,15 @@ func cmdConfig(p inst.Paths) int {
 }
 
 func cmdRules(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("rules", flag.ContinueOnError)
+	fs := newFlags("rules")
 	initDraft := fs.Bool("init", false, "为这个程序探测并写出一份规则草稿（不覆盖已有文件）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageError(fs, err)
 	}
 	if *initDraft {
 		if len(pos) != 1 {
-			fail("用法：twin rules --init <源桌面项 | 程序名 | id>")
+			fail("twin rules --init 要正好一个参数：源桌面项、程序名或 id")
 			return exitUsage
 		}
 		return cmdRulesInit(p, pos[0])
@@ -508,14 +555,14 @@ func sortedRuleKeys(m map[string]*config.Rule) []string {
 // ---------------------------------------------------------------- inspect
 
 func cmdInspect(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	fs := newFlags("inspect")
 	name := fs.String("name", "", "预览：把该名字当作你显式指定的显示名")
 	pos, err := parseFL(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageError(fs, err)
 	}
 	if len(pos) < 1 {
-		fail("用法：twin inspect <source>")
+		fail("缺少 <source>：源桌面项、程序名或 id 都可以")
 		return exitUsage
 	}
 	insp, err := generate.Inspect(p, pos[0])
@@ -624,7 +671,7 @@ func (l *listFlag) Set(v string) error {
 }
 
 func cmdGen(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("gen", flag.ContinueOnError)
+	fs := newFlags("gen")
 	var (
 		output     = fs.String("output", "", "配置写到哪（默认 ./config.yml）")
 		as         = fs.String("as", "", "实例 id")
@@ -660,10 +707,10 @@ func cmdGen(p inst.Paths, args []string) int {
 	}
 	pos, err := parseFL(fs, head)
 	if err != nil {
-		return exitUsage
+		return usageError(fs, err)
 	}
 	if len(pos) < 1 {
-		fail("用法：twin gen <source> [-o <文件>]")
+		fail("缺少 <source>：源桌面项、程序名或 id 都可以（写到别处用 -o <文件>）")
 		return exitUsage
 	}
 	if *output != "" && shortOutput != "" {
@@ -763,9 +810,14 @@ func writeConfigFile(path string, body []byte, force bool) error {
 }
 
 // printGenResult says where the configuration landed and what the next command
-// is. The body of the file is only printed for --dry-run, because the file
-// itself carries a note above every key — repeating those here would be two
+// is. That is the whole of the short form: the body of the file is printed only
+// for --dry-run and the path maps only for --explain, because the file itself
+// carries a note above every key — saying the same thing here would be two
 // places that can disagree about what a key means.
+//
+// The one fact that does not wait for --explain is "no mapping at all". Nothing
+// in this or any later step reports that consequence again, and the programs it
+// happens to are exactly the ones that fight each other over a lock file.
 func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	outPath string, dry, explain bool, der []generate.Derivation) {
 	lead := outStyle.Green(style.Glyph(style.LevelOK) + " 已写出配置")
@@ -775,12 +827,16 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	fmt.Printf("%s %s\n", lead, outStyle.Bold(outPath))
 	if explain {
 		printDerived(der)
+		// "This instance" is the configuration the user is holding, not a
+		// snapshot: gen has not installed anything, so that snapshot does not
+		// exist yet.
+		printPathMaps(p, it, insp, mapsOrigin(insp.Rule),
+			mapFix{file: outPath, replay: installCommandFor(outPath)}, true)
 	}
-	// "This instance" is the configuration the user is holding, not a snapshot:
-	// gen has not installed anything, so that snapshot does not exist yet.
-	printPathMaps(p, it, insp, mapsOrigin(insp.Rule),
-		mapFix{file: outPath, replay: installCommandFor(outPath)}, explain)
-	if len(it.Binds) == 0 {
+	// Under --explain the map section carries this sentence itself — but only
+	// for a program with no rule at all, so a rule that maps nothing still
+	// needs the line here (saying it twice is how a reader learns to skip it).
+	if len(it.Binds) == 0 && (!explain || insp.Rule != nil) {
 		fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 没有隔离任何数据目录：这个程序若有单实例锁"+
 			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind"))
 	}
@@ -793,9 +849,8 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		fmt.Printf("\n%s\n%s", title("📄 配置内容（config.yml）"), indent(body, "  "))
 	}
 	fmt.Printf("\n%s\n", title("👉 下一步"))
-	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也行，推导出来的默认值通常够用）\n", outPath)
+	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也能装）\n", outPath)
 	fmt.Printf("  2. 安装：%s\n", installCommandFor(outPath))
-	fmt.Printf("     想先看它会写什么、或看完整说明，就在后面再加 --dry-run / --explain。\n")
 }
 
 // installRun is one `twin install` invocation: the choices that are about the
@@ -818,7 +873,7 @@ func (r installRun) verbose() bool { return r.dry || r.explain }
 // from flags — which is why it takes no derivation options at all. A flag and a
 // file can disagree; only one of them is what the user just spent time on.
 func cmdInstall(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	fs := newFlags("install")
 	var (
 		configPath = fs.String("config", "", "读哪一份配置（默认 ./config.yml）")
 		force      = fs.Bool("force", false, "覆盖非 twin 生成的产物")
@@ -829,11 +884,11 @@ func cmdInstall(p inst.Paths, args []string) int {
 	fs.StringVar(&shortConfig, "c", "", "读哪一份配置（--config 的简写）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageError(fs, err)
 	}
 	if len(pos) > 0 {
-		fail(fmt.Sprintf("用法：twin install [-c <文件>] —— %q 是多余的：配置路径用 -c 指定，"+
-			"要包哪个程序是在 `twin gen` 那一步说的", pos[0]))
+		fail(fmt.Sprintf("twin install 不接受位置参数（收到 %q）：装哪份配置用 -c 指定，"+
+			"包哪个程序是在 `twin gen` 那一步说的", pos[0]))
 		return exitUsage
 	}
 	if *configPath != "" && shortConfig != "" {
@@ -951,10 +1006,12 @@ func ensureProfile(p inst.Paths, rt sandbox.Runtime, dry bool) int {
 		fmt.Printf("  %s\n", outStyle.Yellow("本机需要 AppArmor profile（要 root），"+
 			"但标准输入不是终端、没法让你输密码：跳过自动安装"))
 	default:
+		// What is about to be written to /etc is named before sudo asks for a
+		// password, not after: handing root to a line the user cannot see is
+		// the one thing this prompt must never do.
 		fmt.Printf("  %s\n", title("🔐 需要 root 装一份 AppArmor profile"))
-		fmt.Printf("      %s → %s，然后 apparmor_parser -r\n", userns.ProfileName, userns.ProfileFile)
-		fmt.Printf("      sudo 会在这里要求你输入密码。不想给就按 Ctrl-C —— " +
-			"下面会打印同样的命令，你自己跑也一样。\n\n")
+		fmt.Printf("     将写 %s（%s 挂到 bwrap 副本上）。sudo 会要求输入密码 —— "+
+			"不想给就 Ctrl-C，下面会打印同样的命令。\n\n", userns.ProfileFile, userns.ProfileName)
 		note, err := userns.InstallProfile(rt.Bwrap, p.BinDir())
 		if err != nil {
 			warn(err.Error())
@@ -1008,13 +1065,13 @@ func mapsOrigin(rule *config.Rule) string {
 // ---------------------------------------------------------------- verify
 
 func cmdVerify(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	fs := newFlags("verify")
 	pos, err := parseFL(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageError(fs, err)
 	}
 	if len(pos) < 1 {
-		fail("用法：twin verify <id>")
+		fail("缺少 <id>：twin list 看有哪些实例")
 		return exitUsage
 	}
 	id := pos[0]
@@ -1121,14 +1178,14 @@ func cmdList(p inst.Paths) int {
 // is also why it takes no derivation flags — `twin install` is where a
 // configuration becomes an instance, and this is where an instance is repeated.
 func cmdReinstall(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("reinstall", flag.ContinueOnError)
+	fs := newFlags("reinstall")
 	refresh := fs.Bool("refresh", false, "重读 config.toml / rules.d，只补快照里为空的字段")
 	pos, err := parseFL(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageError(fs, err)
 	}
 	if len(pos) < 1 {
-		fail("用法：twin reinstall <id> [--refresh]")
+		fail("缺少 <id>：twin list 看有哪些实例")
 		return exitUsage
 	}
 	id := pos[0]
@@ -1442,15 +1499,15 @@ func iconSizeFor(p inst.Paths) int {
 // ---------------------------------------------------------------- unwrap
 
 func cmdRemove(p inst.Paths, args []string) int {
-	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
+	fs := newFlags("remove")
 	yes := fs.Bool("yes", false, "确认删除")
 	purge := fs.Bool("purge", false, "连私有状态目录一起删")
 	pos, err := parseFL(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageError(fs, err)
 	}
 	if len(pos) < 1 {
-		fail("用法：twin remove <id> [--yes] [--purge]")
+		fail("缺少 <id>：twin list 看有哪些实例（先不加 --yes 只预览要删什么）")
 		return exitUsage
 	}
 	id := pos[0]
@@ -1561,13 +1618,24 @@ func dropTray(id string, dry bool) string {
 
 // printDerived shows every value that was filled in from the source program,
 // with the reason. A default nobody can see is a default nobody can correct.
+//
+// The key column is sized to the batch rather than fixed: these are dotted
+// config paths (`desktop.keywords`, `isolation.nested_ns`) whose width follows
+// the schema, and a fixed column turns "one key got longer" into a table where
+// the values no longer line up.
 func printDerived(der []generate.Derivation) {
 	if len(der) == 0 {
 		return
 	}
+	width := 0
+	for _, d := range der {
+		if n := len([]rune(d.Key)); n > width {
+			width = n
+		}
+	}
 	fmt.Printf("\n%s\n", title("🧩 推导出的默认值（都可用选项覆盖）"))
 	for _, d := range der {
-		fmt.Printf("  %-9s %s   ← %s\n", d.Key, d.Value, d.Source)
+		fmt.Printf("  %-*s %s   ← %s\n", width, d.Key, d.Value, d.Source)
 	}
 }
 

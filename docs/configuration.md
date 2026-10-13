@@ -54,7 +54,7 @@ config.yml      （你正在编辑的那一份：gen 写、install 读）
 
 | 字段 | `--refresh` 的行为 |
 |---|---|
-| `keywords` / `categories` | 快照里**为空**时才补（rules.d → 源桌面项） |
+| `desktop.keywords` / `desktop.categories` | 快照里**为空**时才补（rules.d → 源桌面项） |
 | `bwrap.extra` | 把 config ＋ rules 的 token **追加**进来；已存在的 token 跳过（幂等） |
 | 其余（id / name / level / tmpfs / binds） | **不动** —— 它们一定已被写满，"空"与"用户要空"分不开 |
 
@@ -231,11 +231,23 @@ extra = []
 | 键 | 说明 |
 |---|---|
 | `id` | 实例 id（= 桌面项基名 = 别名文件名） |
+
+### `desktop`
+
+生成出来的那份 `.desktop` 的文案。**留空一律表示"沿用源桌面项"** —— 这一组键回答的是同一个问题，
+所以它们在一节里，而不是散在根上。
+
+| 键 | 说明 |
+|---|---|
 | `name` / `name_en` | 显示名 / 英文名 |
 | `comment` / `comment_en` | 说明 |
 | `keywords` | 搜索关键词（`;` 分隔） |
 | `categories` | 分类（`;` 分隔） |
 | `source` | 源桌面项路径（信息性，`install` / `reinstall` 会重读它取 Categories/Keywords） |
+
+> 键名前面那份版本把它们放在根上。那个写法**仍然读得懂**（根上的 `name` 没有第二种解释），
+> 所以不用为了升级去改手上已有的实例；下一次 `install` / `reinstall` 会把文件改写成
+> `desktop:` 一节。
 
 ### `identity`
 
@@ -351,10 +363,12 @@ header 就写着这一点 —— 而且**两处落点各有各的那一句**：
 
 # 实例 id：桌面项基名、别名文件名、这个目录名，三者都是它。
 id: wechat2
-# 显示名（窗口标题与菜单里看到的）。name_en / comment_en 是可选英文版。
-name: 微信2
-# 搜索关键词，`;` 分隔。留空则沿用源桌面项。
-keywords: 微信;wechat;
+…
+desktop:
+  # 显示名（窗口标题与菜单里看到的）。name_en / comment_en 是可选英文版。
+  name: 微信2
+  # 搜索关键词，`;` 分隔。留空则沿用源桌面项。
+  keywords: 微信;wechat;
 …
 exec:
   # 沙箱内建在 target 同目录下的别名文件名。窗口 app_id 取自真实路径名，

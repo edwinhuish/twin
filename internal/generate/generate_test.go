@@ -164,7 +164,7 @@ func TestPlanDerivesFromSource(t *testing.T) {
 	if it.Badge != "2" {
 		t.Errorf("badge = %q, want 2 (trailing digit of the id)", it.Badge)
 	}
-	for _, key := range []string{"id", "name", "name_en", "comment", "badge"} {
+	for _, key := range []string{"id", "desktop.name", "desktop.name_en", "desktop.comment", "badge"} {
 		if !hasDerivation(der, key) {
 			t.Errorf("no derivation recorded for %q: %+v", key, der)
 		}
@@ -258,7 +258,7 @@ func TestKeywordsDerivedWhenSourceHasNone(t *testing.T) {
 	}
 	var why string
 	for _, d := range der {
-		if d.Key == "keywords" {
+		if d.Key == "desktop.keywords" {
 			why = d.Source
 		}
 	}
@@ -283,7 +283,7 @@ func TestKeywordsInheritedFromSource(t *testing.T) {
 	if it.Keywords != "微信;聊天;" {
 		t.Errorf("keywords = %q, want the source's Keywords[zh_CN] verbatim", it.Keywords)
 	}
-	if !hasDerivation(der, "keywords") {
+	if !hasDerivation(der, "desktop.keywords") {
 		t.Errorf("inheritance should still be reported: %+v", der)
 	}
 }
@@ -316,7 +316,7 @@ func TestKeywordsExplicitWins(t *testing.T) {
 		t.Errorf("keywords = %q, want the explicit value verbatim", it.Keywords)
 	}
 	for _, d := range der {
-		if d.Key == "keywords" {
+		if d.Key == "desktop.keywords" {
 			t.Errorf("an explicit value must not be reported as derived: %+v", d)
 		}
 	}
@@ -406,7 +406,7 @@ func TestKeywordsDerivedNameLeavesEnglishSourceAlone(t *testing.T) {
 	if it.Keywords != "Player;Capture;DVD;" {
 		t.Errorf("keywords = %q, want the source list untouched", it.Keywords)
 	}
-	if why := derivationFor(der, "keywords"); strings.Contains(why, "前置") {
+	if why := derivationFor(der, "desktop.keywords"); strings.Contains(why, "前置") {
 		t.Errorf("nothing was prepended, so nothing may claim it was: %q", why)
 	}
 }
@@ -424,7 +424,7 @@ func TestKeywordsExplicitNamePrependedToEnglishSource(t *testing.T) {
 	if want := "我的播放器;Player;Capture;DVD;"; it.Keywords != want {
 		t.Errorf("keywords = %q, want %q", it.Keywords, want)
 	}
-	why := derivationFor(der, "keywords")
+	why := derivationFor(der, "desktop.keywords")
 	if !strings.Contains(why, "源 Keywords") || !strings.Contains(why, "我的播放器") {
 		t.Errorf("the reason must name both halves of the result: %q", why)
 	}
@@ -532,13 +532,13 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	if it.Keywords != "wechat;微信;im" {
 		t.Errorf("keywords = %q, want the rule's list verbatim", it.Keywords)
 	}
-	if got := derivationFor(der, "keywords"); got == "" {
+	if got := derivationFor(der, "desktop.keywords"); got == "" {
 		t.Error("规则提供的 keywords 必须出现在推导来源里")
 	}
 	if it.Categories != "Utility;Chat;" {
 		t.Errorf("categories = %q, want the rule's", it.Categories)
 	}
-	if got := derivationFor(der, "categories"); got == "" {
+	if got := derivationFor(der, "desktop.categories"); got == "" {
 		t.Error("规则提供的 categories 必须出现在推导来源里")
 	}
 	if len(it.Tmpfs) != 1 || it.Tmpfs[0] != "/tmp" {
@@ -565,7 +565,7 @@ func TestPlanExplicitKeywordsBeatRule(t *testing.T) {
 	if it.Keywords != "only;this;" {
 		t.Errorf("keywords = %q, want the explicit list", it.Keywords)
 	}
-	if got := derivationFor(der, "keywords"); got != "" {
+	if got := derivationFor(der, "desktop.keywords"); got != "" {
 		t.Errorf("显式给了 --keywords 就不该有推导来源，得到 %q", got)
 	}
 }

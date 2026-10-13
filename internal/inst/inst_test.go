@@ -116,6 +116,56 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// The generated entry's text is one `desktop:` section. Seven keys at the root
+// answered the same question seven lines apart, and every one of them means
+// "inherit from the source" when empty — a group reads as one decision.
+func TestSnapshotPutsTheEntryTextInOneSection(t *testing.T) {
+	data, err := base().Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "\ndesktop:\n") {
+		t.Errorf("没有 desktop: 一节：\n%s", text)
+	}
+	// Anchored on a newline so the indented copies inside `desktop:` do not
+	// count: the assertion is about what is at the *root*.
+	for _, key := range []string{"name", "name_en", "comment", "comment_en", "keywords", "categories", "source"} {
+		if strings.Contains(text, "\n"+key+":") {
+			t.Errorf("%s 还留在根上：\n%s", key, text)
+		}
+		if !strings.Contains(text, "\n  "+key+":") {
+			t.Errorf("%s 没有缩进进 desktop: 一节：\n%s", key, text)
+		}
+	}
+}
+
+// A snapshot written before the keys moved must keep loading. The old spelling
+// is not ambiguous — there is nowhere else a root-level `name` could have
+// belonged — and refusing it would take every installed instance offline at
+// once, over a change the file itself absorbs on the next install.
+func TestLoadReadsThePreSectionSpelling(t *testing.T) {
+	legacy := "id: wechat2\n" +
+		"name: 微信2\n" +
+		"comment: 第二个微信\n" +
+		"keywords: wechat;微信;\n" +
+		"source: /usr/share/applications/wechat.desktop\n" +
+		"exec:\n" +
+		"  target: /opt/wechat/wechat\n"
+	path := filepath.Join(t.TempDir(), "profile.yml")
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Name != "微信2" || out.Comment != "第二个微信" || out.Keywords != "wechat;微信;" ||
+		out.Source != "/usr/share/applications/wechat.desktop" {
+		t.Errorf("旧写法的桌面项文案没读回来：%+v", out)
+	}
+}
+
 // The Docker Compose spelling, source first: the private copy is where the data
 // lives, ~/.xwechat is where the program looks for it.
 func TestRenderWritesBindsAsDockerSpecs(t *testing.T) {

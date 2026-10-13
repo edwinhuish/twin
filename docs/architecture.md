@@ -100,10 +100,10 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 | 值 | 默认来源 |
 |---|---|
 | `id` | 源桌面项基名 ＋ **最小空闲序号（从 2 开始）** |
-| `name` | 源 `Name[<当前语言>]` ＋ 序号（如 `微信2`）；没有语言化变体则用 `Name` |
-| `name_en` | 源 `Name` ＋ 序号；与 `name` 相同则不写 `Name[en]` |
-| `comment` | 源 `Comment[<当前语言>]` → `Comment` → 合成一句 |
-| `keywords` | 显式 > rules.d > 源 `Keywords[<语言>]`/`Keywords` > 从源名与程序名合成 |
+| `desktop.name` | 源 `Name[<当前语言>]` ＋ 序号（如 `微信2`）；没有语言化变体则用 `Name` |
+| `desktop.name_en` | 源 `Name` ＋ 序号；与 `desktop.name` 相同则不写 `Name[en]` |
+| `desktop.comment` | 源 `Comment[<当前语言>]` → `Comment` → 合成一句 |
+| `desktop.keywords` | 显式 > rules.d > 源 `Keywords[<语言>]`/`Keywords` > 从源名与程序名合成 |
 | `badge` | `id` 尾部的数字串（`wechat2` → `2`） |
 | `badge_style` | `config.toml` → `corner` |
 | `level` | CLI → rules.d → `config.toml` → `alias` |
@@ -118,13 +118,13 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 
 ```
 推导出的默认值（都可用选项覆盖）
-  id        wechat3   ← 源桌面项基名 wechat + 最小空闲序号
-  level     alias     ← config.toml defaults.level
-  name      微信3     ← 源 Name[zh_CN]="微信" + 序号 3
-  name_en   wechat3   ← 源 Name + 序号 3
-  comment   微信桌面版  ← 源 Comment[zh_CN]
-  keywords  微信;wechat;   ← 源无 Keywords；由 Name[zh_CN]、Name 推得
-  badge     3         ← 从 id 的尾部数字提取
+  id               wechat3   ← 源桌面项基名 wechat + 最小空闲序号
+  level            alias   ← config.toml defaults.level
+  desktop.name     微信3   ← 源 Name[zh_CN]="微信" + 序号 3
+  desktop.name_en  wechat3   ← 源 Name + 序号 3
+  desktop.comment  微信桌面版   ← 源 Comment[zh_CN]
+  desktop.keywords 微信;wechat;   ← 源无 Keywords；由 Name[zh_CN]、Name 推得
+  badge            3   ← 从 id 的尾部数字提取
 ```
 
 一个看不见来源的默认值，就是一个没人能纠正的默认值。
@@ -155,11 +155,13 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 # twin —— 实例定义（存档快照）。改完跑 `twin reinstall wechat2` 重放；
 # `twin install` 会用工作副本那份重新写出它。
 id: wechat2
-name: 微信2
-name_en: WeChat2
-comment: 微信
-keywords: 微信;wechat;WeChat;
-source: /usr/share/applications/wechat.desktop
+
+desktop:
+  name: 微信2
+  name_en: WeChat2
+  comment: 微信
+  keywords: 微信;wechat;WeChat;
+  source: /usr/share/applications/wechat.desktop
 
 identity:
   level: alias

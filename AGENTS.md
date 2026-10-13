@@ -130,9 +130,12 @@ style → {}    ← 只有标准库
 5. **`--dry-run` 必须是忠实的。** 预览与真实落盘必须由**同一份代码**渲染
    （`DesktopEntry` 与 `it.RenderAs(inst.RoleSnapshot)` 被 dry-run 和 `Materialize` 共用；
    `gen` 用 `RoleConfig`，预览的也就是它写的那份）。用另一套代码画的预览就是一句谎话。
-6. **CLI 用 `parseFL`，不要直接 `fs.Parse`。** Go 的 `flag` 在第一个非 flag token 处停止，
-   而文档里的写法是 `twin gen <source> --as <id>` —— 直接用会让 `--as` 及其后的所有选项被
-   **静默忽略**。位置参数可以出现在选项之间，这是文档承诺的行为。
+6. **CLI 用 `parseFL`，不要直接 `fs.Parse`；`FlagSet` 一律用 `newFlags` 建。** Go 的 `flag` 在
+   第一个非 flag token 处停止，而文档里的写法是 `twin gen <source> --as <id>` —— 直接用会让
+   `--as` 及其后的所有选项被**静默忽略**。位置参数可以出现在选项之间，这是文档承诺的行为。
+   另一条：`FlagSet` 的输出被 `newFlags` 丢掉，错误经 `usageError` 出手 —— 出错的约定是
+   **只打印那一行错误**，不复述帮助（`twin --help` 才是帮助的出口，`-h` 才给该命令的选项表）。
+   把整份 "Usage of gen:" 或 `usage` 常量倒在笔误下面，会把真正有用的那一行顶出屏幕。
 7. **产物路径一律从 `$HOME` 派生**，且写进实例定义的一律用 `~/` 相对形式
    （`RelStateDir`）—— 那份文件要能搬到另一台机器重放。启动器里则统一折叠成 `$HOME/...`，
    绝不把生成时刻的 HOME 烤进去。唯一的例外是 `gen` 的输出文件：它在**当前目录**，那是用户的

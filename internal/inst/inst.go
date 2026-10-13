@@ -458,31 +458,38 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	t := yamlz.New()
 	t.SetComment("id", "实例 id：桌面项基名、别名文件名、这个目录名，三者都是它。")
 	t.Set("id", i.ID)
-	t.SetComment("name", "显示名（窗口标题与菜单里看到的）。name_en / comment_en 是可选英文版。")
-	t.Set("name", i.Name)
-	t.SetComment("name_en", "英文显示名。")
+
+	// The generated entry's text is one section, not seven keys at the root.
+	// They all answer the same question — what does the .desktop say? — and
+	// every one of them means "inherit it from the source" when left empty:
+	// that is a group, and it reads as one. Spread out at the root they were
+	// the widest thing in the file and the part a reader had to re-derive.
+	dt := t.Ensure("desktop")
+	dt.SetComment("name", "显示名（窗口标题与菜单里看到的）。name_en / comment_en 是可选英文版。")
+	dt.Set("name", i.Name)
+	dt.SetComment("name_en", "英文显示名。")
 	if i.NameEn != "" {
-		t.Set("name_en", i.NameEn)
+		dt.Set("name_en", i.NameEn)
 	}
-	t.SetComment("comment", "说明（菜单里那行副标题）。")
+	dt.SetComment("comment", "说明（菜单里那行副标题）。")
 	if i.Comment != "" {
-		t.Set("comment", i.Comment)
+		dt.Set("comment", i.Comment)
 	}
-	t.SetComment("comment_en", "英文说明。")
+	dt.SetComment("comment_en", "英文说明。")
 	if i.CommentEn != "" {
-		t.Set("comment_en", i.CommentEn)
+		dt.Set("comment_en", i.CommentEn)
 	}
-	t.SetComment("keywords", "搜索关键词，`;` 分隔。留空则沿用源桌面项。")
+	dt.SetComment("keywords", "搜索关键词，`;` 分隔。留空则沿用源桌面项。")
 	if i.Keywords != "" {
-		t.Set("keywords", i.Keywords)
+		dt.Set("keywords", i.Keywords)
 	}
-	t.SetComment("categories", "桌面分类，`;` 分隔。留空则沿用源桌面项。")
+	dt.SetComment("categories", "桌面分类，`;` 分隔。留空则沿用源桌面项。")
 	if i.Categories != "" {
-		t.Set("categories", i.Categories)
+		dt.Set("categories", i.Categories)
 	}
-	t.SetComment("source", "源桌面项。`twin install` / `twin reinstall` 会重读它取 Categories / Keywords。")
+	dt.SetComment("source", "源桌面项。`twin install` / `twin reinstall` 会重读它取 Categories / Keywords。")
 	if i.Source != "" {
-		t.Set("source", i.Source)
+		dt.Set("source", i.Source)
 	}
 
 	id := t.Ensure("identity")
@@ -640,15 +647,28 @@ func Load(path string) (*Instance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// The entry's text lives under `desktop:`. The spelling that predates the
+	// section — the same keys at the root — is still read: it is not ambiguous
+	// (there is nowhere else a root-level `name` could have belonged), and a
+	// snapshot written before the move has to keep working until the next
+	// install rewrites it in the new shape. Refusing it would take every
+	// installed instance offline at once over a change the file can absorb.
+	dt := root.At("desktop")
+	desktop := func(key string) string {
+		if v := dt.Str(key); v != "" {
+			return v
+		}
+		return root.Str(key)
+	}
 	it := &Instance{
 		ID:         root.Str("id"),
-		Name:       root.Str("name"),
-		NameEn:     root.Str("name_en"),
-		Comment:    root.Str("comment"),
-		CommentEn:  root.Str("comment_en"),
-		Keywords:   root.Str("keywords"),
-		Categories: root.Str("categories"),
-		Source:     root.Str("source"),
+		Name:       desktop("name"),
+		NameEn:     desktop("name_en"),
+		Comment:    desktop("comment"),
+		CommentEn:  desktop("comment_en"),
+		Keywords:   desktop("keywords"),
+		Categories: desktop("categories"),
+		Source:     desktop("source"),
 		Level:      Level(root.At("identity").Str("level")),
 		WMClass:    root.At("identity").Str("wm_class"),
 		Notify:     root.At("identity").Bool("notify"),

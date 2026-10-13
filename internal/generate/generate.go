@@ -289,17 +289,17 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	if name == "" {
 		if loc, tag := insp.Entry.LocalizedName(tags...); loc != "" {
 			name = loc + seq
-			note("name", name, fmt.Sprintf("源 Name[%s]=%q + 序号 %s", tag, loc, seq))
+			note("desktop.name", name, fmt.Sprintf("源 Name[%s]=%q + 序号 %s", tag, loc, seq))
 		} else {
 			name = insp.Entry.Name + seq
-			note("name", name, "源 Name + 序号 "+seq)
+			note("desktop.name", name, "源 Name + 序号 "+seq)
 		}
 	}
 
 	nameEn := o.NameEn
 	if nameEn == "" {
 		nameEn = insp.Entry.Name + seq
-		note("name_en", nameEn, "源 Name + 序号 "+seq)
+		note("desktop.name_en", nameEn, "源 Name + 序号 "+seq)
 	}
 	if nameEn == name {
 		nameEn = "" // Name[en] identical to Name would only add noise
@@ -309,10 +309,10 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	if comment == "" {
 		if loc, tag := insp.Entry.LocalizedComment(tags...); loc != "" {
 			comment = loc
-			note("comment", comment, "源 Comment["+tag+"]")
+			note("desktop.comment", comment, "源 Comment["+tag+"]")
 		} else if insp.Entry.Comment != "" {
 			comment = insp.Entry.Comment
-			note("comment", comment, "源 Comment")
+			note("desktop.comment", comment, "源 Comment")
 		} else {
 			comment = "由 twin 生成的第二个 " + insp.Entry.Name
 		}
@@ -337,13 +337,13 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		why = kwWhy
 	}
 	if o.Keywords == "" && keywords != "" {
-		note("keywords", keywords, why)
+		note("desktop.keywords", keywords, why)
 	}
 
 	categories := o.Categories
 	if categories == "" && rule != nil && rule.Categories != "" {
 		categories = rule.Categories
-		note("categories", categories, "应用规则 "+ruleOrigin(rule))
+		note("desktop.categories", categories, "应用规则 "+ruleOrigin(rule))
 	}
 
 	badge := o.Badge

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -62,6 +63,50 @@ func TestParseFLRejectsUnknownFlag(t *testing.T) {
 	fs := flag.NewFlagSet("new", flag.ContinueOnError)
 	if _, err := parseFL(fs, []string{"wechat", "--nope"}); err == nil {
 		t.Fatal("an unknown flag must be an error, not silently ignored")
+	}
+}
+
+// ---------------------------------------------------------------- usage errors
+
+// A mistake gets one line. Go's flag package answers with the error *and* the
+// whole flag list, which pushes the line that matters off the top of the
+// terminal — and the flag list is what `twin --help` is for.
+func TestUsageErrorPrintsTheMistakeWithoutTheFlagList(t *testing.T) {
+	fs := newFlags("gen")
+	fs.String("badge", "", "角标文字")
+	_, err := parseFL(fs, []string{"wechat", "--nope"})
+	if err == nil {
+		t.Fatal("未知选项必须是错误，不能静默忽略")
+	}
+	got := captureStderr(t, func() { usageError(fs, err) })
+	if strings.Contains(got, "角标文字") {
+		t.Errorf("错误输出里不该出现选项表：\n%s", got)
+	}
+	if !strings.Contains(got, "没有这个选项") {
+		t.Errorf("错误输出应当说人话：\n%s", got)
+	}
+	if lines := strings.Count(strings.TrimSpace(got), "\n"); lines != 0 {
+		t.Errorf("错误应当只有一行，实际 %d 行：\n%s", lines+1, got)
+	}
+}
+
+// `-h` is a question, not a mistake: it is the one case that gets the flag
+// list, and it must not come back as a usage error — the caller returns 0, so
+// the exit code has to agree.
+func TestDashHAnswersWithTheFlagList(t *testing.T) {
+	fs := newFlags("gen")
+	fs.String("badge", "", "角标文字")
+	_, err := parseFL(fs, []string{"-h"})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseFL(-h) = %v, want flag.ErrHelp", err)
+	}
+	var code int
+	got := captureStdout(t, func() { code = usageError(fs, err) })
+	if code != exitOK {
+		t.Errorf("-h 不是用法错误，退出码应当是 0：%d", code)
+	}
+	if !strings.Contains(got, "角标文字") {
+		t.Errorf("-h 应当打印选项表：\n%s", got)
 	}
 }
 
@@ -220,20 +265,59 @@ func TestPathMapsShortFormDropsTheTemplate(t *testing.T) {
 	}
 }
 
+// `twin gen` says where the configuration landed and what to type next —
+// nothing else. The path maps are the longest block in the report and the file
+// being written explains every key of them; saying it here too would be a
+// second place that can disagree with the file (see AGENTS.md §4.9).
+func TestGenShortFormIsPathAndNextStep(t *testing.T) {
+	p := inst.Paths{Home: "/nonexistent-twin-home"}
+	it := &inst.Instance{ID: "demo", Binds: []inst.Bind{{Source: "~/a", Target: "~/b"}}}
+	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
+
+	short := captureStdout(t, func() {
+		printGenResult(p, it, insp, DefaultConfigName, false, false, nil)
+	})
+	if strings.Contains(short, "路径映射") {
+		t.Errorf("gen 的默认输出不该带路径映射：\n%s", short)
+	}
+	if !strings.Contains(short, "已写出配置") || !strings.Contains(short, "下一步") {
+		t.Errorf("gen 的默认输出应当只有「已写出配置」与「下一步」：\n%s", short)
+	}
+
+	long := captureStdout(t, func() {
+		printGenResult(p, it, insp, DefaultConfigName, false, true, nil)
+	})
+	if !strings.Contains(long, "路径映射") {
+		t.Errorf("--explain 应当展开路径映射：\n%s", long)
+	}
+}
+
 // captureStdout runs fn with stdout redirected into a pipe. Colour is decided
 // once, for the process's real stdout, so a captured buffer is always plain
 // text — which is what the assertions above rely on.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
+	return capture(t, &os.Stdout, fn)
+}
+
+// captureStderr is the same for the other stream: fail() colours from stderr,
+// so the two have to be swapped independently.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	return capture(t, &os.Stderr, fn)
+}
+
+func capture(t *testing.T, dst **os.File, fn func()) string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := os.Stdout
-	os.Stdout = w
+	old := *dst
+	*dst = w
 	fn()
 	w.Close()
-	os.Stdout = old
+	*dst = old
 	out, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
