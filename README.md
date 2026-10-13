@@ -207,12 +207,12 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 
 | 命令 | 作用 |
 |---|---|
-| `twin gen <source> [选项]` | **最常用**：在当前目录写出一份配置（`config.yml`）；id / 名字 / 角标 / 状态路径全部推导。`-o` 换位置 |
-| `twin install [-c <文件>]` | **最常用**：读那份配置，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。需要 AppArmor profile 时用 `sudo` 装 |
+| `twin gen <source>` | **最常用**：在当前目录写出一份配置（`config.yml`）；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin install` | **最常用**：读那份配置，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。需要 AppArmor profile 时用 `sudo` 装 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
 | `twin verify <id>` | 自检一个实例的身份链路 |
-| `twin reinstall <id> [--refresh]` | 按实例目录里那份存档快照重新落盘 |
-| `twin remove <id> [--yes] [--purge]` | 删除产物（默认只打印，不动手） |
+| `twin reinstall <id>` | 按实例目录里那份存档快照重新落盘 |
+| `twin remove <id>` | 删除产物（默认只打印，不动手） |
 | `twin list` | 列出全部实例 |
 | `twin doctor` | 环境自检（先跑这个），输出末尾直接告诉你下一步敲什么 |
 | `twin rules [<app>]` | 列出内置规则 / 查看某程序生效的规则 |
@@ -223,7 +223,9 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 > 第一个 token 永远是动词，第二个永远是它的宾语 —— 位置即含义，没有保留字表。
 > 所以程序真名就叫 `list` 也不特殊：`twin gen list` 就是包它。
 
-全部选项、退出码、拒绝清单：[`docs/cli.md`](docs/cli.md)。
+每个命令的**选项与默认值**：`twin <命令> -h`（它和实现同一次编译，所以这是唯一一份）。
+**退出码、文件表、拒绝清单**：[`docs/cli.md`](docs/cli.md)；逐键语义：
+[`docs/configuration.md`](docs/configuration.md)。
 
 ## 配置一览
 
@@ -236,13 +238,8 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
       > 编译进二进制里的内置默认
 ```
 
-| 文件 | 它描述什么 | 谁改它 |
-|---|---|---|
-| `./config.yml` | **这一个实例**：全部意图。`gen` 写它、`install` 读它 | 你改，然后 `twin install` |
-| `~/.local/share/twin/<id>/profile.yml` | 同一个实例的**存档快照**：`install` 按配置渲染，`reinstall` 重放 | 你改，然后 `twin reinstall <id>` |
-| `~/.config/twin/rules.d/<app>.toml` | **某个程序**：状态路径、关键词、tmpfs | 你，了解新程序时 |
-| `~/.config/twin/config.toml` | **这台机器**：bwrap 路径、图标尺寸、是否维护托盘表、跳板策略 | 你，换机器时 |
-
+`config.yml` 是**这一个实例**的全部意图（`gen` 写它、`install` 读它）；`install` 会按它渲染出
+`~/.local/share/twin/<id>/profile.yml` —— 同一个实例的**存档快照**，`reinstall` 重放的是它。
 `config.toml` 不存在是正常的（用内置默认）。数组类字段（`tmpfs` / `bind` / `bwrap.extra`）
 按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。
 
@@ -250,18 +247,15 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 twin config > ~/.config/twin/config.toml   # 生成一份带注释的模板
 ```
 
-逐键说明与完整示例：[`docs/configuration.md`](docs/configuration.md)。
+谁写哪个文件、逐键说明与完整示例：[`docs/configuration.md`](docs/configuration.md)（文件表的查阅版在
+[`docs/cli.md`](docs/cli.md)）。
 
 ## 退出码
 
-| 码 | 含义 |
-|---|---|
-| `0` | 成功（包括"这台机器根本没有托盘宿主"这类**事实性跳过**） |
-| `1` | 失败，或自检里有 ❌ |
-| `2` | 用法错误 |
-| `3` | 身份已经成立，但**还差一步必须由真实图形会话或 root 执行** —— 目前的两个来源：托盘覆盖表写不进去（无会话总线）；内核限制 userns 且机器上找不到跳板（要你装一份 profile） |
-
-退出码 3 是给脚本用的信号：**"去图形会话里跑一下"和"这东西坏了"是两件事**。
+**`3` 是给脚本用的信号**：身份已经成立，只差一步必须由真实图形会话或 root 执行（托盘覆盖表写不进去；
+或内核限制 userns 而机器上既没有跳板、也装不了那份 profile）—— **"去图形会话里跑一下"和"这东西坏了"
+是两件事**。其余几个码的含义，以及"事实性跳过（这台机器根本没有托盘宿主）算成功"这条边界，见
+[`docs/cli.md`](docs/cli.md) 的退出码一节。
 
 ## 依赖与安装
 
@@ -315,7 +309,7 @@ go build -ldflags "-X main.version=$(git describe --tags --always)" -o twin ./cm
 | 文档 | 内容 |
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | 身份模型、三级阶梯、管线、产物模板、权限与边界、GUI 之辨 |
-| [`docs/cli.md`](docs/cli.md) | 全部子命令与选项、退出码、文件表、拒绝清单 |
+| [`docs/cli.md`](docs/cli.md) | 全部子命令**做什么**、退出码、文件表、拒绝清单；选项本身在 `twin <命令> -h` 里 |
 | [`docs/configuration.md`](docs/configuration.md) | 三层配置逐键参考、覆盖规则、快照 vs 环境 |
 | [`docs/apparmor-userns.md`](docs/apparmor-userns.md) | 嵌套 user namespace：三个实测事实、三条路线、跳板机制 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症状 → 根因 → 修法，含全部实测踩坑 |
@@ -326,21 +320,11 @@ go build -ldflags "-X main.version=$(git describe --tags --always)" -o twin ./cm
 
 ## 开发
 
-```bash
-gofmt -l .                                  # 必须为空
-go vet ./...
-go test ./...                               # 单元测试
-
-# ⚠️ 若 /tmp 是小容量 tmpfs（本机 10 MB），Go 链接测试二进制会 "no space left"：
-GOTMPDIR=$HOME/.cache/gotmp TMPDIR=$HOME/.cache/gotmp go test ./...
-
-# 依赖真实机器状态的诊断性测试，需显式开启
-TWIN_REAL_PROBE=1 go test ./internal/userns/ -run RealProbe -v
-```
-
-代码组织、各包的职责边界、以及开发过程中撞出来的坑（Go `flag` 的解析行为、多合一二进制、
-`/usr/share/code/bin/code` 是 sh 脚本……）全部记在
-[`docs/development.md`](docs/development.md)。
+质量门是 `gofmt -l .`（必须为空）＋ `go vet ./...` ＋ `go test ./...`；环境坑（`/tmp` 是小容量
+tmpfs 时要设 `GOTMPDIR`、依赖真实机器状态的诊断性测试默认跳过）与构建细节一起写在
+[`docs/development.md`](docs/development.md) —— 那里还有代码组织、各包的职责边界，以及开发过程中撞
+出来的坑（Go `flag` 的解析行为、多合一二进制、`/usr/share/code/bin/code` 是 sh 脚本……）。贡献者的
+环境准备、手工验收与提交规范：[`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ## 许可
 

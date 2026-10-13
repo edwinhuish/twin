@@ -124,7 +124,7 @@ style → {}    ← 只有标准库
 // the flags.
 //
 // Go's flag package stops at the first non-flag token, so the documented form
-// `twin new <source> --as <id>` would otherwise ignore --as — and every
+// `twin gen <source> --as <id>` would otherwise ignore --as — and every
 // flag after the source — without a word. That is precisely the silent failure
 // this tool exists to prevent, so we take the stray token as a positional and
 // re-parse the remainder.
@@ -212,7 +212,7 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 3. 若是会进快照的字段，还要动 `internal/inst` 的 `toTree` / `Load` 并写往返测试。
 
 ⚠️ 记住 `parseFL`：位置参数可以出现在选项之间。`fs.Parse` 直接用会让文档里的
-`twin new <source> --as <id>` 静默忽略 `--as`。
+`twin gen <source> --as <id>` 静默忽略 `--as`。
 
 ### 加/改一段终端输出
 
@@ -224,7 +224,7 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 
 ⚠️ 三条容易踩的：
 
-- **别跨流复用结论**：`twin new wechat > log` 时 stdout 是文件、stderr 还是终端，两个流的答案不同，
+- **别跨流复用结论**：`twin gen wechat > log` 时 stdout 是文件、stderr 还是终端，两个流的答案不同，
   这也正是 `fail` / `warn` 用 `errStyle` 而不是 `outStyle` 的原因；
 - **别按字符设备判断终端**：`/dev/null` 也是字符设备。`internal/style` 里走的是 `TCGETS`，
   换实现时别退回 `os.ModeCharDevice`；
@@ -252,7 +252,7 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 |---|---|---|
 | 单元测试 | 每个包的 `*_test.go` | 纯逻辑：解析、推导、合并、校验、渲染 |
 | 诊断性真机测试 | `internal/userns/zz_real_test.go` | `TWIN_REAL_PROBE=1` 才跑；打印真实发现结果 |
-| 端到端冒烟 | 手工 | `twin new <source> --dry-run` 然后目视检查 |
+| 端到端冒烟 | 手工 | `twin gen <source> --dry-run` ＋ `twin install --dry-run`，然后目视检查 |
 
 **为什么没有自动化集成测试**：真正的端到端要写进用户的 `~/.local/share/applications`、
 `~/.local/state`，还要连会话总线。一个会动真实 HOME 的测试套件比它防住的问题更危险。
@@ -260,9 +260,11 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 替代做法是用**scratch HOME** 手工验收：
 
 ```bash
-mkdir -p /tmp/scratch-home/.config/twin
-HOME=/tmp/scratch-home twin new wechat --dry-run
-HOME=/tmp/scratch-home twin new wechat
+mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
+cd /tmp/scratch-work                       # gen 把 config.yml 写在当前目录，所以先挑一个空的
+HOME=/tmp/scratch-home twin gen wechat --dry-run
+HOME=/tmp/scratch-home twin gen wechat
+HOME=/tmp/scratch-home twin install
 HOME=/tmp/scratch-home twin verify wechat2
 ```
 

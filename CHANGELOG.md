@@ -27,6 +27,10 @@
 
 ### Changed
 
+- **选项表移进 `twin <命令> -h`，文档不再复述它们**（`-h` 的输出因此变长）。默认值与可接受取值原先
+  只写在 `docs/cli.md` 的表里 —— 于是"文档说默认 `alias`、程序默认别的"这种分叉没有任何一处能自证。
+  现在它们与实现同一次编译。`--` 透传区、以及"`install` 不接受位置参数"这两条 PrintDefaults 打不出
+  来的用法也收在 `-h` 里；`docs/cli.md` §3 随之从逐 flag 的选项表收成"选项在哪"。
 - **`twin new` 默认不再安装任何东西**（行为变更）：它现在只写一份配置。要以前那样一步到位，
   用 `twin new wechat --publish`（或在没有待落盘配置时直接补 `--publish`）。
 - **`twin new` 的默认输出压到最短**（行为变更）：只报快照路径与下一步，逐键说明搬进 `profile.yml`
@@ -59,6 +63,10 @@
 
 ### Fixed
 
+- 文档里残留的旧动词（`twin new` / `twin new --publish` / `twin regen`）：README、`docs/*` 与
+  `CONTRIBUTING.md` 改成现行的 `twin gen` ＋ `twin install` / `twin reinstall <id> --refresh`。
+  手工验收的命令补齐了两段式 —— `gen` 把 `config.yml` 写在**当前目录**，原先那种写法会在仓库根目录
+  里落一份配置。
 - `inst.List` 不再把 `~/.local/share/twin/bin/` 当成一个坏掉的实例 —— 只要这台机器包过
   Chromium 系程序（`bin/` 里是共享的 bwrap 副本与跳板脚本，没有 `profile.yml`），
   `twin list` 就会整个失败。没有快照的空目录一并跳过。

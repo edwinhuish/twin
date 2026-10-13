@@ -70,9 +70,11 @@ TWIN_REAL_PROBE=1 go test ./internal/userns/ -run RealProbe -v
 替代做法是**scratch HOME**：
 
 ```bash
-mkdir -p /tmp/scratch-home/.config/twin
-HOME=/tmp/scratch-home ./twin new wechat --dry-run
-HOME=/tmp/scratch-home ./twin new wechat
+mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
+cd /tmp/scratch-work                       # gen 把 config.yml 写在当前目录
+HOME=/tmp/scratch-home ./twin gen wechat --dry-run
+HOME=/tmp/scratch-home ./twin gen wechat
+HOME=/tmp/scratch-home ./twin install
 HOME=/tmp/scratch-home ./twin verify wechat2
 ```
 

@@ -20,7 +20,7 @@
 |---|---|
 | 任何事 | 本文件 |
 | 身份模型 / 为什么这么设计 | [`docs/architecture.md`](docs/architecture.md) |
-| CLI 选项、退出码、拒绝清单 | [`docs/cli.md`](docs/cli.md) |
+| CLI 选项、退出码、拒绝清单 | [`docs/cli.md`](docs/cli.md) —— 但**选项表不在那里**：它在 `twin <命令> -h`（flag 说明即文档，见 §4.13） |
 | 配置文件逐键语义 | [`docs/configuration.md`](docs/configuration.md) |
 | bwrap / nested userns / AppArmor | [`docs/apparmor-userns.md`](docs/apparmor-userns.md) |
 | 症状 → 根因 → 修法 | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
@@ -159,6 +159,11 @@ style → {}    ← 只有标准库
     两条路都不从 CLI 重新推导 —— 所以"带着描述实例的选项去装一个已存在的实例"这件事**不存在**了：
     `install` 根本没有那些选项（见 §5"加一个 `gen` 选项"）。
 12. **`gofmt` 是硬门**，`-l` 必须为空。
+13. **选项表只住在 `twin <命令> -h` 里。** flag 的说明字符串就是这张表的正文，所以**默认值、
+    可接受取值、被拒绝的取值**都要写在那一行里 —— 文档里再抄一份，得到的是两处会各表一套，
+    而默认值属于"猜错了一个字都不会有人告诉你"的那类信息。PrintDefaults 打不出来的用法
+    （`--` 透传区、"这个动词不接受位置参数"）进 `cmd/twin/main.go` 的 `helpFooter`，也不进文档。
+    文档只写**为什么**：这个命令是干什么的、这条边界对应哪次实测。
 
 ## 5. 常见任务怎么做
 
@@ -175,6 +180,8 @@ style → {}    ← 只有标准库
 ### 加一个 `gen` 选项
 四处联动：
 1. `cmd/twin/main.go` 的 `cmdGen`：加 flag，放进 `generate.Options`；
+   **flag 那一行的说明就是这份选项表的正文**（默认值、可接受取值都写在里面，见 §4.13）——
+   如果它的用法 PrintDefaults 表达不了（例如它给 `--` 透传区加了一条规则），进 `helpFooter`；
 2. **决定它属于哪一类**：描述**实例**（会进 config.yml，进而进快照）还是描述**这次动作**
    （`-o` / `--force` / `--dry-run` / `--explain`）。只有 `gen` 拥有前者 ——
    `install` 的 flag 表里一个实例选项都没有，所以"带着描述实例的选项去装一个已存在的实例"

@@ -24,7 +24,7 @@ bash -x ~/.local/share/twin/<id>/launch   # 真跑一次，看它到底怎么起
 ```bash
 ls -l ~/.local/share/twin/<id>/launch      # 必须是 -rwxr-xr-x
 twin verify <id>                           # 会直接报"启动器可执行"
-chmod +x ~/.local/share/twin/<id>/launch   # 临时修；根治用 twin regen <id>
+chmod +x ~/.local/share/twin/<id>/launch   # 临时修；根治用 twin reinstall <id> --refresh
 ```
 
 > 这是本项目最贵的一个坑，所以 `doctor` 里专门用一对"好/坏"探针桌面项来**验证检查器本身
@@ -105,14 +105,14 @@ twin doctor | grep -A2 userns
 | `内核在限制，N 个候选里没有一个像 Electron` | 有带 `userns` 许可的程序，但没有能静默驱动的 | 装个 Electron 应用，或按打印的 profile 装一份 |
 | `内核在限制，且没有找到任何…` | 一个都没有 | 同上 |
 
-另外：**跳板被卸载/改名**会让本来正常的实例突然起不来。`twin regen <id>` 会重挑一个。
+另外：**跳板被卸载/改名**会让本来正常的实例突然起不来。`twin reinstall <id> --refresh` 会重挑一个。
 
 ### C2. X11 程序报 `cannot open display` / `No protocol specified`
 
 **根因**：`--tmpfs /tmp` 把 `/tmp/.X11-unix/X0` 一起砍掉了。
 
 ```bash
-twin new <source> --no-tmpfs
+twin gen <source> --no-tmpfs && twin install
 ```
 
 `twin inspect` 的 `/tmp 策略` 一节会告诉你这个程序是 Wayland 还是 X11。同时支持两套的

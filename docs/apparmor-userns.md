@@ -137,7 +137,7 @@ You are trying to start Visual Studio Code as a super user...
 然后对每个候选检查：文件存在、可执行、**不是脚本**。排序规则：Electron 优先 → `/usr/` 路径
 优先 → 路径字典序（⇒ 同一台机器上结果可复现）。
 
-**这个设计的关键点是"每次重新发现"**：换一台机器只要重跑一次 `twin new <source>`，它就挑
+**这个设计的关键点是"每次重新发现"**：换一台机器只要重跑一次 `twin gen <source>` ＋ `twin install`，它就挑
 **那台机器**的跳板。所以一个包裹是**可搬运**的 —— 不绑死任何特定程序，也不要求预先把机器
 准备好。
 
@@ -182,7 +182,7 @@ profile），它会提前打印人能看懂的原因，而不是让 bwrap 抛一
 ```
 [twin] 警告: 当前 AppArmor 标签是 "unconfined"（没有被换掉）。
           跳板程序的 profile 可能已经不存在了。
-          修法: twin regen <实例 id>   —— 会重新挑一个跳板。
+          修法: twin reinstall <实例 id> --refresh   —— 会重新挑一个跳板。
 ```
 
 ## 7. 路线 C：兜底
@@ -203,7 +203,7 @@ profile），它会提前打印人能看懂的原因，而不是让 bwrap 抛一
   私有 bwrap 副本故意不带 profile，所以它自己建不了。
 
   两条路，任选其一：
-    1) 装一个 Electron 应用（VS Code 就够了），再跑一次 `twin regen <id>`；
+    1) 装一个 Electron 应用（VS Code 就够了），再跑一次 `twin reinstall <id> --refresh`；
        它会自动发现新跳板，什么都不用配置。
     2) 把下面这份 profile 存成 /etc/apparmor.d/twin-bwrap 并加载：
        ...
