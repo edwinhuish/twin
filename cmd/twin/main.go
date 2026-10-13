@@ -107,7 +107,7 @@ func printManual(rep *verify.Report) {
 	}
 }
 
-const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 / 图标 / 私有数据）
+const usage = `twin —— 程序双开
 
 用法:
   twin gen <source> [选项]                在当前目录生成一份配置（默认 ./config.yml）
@@ -122,92 +122,7 @@ const usage = `twin —— 给已有程序一个独立身份（窗口 / 托盘 /
   twin config                             打印 config.toml 模板（不存在时）
   twin version                            版本
 
-第一个 token 永远是动词，没有保留字表 —— 程序真名就算叫 list / gen / doctor 也照常写：
-twin gen list 就是包一个叫 list 的程序。
-
-两步（推荐）—— 一次 wrap 里唯一随程序而变、又猜错了不出声的东西是路径映射，
-所以先把它落成一份可以读、可以改、能进版本库的文件，再安装：
-  twin gen wechat          在当前目录写 config.yml（id、显示名、路径映射全部推导好写进去），
-                           只打印文件路径与下一步。想写到别处：twin gen wechat -o ~/w/wechat.yml
-  $EDITOR config.yml       改 bind / name / keywords / identity.level；
-                           不改也行，推导出来的默认值通常够用。
-  twin install             读 ./config.yml：写成实例快照 → 落盘 → 自检。
-
-配置在别处（多实例、多台机器共用一份）：twin install -c ~/wraps/wechat2.yml
-
-配置从哪来（越具体越优先；数组类低位在前拼接，后者遮蔽前者）:
-  config.yml / -c 指的那份      你正在编辑的那一份：gen 生成、install 读取
-  ~/.config/twin/config.toml    这台机器的默认（bwrap 路径、图标尺寸、全局透传）
-  ~/.config/twin/rules.d/<app>.toml  某程序的知识（状态路径、keywords），支持 {id} 占位
-  ~/.local/share/twin/<id>/profile.yml  安装时按 config.yml 重新生成的存档快照
-  ⚠️ install 按 config.yml 重放；reinstall 只读那份存档快照（要确定性）。
-     要让它重读 config.toml 与 rules.d，加 --refresh，且只补快照里为空的字段。
-
-退出码:
-  0 成功    1 失败/自检有 ❌    2 用法错误
-  3 身份已成立，但还差一步必须由真实图形会话执行。两个来源：① 托盘图标覆盖表写不进去
-    （那张表只能经会话总线写入）；② 本机限制非特权 userns，而既没有跳板、install 也没能
-    装上 profile（没有 sudo，或标准输入不是终端、问不了密码）—— 那时打印一份 AppArmor
-    profile 全文，给你 sudo apparmor_parser -r 装上。
-
-颜色:
-  stdout 与 stderr 各自判断：只在终端上着色，重定向 / 管道 / TERM=dumb 一律纯文本。
-  NO_COLOR 强制关掉；CLICOLOR_FORCE=1 强制打开（管道给会渲染转义的 pager 时用）。
-  字形（✅ ⚠️ ❌ ➖）与颜色表达同一件事，所以纯文本里也不丢信息。
-
-托盘图标:
-  twin 生成时**自己**把宿主的托盘图标覆盖表（org.gnome.shell.extensions.appindicator
-  的 custom-icons，按 SNI Id 匹配）指向本实例的图标，该表热重载、立刻生效、不用重登。
-  所以不需要预先准备环境：换一台机器再跑一次 twin，状态就重新建好了。
-  没有会话总线时（安装脚本 / 无图形会话）它写不进去 —— 那时会打印要跑的命令并以退出码 3
-  结束；--no-tray 或 config.toml 的 defaults.tray_override = false 则完全不碰这张表。
-
-gen 选项:
-  -o, --output <文件>    写到哪（默认 ./config.yml）。文件已存在就拒绝，除非 --force ——
-                         那个文件正是你要改的东西，盖掉它比报个错难收拾得多
-  --force                覆盖已存在的输出文件
-  --as <id>              实例 id（默认 <源桌面项基名>+最小空闲序号）；同时是窗口 app_id 与托盘 Id
-  --name <显示名>        默认 源 Name[当前语言] + 序号（如 微信2）
-                         显式给出时，若源 Keywords 不含中文，该名字会被放进关键词（见下）
-  --name-en <英文名>     默认 源 Name + 序号
-  --comment <说明>       默认 源 Comment[当前语言]
-  --comment-en <英文说明>（写 Comment[en]=）
-  --keywords <k1;k2>     搜索关键词（默认 rules.d 的值 → 源 Keywords[当前语言]/Keywords；
-                         源没有则用源名与程序名推导，wechat → 微信;wechat;；
-                         若源列表不含中文且你显式给了 --name，会把该名字放在最前）
-  --categories <C;D;>    分类（默认 rules.d → 源桌面项）
-  --icon <png|svg>       源图标（默认取源桌面项的 Icon=）
-  --badge <文字>         角标文字，仅 0-9 A-Z 与 -+.!?/ 空格；默认取 id 尾部数字
-  --badge-style <风格>   corner | number | dot（留空则 config.toml → corner）
-  --level <级别>         alias（默认，真实路径改名）| none（只加桌面项）| redirect（改名＋写 L5 规则）
-                         redirect 用于程序把 app_id 写死、改名不起作用的场合：除改名外再写一条
-                         ~/.config/twin/rules.d/<id>.json，交给 shell 扩展改判窗口归属。
-                         留空则由 rules.d → config.toml → alias 逐层决定
-  --tmpfs <dir>          让该目录在沙箱内为空，可重复
-  --no-tmpfs             完全不要 tmpfs（X11 程序必须如此）
-  --no-tray              不写宿主托盘覆盖表（这个实例的托盘图标保持程序自己的）
-  --explain              连推导出的默认值、规则模板一起打印
-  --dry-run              只打印将要写什么，一个字节不落盘
-
-  -- <bwrap 选项…>       第一个 -- 之后的 token **原样**透传给 bwrap，拼在基座之后、程序之前：
-                         twin gen wechat -- --unshare-pid --setenv TWIN_FOO bar
-                         它会写进配置里（bwrap.extra），install 时生效。它排在基座之后，
-                         所以同目标挂载由它胜出（bwrap 后挂载遮蔽前者）。
-                         ⚠️ 不接受 --（会截断 bwrap 解析）、--argv0（会破坏身份不变量）、
-                            以及需要文件描述符的选项。
-
-install 选项:
-  -c, --config <文件>    读哪一份配置（默认 ./config.yml）。读不到就报错，不会去猜别的路径
-  --force                覆盖已存在但不是 twin 生成的桌面项；也允许落盘遮蔽同名的系统桌面项
-  --explain              打印完整说明：推导值、路径映射的修改粒度、规则模板全文、手工验证步骤
-  --dry-run              只打印将要写什么，一个字节不落盘。
-                         本机需要 AppArmor profile 时，它也只会说要装什么，不会碰 /etc
-
-install 在本机限制非特权 userns、而私有 bwrap 副本又拿不到许可时，会自己用 sudo 装好
-一份挂在副本上的 profile（写 /etc/apparmor.d/twin-bwrap 并加载）—— 那一步要 root。
-装不上时怎么办，见下面的退出码 3。
-
-source 可以是 .desktop 路径、桌面项 id（wechat），或程序名。
+每个子命令的选项与默认值：twin <子命令> -h（例如 twin gen -h）
 `
 
 // version is what `twin version` prints; override at build time with
@@ -325,6 +240,9 @@ func usageError(fs *flag.FlagSet, err error) int {
 		fs.SetOutput(os.Stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(io.Discard)
+		if footer := helpFooter[fs.Name()]; footer != "" {
+			fmt.Print(footer)
+		}
 		return exitOK
 	}
 	// The flag package's own wording is English and aimed at Go programmers
@@ -339,6 +257,19 @@ func usageError(fs *flag.FlagSet, err error) int {
 	}
 	fail(msg)
 	return exitUsage
+}
+
+// helpFooter 收下 PrintDefaults 打不出来的那几行：`--` 不是 flag，而"这个动词不接受
+// 位置参数"也不是任何一个 flag 的属性。它们留在 `-h` 里、而不是只留在文档里，理由是
+// 文档会烂：选项表若在别处再抄一份，`-h` 与它迟早各表一套；这里与实现同一次编译。
+var helpFooter = map[string]string{
+	"gen": "\n  twin gen <source> [选项] -- <bwrap 选项…>\n" +
+		"    `--` 之后的 token 原样透传给 bwrap（它排在基座之后 ⇒ 同目标的挂载由它胜出），\n" +
+		"    并在 install 时写进配置（bwrap.extra）。\n" +
+		"    ⚠️ 不享受 ~/ 展开与 mkdir 补齐；再写一个 `--`、写 --argv0、或写需要 fd 的选项都会被拒绝，\n" +
+		"       其余 token 只做 lint（警告），不改写。\n",
+	"install": "\n  twin install 不接受位置参数：要装哪一份配置用 -c 说，" +
+		"包哪个程序、隔离哪些目录是 twin gen 那一步决定的（都在那份文件里）。\n",
 }
 
 // splitPassthrough cuts args at the first `--`. Everything left of it belongs
@@ -429,7 +360,7 @@ func cmdConfig(p inst.Paths) int {
 
 func cmdRules(p inst.Paths, args []string) int {
 	fs := newFlags("rules")
-	initDraft := fs.Bool("init", false, "为这个程序探测并写出一份规则草稿（不覆盖已有文件）")
+	initDraft := fs.Bool("init", false, "为这个程序探测状态目录并写出一份 rules.d 草稿（已存在则拒绝，不覆盖）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
@@ -556,7 +487,7 @@ func sortedRuleKeys(m map[string]*config.Rule) []string {
 
 func cmdInspect(p inst.Paths, args []string) int {
 	fs := newFlags("inspect")
-	name := fs.String("name", "", "预览：把该名字当作你显式指定的显示名")
+	name := fs.String("name", "", "预览：把该名字当作你显式指定的显示名（它会真的参与 keywords 推导）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
@@ -672,32 +603,39 @@ func (l *listFlag) Set(v string) error {
 
 func cmdGen(p inst.Paths, args []string) int {
 	fs := newFlags("gen")
+	// These strings are the option table's only home: the docs no longer restate
+	// them (they point at `-h`), so a default that a user cannot see here cannot
+	// be seen anywhere — and a wrong default is exactly the kind of thing that
+	// says nothing until two instances fight over one lock file.
 	var (
-		output     = fs.String("output", "", "配置写到哪（默认 ./config.yml）")
-		as         = fs.String("as", "", "实例 id")
-		name       = fs.String("name", "", "显示名")
-		nameEn     = fs.String("name-en", "", "英文显示名")
-		comment    = fs.String("comment", "", "说明")
-		commentEn  = fs.String("comment-en", "", "英文说明（写 Comment[en]=）")
-		keywords   = fs.String("keywords", "", "搜索关键词，覆盖源桌面项")
-		categories = fs.String("categories", "", "分类，覆盖源桌面项")
-		iconPath   = fs.String("icon", "", "源图标")
-		badge      = fs.String("badge", "", "角标文字")
-		badgeStyle = fs.String("badge-style", "", "角标风格（留空则 config.toml → corner）")
-		level      = fs.String("level", "", "身份级别（留空则 config.toml → rules.d → alias）")
-		force      = fs.Bool("force", false, "覆盖已存在的输出文件")
-		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘")
-		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、规则模板）")
-		noTmpfs    = fs.Bool("no-tmpfs", false, "不要 tmpfs")
-		noTray     = fs.Bool("no-tray", false, "不要把托盘图标覆盖表指向本实例")
+		output    = fs.String("output", "", "配置写到哪（默认 ./config.yml；与 -o 是同一个设置）")
+		as        = fs.String("as", "", "实例 id，同时是窗口 app_id 与托盘 SNI Id（默认 源基名 ＋ 最小空闲序号，从 2 起）")
+		name      = fs.String("name", "", "显示名（默认 源 Name[当前语言] ＋ 序号）")
+		nameEn    = fs.String("name-en", "", "英文显示名，写 Name[en]（默认 源 Name ＋ 序号；与 --name 相同时不写）")
+		comment   = fs.String("comment", "", "说明（默认 源 Comment[当前语言] → Comment）")
+		commentEn = fs.String("comment-en", "", "英文说明，写 Comment[en]")
+		// No backquotes in these strings: flag.UnquoteUsage takes the first
+		// backquoted run as the flag's argument name, so a quoted `;` would be
+		// printed as `-keywords ;` instead of `-keywords string`.
+		keywords   = fs.String("keywords", "", "搜索关键词，分号分隔（默认 rules.d → 源桌面项）")
+		categories = fs.String("categories", "", "分类，分号分隔（默认 rules.d → 源桌面项）")
+		iconPath   = fs.String("icon", "", "源图标 png|svg（默认 源桌面项的 Icon=；找不到就拒绝生成，不出齿轮占位图）")
+		badge      = fs.String("badge", "", "角标文字（默认 id 尾部数字；可用字符 0-9 A-Z 与 -+.!?/ 和空格）")
+		badgeStyle = fs.String("badge-style", "", "角标风格 corner|number|dot（默认 config.toml → corner）")
+		level      = fs.String("level", "", "身份级别 none|alias|redirect（默认 config.toml → rules.d → alias；argument/env 未实现，会被拒绝）")
+		force      = fs.Bool("force", false, "覆盖已存在的输出文件（默认拒绝：那份文件正是你要改的东西）")
+		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（连配置正文一起打印）")
+		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、路径映射的修改粒度、规则模板）")
+		noTmpfs    = fs.Bool("no-tmpfs", false, "完全不要 tmpfs —— X11 程序必须如此（--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0）")
+		noTray     = fs.Bool("no-tray", false, "不要把这个实例的托盘图标指向宿主覆盖表（整机开关见 config.toml 的 defaults.tray_override）")
 	)
 	// Go's flag package has no aliases, so the documented `-o` is a second
 	// variable for the same setting; the two are reconciled before use rather
 	// than letting "whichever was parsed last" decide.
 	var shortOutput string
-	fs.StringVar(&shortOutput, "o", "", "配置写到哪（--output 的简写）")
+	fs.StringVar(&shortOutput, "o", "", "配置写到哪（--output 的简写；两个拼写同时给是用法错误）")
 	var tmpfs listFlag
-	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录")
+	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录，可重复（享受 ~/ 展开与 mkdir 补齐；透传区不享受）")
 	// Cut the bwrap passthrough off before twin's own parser runs: tokens
 	// after `--` are not twin's to interpret (设计 §2.2).
 	head, bwrapTokens, err := splitPassthrough(args)
@@ -875,13 +813,13 @@ func (r installRun) verbose() bool { return r.dry || r.explain }
 func cmdInstall(p inst.Paths, args []string) int {
 	fs := newFlags("install")
 	var (
-		configPath = fs.String("config", "", "读哪一份配置（默认 ./config.yml）")
-		force      = fs.Bool("force", false, "覆盖非 twin 生成的产物")
-		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘")
-		explain    = fs.Bool("explain", false, "打印完整说明（推导值、规则模板、手工验证步骤）")
+		configPath = fs.String("config", "", "读哪一份配置（默认 ./config.yml；与 -c 是同一个设置）")
+		force      = fs.Bool("force", false, "覆盖已存在但不是 twin 生成的桌面项；也允许落盘时遮蔽同名的系统桌面项")
+		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘将写入的行）")
+		explain    = fs.Bool("explain", false, "打印完整说明（推导值、路径映射的修改粒度、规则模板、候选状态目录、整份自检、手工验证命令）")
 	)
 	var shortConfig string
-	fs.StringVar(&shortConfig, "c", "", "读哪一份配置（--config 的简写）")
+	fs.StringVar(&shortConfig, "c", "", "读哪一份配置（--config 的简写；两个拼写同时给是用法错误）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
@@ -1208,7 +1146,7 @@ func cmdList(p inst.Paths) int {
 // configuration becomes an instance, and this is where an instance is repeated.
 func cmdReinstall(p inst.Paths, args []string) int {
 	fs := newFlags("reinstall")
-	refresh := fs.Bool("refresh", false, "重读 config.toml / rules.d，只补快照里为空的字段")
+	refresh := fs.Bool("refresh", false, "重读 config.toml / rules.d：只补快照里为空的字段、只追加缺的 bwrap token，绝不改写已有值（默认只读快照）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
@@ -1539,8 +1477,8 @@ func iconSizeFor(p inst.Paths) int {
 
 func cmdRemove(p inst.Paths, args []string) int {
 	fs := newFlags("remove")
-	yes := fs.Bool("yes", false, "确认删除")
-	purge := fs.Bool("purge", false, "连私有状态目录一起删")
+	yes := fs.Bool("yes", false, "确认删除（不加只打印将要删什么）")
+	purge := fs.Bool("purge", false, "连私有状态目录一起删 —— 唯一不可逆的部分（默认保留，下次同名重建接着用）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
