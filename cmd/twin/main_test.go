@@ -11,6 +11,7 @@ import (
 
 	"github.com/edwinhuish/twin/internal/generate"
 	"github.com/edwinhuish/twin/internal/inst"
+	"github.com/edwinhuish/twin/internal/verify"
 )
 
 // The documented form is `twin gen <source> --as <id>`: the source comes
@@ -240,28 +241,70 @@ func TestRuleTemplateUnbakesInstanceID(t *testing.T) {
 	}
 }
 
-// A wrap report has to be readable in one screen: the paths, the maps, the
-// self-check, and the one thing left to do. The paste-ready rules.d template is
-// the single longest block in it and the least urgent, so it belongs behind
-// --explain — but the pointer to `twin rules --init` has to stay, otherwise the
-// short form stops saying what to type next.
-func TestPathMapsShortFormDropsTheTemplate(t *testing.T) {
+// A wrap report has to be readable in one screen: the paths, the maps, and the
+// one thing left to do. Everything that answers "what if that map is wrong" —
+// the directories twin did not map, the two files that hold the knowledge, the
+// paste-ready rules.d template — is advice for a decision the user has not made
+// yet, so it belongs behind --explain. On the normal path nothing is wrong, and
+// a page of instructions for a problem nobody has is exactly the noise the
+// short form exists to remove.
+func TestPathMapsShortFormIsJustTheMap(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo"}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
 	fix := mapFix{file: DefaultConfigName, replay: installCommandFor(DefaultConfigName)}
 
 	short := captureStdout(t, func() { printPathMaps(p, it, insp, "", fix, false) })
-	if strings.Contains(short, "照抄下面这份") {
-		t.Errorf("默认输出不该带规则模板：\n%s", short)
+	for _, noise := range []string{"照抄下面这份", "twin rules --init", "改：", "💡"} {
+		if strings.Contains(short, noise) {
+			t.Errorf("默认输出不该带 %q：\n%s", noise, short)
+		}
 	}
-	if !strings.Contains(short, "twin rules --init fakeapp") {
-		t.Errorf("默认输出必须点出生成草稿的路子：\n%s", short)
+	if !strings.Contains(short, "路径映射") {
+		t.Errorf("默认输出要保留映射本身：\n%s", short)
 	}
 
 	long := captureStdout(t, func() { printPathMaps(p, it, insp, "", fix, true) })
-	if !strings.Contains(long, "照抄下面这份") {
-		t.Errorf("--explain 输出应当带规则模板：\n%s", long)
+	for _, want := range []string{"照抄下面这份", "twin rules --init"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("--explain 输出应当带 %q：\n%s", want, long)
+		}
+	}
+}
+
+// The self-check is silent when everything passed. The run just wrote every file
+// those ✅ lines would confirm, so printing them is a wall of text between the
+// paths and the next step; a check that is not OK is the only one with anything
+// to say. `twin verify` still lists them all — enumerating them is its job.
+func TestProblemsAreQuietWhenNothingIsWrong(t *testing.T) {
+	ok := &verify.Report{Findings: []verify.Finding{
+		{Name: "exec.target", Status: verify.StatusOK, Detail: "/opt/wechat/wechat"},
+	}}
+
+	if got := formatProblems(ok); got != "" {
+		t.Errorf("全绿时不该有输出：\n%s", got)
+	}
+	if got := formatFindings(ok); !strings.Contains(got, "exec.target") {
+		t.Errorf("verify 应当照旧列全部：\n%s", got)
+	}
+
+	bad := &verify.Report{Findings: []verify.Finding{
+		{
+			Name:   "托盘图标覆盖表",
+			Status: verify.StatusWarn,
+			Detail: "custom-icons 里没有 wechat2 的条目",
+			Fix:    "gsettings set …",
+		},
+	}}
+	got := formatProblems(bad)
+	if !strings.Contains(got, "托盘图标覆盖表") || !strings.Contains(got, "gsettings set") {
+		t.Errorf("有 WARN 时应当连修复命令一起打印：\n%s", got)
+	}
+	// A fix under a ✅ offers a command for a problem the reader does not have;
+	// the tray check always has one ready, so this is the difference between a
+	// quiet run and every healthy instance ending on a gsettings line.
+	if got := formatFindings(ok); strings.Contains(got, "→") {
+		t.Errorf("通过的自检项不该带修复命令：\n%s", got)
 	}
 }
 

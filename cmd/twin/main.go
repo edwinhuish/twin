@@ -1103,15 +1103,44 @@ func cmdVerify(p inst.Paths, args []string) int {
 	return exitFor(rep)
 }
 
+// formatFindings renders every check — that is what `twin verify` is for: the
+// answer to "is this instance healthy?" on one screen, including the checks
+// that are skipped because this machine cannot do them.
 func formatFindings(rep *verify.Report) string {
 	var b strings.Builder
 	for _, f := range rep.Findings {
-		fmt.Fprintf(&b, "%s %-22s %s\n", outStyle.Mark(levelOf(f.Status)), f.Name, f.Detail)
-		if f.Fix != "" {
-			fmt.Fprintf(&b, "   %-22s → %s\n", "", f.Fix)
-		}
+		writeFinding(&b, f)
 	}
 	return b.String()
+}
+
+// formatProblems renders only the checks that did not pass, for the runs that
+// just wrote the files the other checks confirm. Everything else passed a
+// moment ago by construction, and listing it as ✅ is a page of text between the
+// paths and the only thing still to do; a check that is not OK is the one line
+// in the run that needs the user. Findings marked Manual are left out because
+// printManual already collects them, under a heading that also explains the exit
+// code.
+func formatProblems(rep *verify.Report) string {
+	var b strings.Builder
+	for _, f := range rep.Findings {
+		if f.Status == verify.StatusOK || f.Manual {
+			continue
+		}
+		writeFinding(&b, f)
+	}
+	return b.String()
+}
+
+// writeFinding prints one check. The fix command appears only for a check that
+// did not pass: under a ✅ it would hand the reader a command for a problem they
+// do not have — and the tray check always has one ready, so every healthy
+// instance would end on a gsettings line nobody asked for.
+func writeFinding(b *strings.Builder, f verify.Finding) {
+	fmt.Fprintf(b, "%s %-22s %s\n", outStyle.Mark(levelOf(f.Status)), f.Name, f.Detail)
+	if f.Fix != "" && f.Status != verify.StatusOK {
+		fmt.Fprintf(b, "   %-22s → %s\n", "", f.Fix)
+	}
 }
 
 // levelOf maps a check result onto the shared verdict vocabulary.
@@ -1294,7 +1323,17 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	}
 	printPathMaps(p, it, insp, report.origin, report.fix, report.verbose)
 
-	fmt.Printf("\n%s\n%s", title("🔍 自检"), formatFindings(rep))
+	// Silence is the normal case: this run just wrote every file the passing
+	// checks would be confirming. Only a check that is not OK has something to
+	// say, and then the section appears with the command that fixes it.
+	//
+	// --explain is the exception, and the only one: there the whole report is
+	// the answer the user asked for, so it prints all of it.
+	if report.verbose {
+		fmt.Printf("\n%s\n%s", title("🔍 自检"), formatFindings(rep))
+	} else if problems := formatProblems(rep); problems != "" {
+		fmt.Printf("\n%s\n%s", title("🔍 自检"), problems)
+	}
 	printNextSteps(p, it, report.verbose)
 	printManual(rep)
 
@@ -1639,21 +1678,21 @@ func printDerived(der []generate.Derivation) {
 	}
 }
 
-// printPathMaps explains the one part of a wrap that is knowledge about the
+// printPathMaps says the one part of a wrap that is knowledge about the
 // *program* rather than about its identity: which of the program's own data
 // directories twin redirected, and where they went.
 //
 // It is spelled out because that knowledge is the part most likely to be wrong
 // for a program twin has never seen — and a wrong map is silent until two
 // instances fight over a lock file, or one of them quietly reads the other's
-// profile. The built-in table is deliberately short for the same reason, so the
-// output has to hand the user the exact file to edit rather than trusting them
-// to find it (设计 §7).
+// profile.
 //
-// verbose adds what only matters once the user has decided the map is wrong:
-// the paste-ready template, and the three granularities at which it can be
-// corrected. The short form keeps the facts that decide whether to act — how
-// many maps, where the knowledge came from, which file holds it.
+// verbose adds the part that only matters once the user has decided one of
+// those maps *is* wrong: which directories twin did not map but could have, the
+// two files that hold this knowledge, and the paste-ready template. Advice
+// belongs there and not in the short form: the run just wrote everything in the
+// list above, so on the normal path — nothing wrong — a page of "here is how you
+// would fix it" is text between the paths and the one thing left to do.
 //
 // origin is named by the caller rather than derived here, because "where did
 // this mapping come from" has an answer `gen`, `install` and `reinstall`
@@ -1669,40 +1708,35 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	if len(it.Binds) == 0 {
 		// "twin redirected nothing" is a fact worth stating: it is the normal
 		// case for an unknown program, and the reason two instances of it may
-		// start interfering with each other.
+		// start interfering with each other. It is also the one consequence the
+		// rest of the file does not spell out for this program.
 		fmt.Printf("  0 条：数据目录与源程序共用（本实例只做身份包裹）。\n")
 		if insp.Rule == nil {
 			fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 这个程序没有规则：它若有单实例锁或共享配置"+
 				"（Electron / Qt / GTK 系很常见），两个实例会互相干扰。"))
 		}
+	} else {
+		if origin == "" {
+			fmt.Printf("  %d 条\n", len(it.Binds))
+		} else {
+			fmt.Printf("  %d 条，来源：%s\n", len(it.Binds), origin)
+		}
+		for _, b := range it.Binds {
+			// Printed in the file's own spelling, so the line can be pasted into
+			// profile.yml or rules.d without a translation step in between.
+			switch {
+			case b.ReadOnly:
+				fmt.Printf("  %s  %s\n", outStyle.Cyan("只读"), b)
+			case b.Source == b.Target:
+				fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）\n", outStyle.Cyan("共用"), b)
+			default:
+				fmt.Printf("  %s  %s\n", outStyle.Green("私有"), b)
+			}
+		}
+	}
+	if verbose {
 		printStateHints(p, insp, it, key)
 		printMapFix(it, key, rulePath, fix)
-		if verbose {
-			printRuleTemplate(p, it, key, nil)
-		}
-		return
-	}
-
-	if origin == "" {
-		fmt.Printf("  %d 条\n", len(it.Binds))
-	} else {
-		fmt.Printf("  %d 条，来源：%s\n", len(it.Binds), origin)
-	}
-	for _, b := range it.Binds {
-		// Printed in the file's own spelling, so the line can be pasted into
-		// profile.yml or rules.d without a translation step in between.
-		switch {
-		case b.ReadOnly:
-			fmt.Printf("  %s  %s\n", outStyle.Cyan("只读"), b)
-		case b.Source == b.Target:
-			fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）\n", outStyle.Cyan("共用"), b)
-		default:
-			fmt.Printf("  %s  %s\n", outStyle.Green("私有"), b)
-		}
-	}
-	printStateHints(p, insp, it, key)
-	printMapFix(it, key, rulePath, fix)
-	if verbose {
 		printRuleTemplate(p, it, key, it.Binds)
 	}
 }

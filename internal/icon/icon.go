@@ -115,12 +115,8 @@ func Compose(spec Spec, outPath string, size int) (*Report, error) {
 		drawDot(canvas)
 	}
 
-	var buf strings.Builder
-	if err := writePNG(canvas, outPath, &buf); err != nil {
+	if err := writePNG(canvas, outPath); err != nil {
 		return nil, err
-	}
-	if buf.Len() > 0 {
-		rep.Notes = append(rep.Notes, buf.String())
 	}
 	return rep, nil
 }
@@ -282,7 +278,12 @@ func rasterizeExternal(src, dst string, size int) error {
 
 // ------------------------------------------------------------------ drawing
 
-func writePNG(img *image.RGBA, path string, notes *strings.Builder) error {
+// writePNG says nothing on success. The path it wrote is already on the run's
+// own 产物 list, so a note repeating it ("wrote 256x256 PNG to …") only put an
+// English sentence between the paths and the next step. The part a caller
+// cannot see — that an SVG had to go through an external rasteriser — is
+// reported where it is decided, in resolveAndLoad.
+func writePNG(img *image.RGBA, path string) error {
 	// Convert to non-premultiplied so the encoder writes the colours we intend.
 	out := image.NewNRGBA(img.Bounds())
 	draw.Draw(out, out.Bounds(), img, img.Bounds().Min, draw.Src)
@@ -294,9 +295,6 @@ func writePNG(img *image.RGBA, path string, notes *strings.Builder) error {
 	}
 	if err := sysx.WriteFileAtomic(path, buf.Bytes(), 0o644); err != nil {
 		return err
-	}
-	if notes != nil {
-		fmt.Fprintf(notes, "wrote %dx%d PNG to %s", out.Bounds().Dx(), out.Bounds().Dy(), path)
 	}
 	return nil
 }
