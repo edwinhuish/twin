@@ -212,7 +212,7 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
 | `twin verify <id>` | 自检一个实例的身份链路 |
 | `twin reinstall <id>` | 按实例目录里那份存档快照重新落盘 |
-| `twin remove <id>` | 删除产物（默认只打印，不动手） |
+| `twin remove <id>` | 删除产物：先列出要删什么、问过你才动手（脚本里用 `--yes`） |
 | `twin list` | 列出全部实例 |
 | `twin doctor` | 环境自检（先跑这个），输出末尾直接告诉你下一步敲什么 |
 | `twin rules [<app>]` | 列出内置规则 / 查看某程序生效的规则 |

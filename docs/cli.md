@@ -332,7 +332,7 @@ foo3             alias      foo3     foo                      foo3.desktop  ← 
 
 ⚠️ 有 1 个桌面项缺失（上一次安装没走完）：twin reinstall <id>
 
-删除某一个：twin remove <id>（不加 --yes 只打印要删什么）
+删除某一个：twin remove <id>（不带 --yes 会先列出来问你一次）
 ```
 
 `← 安装未完成` 不是"桌面项被谁删了"，而是**上一次 `install` 死在半路**：快照写下了，身份锚点没写全。
@@ -354,9 +354,13 @@ foo3             alias      foo3     foo                      foo3.desktop  ← 
 
 ### `twin remove <id>`
 
-删除产物。默认**只打印**、什么都不动（将要删的文件：存在的打 `✅`、不存在打 `➖`）；真删、以及连私有
-状态目录一起删，是 `-h` 里那两个开关。
+删除产物。默认先列出将要删的文件（存在的打 `✅`、不存在打 `➖`）**再问一次**：回答 `y` / `yes`
+（大小写都行）才动手，其余任何回答 —— 直接回车、拼错、Ctrl-D —— 都按"不删"处理。
 
+- 标准输入不是终端（脚本 / 管道 / CI）时**不提问**，只预览并给出那条显式命令。提问没人能回答就是
+  卡住，这和装 AppArmor profile 那一步是同一条规矩。
+- `--yes` 是不提问的那个开关（脚本里用它），私有数据要不要一起删是 `--purge` —— 两个开关的语义在
+  `-h` 里。
 - 安装没走完的实例也照删 —— 快照本来就写在那儿，撤销它就是把那个目录清掉。
 - 私有状态目录默认保留（那是唯一不可逆的部分），保留的那份下次同名重建会接着用。
 - 会顺带移除宿主托盘表里该 `id` 的条目：表是全局的，而这条是"一个即将不存在的程序"的声明，
@@ -547,8 +551,8 @@ twin install
 $EDITOR ~/.local/share/twin/wechat2/profile.yml
 twin reinstall wechat2
 
-# 先看要删什么，再删
+# 先看要删什么，再删（不带 --yes 会问你一次：回答 y / yes 才动手）
 twin remove wechat2
-twin remove wechat2 --yes
+twin remove wechat2 --yes              # 脚本里这么写：不问，直接删
 twin remove wechat2 --yes --purge      # ⚠️ 连私有数据一起删，不可逆
 ```

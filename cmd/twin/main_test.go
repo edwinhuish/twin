@@ -11,6 +11,7 @@ import (
 
 	"github.com/edwinhuish/twin/internal/generate"
 	"github.com/edwinhuish/twin/internal/inst"
+	"github.com/edwinhuish/twin/internal/style"
 	"github.com/edwinhuish/twin/internal/verify"
 )
 
@@ -332,6 +333,60 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	})
 	if !strings.Contains(long, "路径映射") {
 		t.Errorf("--explain 应当展开路径映射：\n%s", long)
+	}
+}
+
+// ------------------------------------------------------- `twin remove` 的确认
+
+// 这道问句是不可逆删除之前的最后一道，所以它接受的回答刻意窄：y / yes，大小写都行，
+// 其余一律当作"不删"。
+func TestReadConfirmationAcceptsOnlyYes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"y\n", true},
+		{"Y\n", true},
+		{"yes\n", true},
+		{"YES\n", true},
+		{"  Yes  \n", true},
+		{"y", true}, // 管道里最后一行常常没有换行
+		{"n\n", false},
+		{"no\n", false},
+		{"\n", false},    // 直接回车 ⇒ 提示里的默认 [y/N]
+		{"yse\n", false}, // 拼错 ⇒ 不猜
+		{"", false},      // EOF（Ctrl-D）⇒ 不删
+	}
+	for _, c := range cases {
+		t.Run(strings.TrimSpace(c.in), func(t *testing.T) {
+			got, err := readConfirmation(strings.NewReader(c.in))
+			if err != nil {
+				t.Fatalf("readConfirmation(%q) 报错：%v", c.in, err)
+			}
+			if got != c.want {
+				t.Errorf("readConfirmation(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// 标准输入不是终端（脚本 / 管道 / CI）时不提问，只预览并给出那条显式命令：提问没人能回答
+// 就是卡住，而卡在一个删除命令上比少删一次更糟。
+func TestRemoveWithoutYesPreviewsWhenStdinIsNotATerminal(t *testing.T) {
+	if style.IsTerminal(os.Stdin) {
+		t.Skip("标准输入是终端 —— 这条测的是脚本场景")
+	}
+	p := inst.Paths{Home: t.TempDir()}
+	var code int
+	got := captureStdout(t, func() { code = cmdRemove(p, []string{"demo2"}) })
+	if code != exitOK {
+		t.Errorf("预览不是错误，退出码应当是 0：%d", code)
+	}
+	if !strings.Contains(got, "只预览") {
+		t.Errorf("非终端下要说清「只预览」：\n%s", got)
+	}
+	if !strings.Contains(got, "twin remove demo2 --yes") {
+		t.Errorf("非终端下要给出那条显式命令：\n%s", got)
 	}
 }
 

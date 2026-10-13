@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -1131,7 +1132,7 @@ func cmdList(p inst.Paths) int {
 	// The one thing you come to this table to do next is get rid of a row, and
 	// `remove` is the only verb that does it — so name it here rather than
 	// leaving it to be discovered in --help.
-	fmt.Printf("\n删除某一个：twin remove <id>（不加 --yes 只打印要删什么）\n")
+	fmt.Printf("\n删除某一个：twin remove <id>（不带 --yes 会先列出来问你一次）\n")
 	return 0
 }
 
@@ -1477,14 +1478,14 @@ func iconSizeFor(p inst.Paths) int {
 
 func cmdRemove(p inst.Paths, args []string) int {
 	fs := newFlags("remove")
-	yes := fs.Bool("yes", false, "确认删除（不加只打印将要删什么）")
+	yes := fs.Bool("yes", false, "不再问，直接删（脚本 / CI 用）；不加它会在终端里先列清单再问一次，标准输入不是终端时只预览")
 	purge := fs.Bool("purge", false, "连私有状态目录一起删 —— 唯一不可逆的部分（默认保留，下次同名重建接着用）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
 	}
 	if len(pos) < 1 {
-		fail("缺少 <id>：twin list 看有哪些实例（先不加 --yes 只预览要删什么）")
+		fail("缺少 <id>：twin list 看有哪些实例（不带 --yes 会先列出来问你一次）")
 		return exitUsage
 	}
 	id := pos[0]
@@ -1493,26 +1494,32 @@ func cmdRemove(p inst.Paths, args []string) int {
 		return exitUsage
 	}
 	if !*yes {
-		// The dry form is the whole safety mechanism: it lists exactly what the
-		// next command would delete, including the one thing that is not a file
-		// (`custom-icons` row) and the one thing that is irreversible (--purge).
-		fmt.Printf("%s\n", title("🗑️ 将要删除（加 --yes 才真的删）"))
-		for _, f := range []string{p.Desktop(id), p.Icon(id), p.InstanceDir(id), p.RuleFile(id)} {
-			if !sysx.Exists(f) {
-				fmt.Printf("  %s %s\n", outStyle.Dim("➖"), outStyle.Dim(f+"（不存在）"))
-				continue
-			}
-			fmt.Printf("  %s %s\n", outStyle.Green("✅"), f)
+		// The preview is the whole safety mechanism: it names exactly what the
+		// next answer would delete, including the one thing that is not a file
+		// (the `custom-icons` row) and the one thing that is irreversible (--purge).
+		printRemovePreview(p, id, *purge)
+		if !style.IsTerminal(os.Stdin) {
+			// A question nobody can answer is a hang, not a confirmation — the
+			// same rule the sudo step follows. A script or a pipe gets the
+			// preview plus the explicit command, so nothing is deleted behind
+			// its back and nothing ever waits on a prompt.
+			fmt.Printf("\n%s\n", outStyle.Dim("标准输入不是终端（脚本 / 管道）：只预览，什么都没删"))
+			fmt.Printf("确认无误：twin remove %s --yes\n", id)
+			return exitOK
 		}
-		state := p.StateDir(id)
-		if *purge {
-			fmt.Printf("  %s %s\n", outStyle.Red("💣"), state+"（私有数据，--purge：不可逆地删掉）")
-		} else {
-			fmt.Printf("  %s %s\n", outStyle.Dim("💾"), state+"（私有数据，保留 —— 要一起删加 --purge）")
+		fmt.Printf("\n删除以上内容？[y/N] ")
+		ok, err := readConfirmation(os.Stdin)
+		if err != nil {
+			fail("读确认时出错：" + err.Error())
+			return exitFail
 		}
-		fmt.Printf("  %s %s\n", outStyle.Dim("🔔"), dropTray(id, true))
-		fmt.Printf("\n确认无误：twin remove %s --yes\n", id)
-		return exitOK
+		if !ok {
+			// Anything but an explicit yes — "n", a typo, an empty line, Ctrl-D —
+			// means no. For the one irreversible verb the safe reading of an
+			// ambiguous answer is the only defensible one.
+			fmt.Printf("%s 已取消，什么都没删\n", outStyle.Mark(style.LevelSkip))
+			return exitOK
+		}
 	}
 	removed, err := generate.Unwrap(p, id, *purge)
 	if err != nil {
@@ -1532,6 +1539,44 @@ func cmdRemove(p inst.Paths, args []string) int {
 		fmt.Println(line)
 	}
 	return exitOK
+}
+
+// printRemovePreview lists what a confirmed `twin remove` would delete. It is the
+// context the question is asked against, so it stays a separate step from asking:
+// a preview that only appears when someone already typed --yes would be a preview
+// nobody reads.
+func printRemovePreview(p inst.Paths, id string, purge bool) {
+	fmt.Printf("%s\n", title("🗑️ 将要删除"))
+	for _, f := range []string{p.Desktop(id), p.Icon(id), p.InstanceDir(id), p.RuleFile(id)} {
+		if !sysx.Exists(f) {
+			fmt.Printf("  %s %s\n", outStyle.Dim("➖"), outStyle.Dim(f+"（不存在）"))
+			continue
+		}
+		fmt.Printf("  %s %s\n", outStyle.Green("✅"), f)
+	}
+	state := p.StateDir(id)
+	if purge {
+		fmt.Printf("  %s %s\n", outStyle.Red("💣"), state+"（私有数据，--purge：不可逆地删掉）")
+	} else {
+		fmt.Printf("  %s %s\n", outStyle.Dim("💾"), state+"（私有数据，保留 —— 要一起删加 --purge）")
+	}
+	fmt.Printf("  %s %s\n", outStyle.Dim("🔔"), dropTray(id, true))
+}
+
+// readConfirmation reads the one answer `twin remove` takes: y / yes, any case.
+// Everything else is a no, including an empty line and EOF (Ctrl-D) — this is the
+// last question before irreversible deletion, so an answer it cannot read has to
+// fall on the side that deletes nothing.
+func readConfirmation(in io.Reader) (bool, error) {
+	line, err := bufio.NewReader(in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	return false, nil
 }
 
 // ---------------------------------------------------------------- output
