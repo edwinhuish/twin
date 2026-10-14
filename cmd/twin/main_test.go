@@ -172,10 +172,10 @@ func TestSplitPassthroughRefusesSecondSeparator(t *testing.T) {
 // ---------------------------------------------------------------- two commands
 
 // A missing configuration is the first thing a new user runs into, so the error
-// has to name the command that writes one. "config.yml: no such file" is true
+// has to name the command that writes one. "profile.yml: no such file" is true
 // and useless.
 func TestMissingConfigNamesTheCommandThatWritesOne(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), DefaultConfigName)
+	missing := filepath.Join(t.TempDir(), DefaultProfileName)
 	_, err := loadConfigFile(missing)
 	if err == nil {
 		t.Fatal("读一份不存在的配置必须报错")
@@ -189,7 +189,7 @@ func TestMissingConfigNamesTheCommandThatWritesOne(t *testing.T) {
 // over one that is already there: replacing it silently would throw away the
 // edits that are the only reason the file exists.
 func TestGenRefusesToClobberAWorkingCopy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultConfigName)
+	path := filepath.Join(t.TempDir(), DefaultProfileName)
 	if err := writeConfigFile(path, []byte("first"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -212,13 +212,13 @@ func TestGenRefusesToClobberAWorkingCopy(t *testing.T) {
 // place — a flag package with no aliases makes this the kind of thing that
 // otherwise gets decided independently at each use.
 func TestOneSettingBeatsTheDefault(t *testing.T) {
-	if got := firstNonEmpty("out.yml", "", DefaultConfigName); got != "out.yml" {
+	if got := firstNonEmpty("out.yml", "", DefaultProfileName); got != "out.yml" {
 		t.Errorf("长选项应当胜过默认值：%q", got)
 	}
-	if got := firstNonEmpty("", "out.yml", DefaultConfigName); got != "out.yml" {
+	if got := firstNonEmpty("", "out.yml", DefaultProfileName); got != "out.yml" {
 		t.Errorf("短选项应当胜过默认值：%q", got)
 	}
-	if got := firstNonEmpty("", "", DefaultConfigName); got != DefaultConfigName {
+	if got := firstNonEmpty("", "", DefaultProfileName); got != DefaultProfileName {
 		t.Errorf("都没给时才落到默认值：%q", got)
 	}
 }
@@ -253,7 +253,7 @@ func TestPathMapsShortFormIsJustTheMap(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo"}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
-	fix := mapFix{file: DefaultConfigName, replay: installCommandFor(DefaultConfigName)}
+	fix := mapFix{file: DefaultProfileName, replay: installCommandFor(DefaultProfileName)}
 
 	short := captureStdout(t, func() { printPathMaps(p, it, insp, "", fix, false) })
 	for _, noise := range []string{"照抄下面这份", "twin rules --init", "改：", "💡"} {
@@ -319,7 +319,7 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
 
 	short := captureStdout(t, func() {
-		printGenResult(p, it, insp, DefaultConfigName, false, false, nil)
+		printGenResult(p, it, insp, DefaultProfileName, false, false, nil)
 	})
 	if strings.Contains(short, "路径映射") {
 		t.Errorf("gen 的默认输出不该带路径映射：\n%s", short)
@@ -329,7 +329,7 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	}
 
 	long := captureStdout(t, func() {
-		printGenResult(p, it, insp, DefaultConfigName, false, true, nil)
+		printGenResult(p, it, insp, DefaultProfileName, false, true, nil)
 	})
 	if !strings.Contains(long, "路径映射") {
 		t.Errorf("--explain 应当展开路径映射：\n%s", long)

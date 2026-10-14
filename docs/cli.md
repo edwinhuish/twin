@@ -112,8 +112,8 @@ Keywords   微信;wechat;
 
 | 命令 | 做什么 |
 |---|---|
-| `twin gen wechat` | 在当前目录写 `config.yml`（id、显示名、路径映射全部推导出来写进去），然后说清下一步敲什么 |
-| `$EDITOR config.yml` | 改 `bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
+| `twin gen wechat` | 在当前目录写 `profile.yml`（id、显示名、路径映射全部推导出来写进去），然后说清下一步敲什么 |
+| `$EDITOR profile.yml` | 改 `bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
 | `twin install` | 读那份配置：写实例快照 → 落盘（桌面项 / 图标 / 启动器 / 宿主托盘）＋ 自检 |
 
 **配置为什么在当前目录？** 它是这份 wrap 里唯一需要人读一遍的东西，所以放在人**已经选好的**那个
@@ -125,10 +125,10 @@ Keywords   微信;wechat;
 
 ```console
 $ twin gen wechat
-✅ 已写出配置 config.yml
+✅ 已写出配置 profile.yml
 
 👉 下一步
-  1. 改 config.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
+  1. 改 profile.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
   2. 安装：twin install
 ```
 
@@ -141,7 +141,7 @@ $ twin gen wechat
 
 ```console
 $ twin gen foo
-✅ 已写出配置 config.yml
+✅ 已写出配置 profile.yml
   ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind
 
 👉 下一步
@@ -168,7 +168,7 @@ $ twin install
   托盘覆盖 已写入 custom-icons（该表热重载，立刻生效）
 
 📁 路径映射
-  3 条，来源：配置 config.yml
+  3 条，来源：配置 profile.yml
   私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
 
 👉 下一步
@@ -197,7 +197,7 @@ $ twin install
 `twin verify` 是另一回事：把每一条都列出来正是它的职责，跳过项（本机没这个能力）也在里面。
 
 **实例目录里那份不是工作副本。** `install` 会按配置重新渲染它（存档角色，头注释指向
-`twin reinstall`），所以 `install` 与 `reinstall` 写出的字节一致；改完 `config.yml` 再 `install`
+`twin reinstall`），所以 `install` 与 `reinstall` 写出的字节一致；改完 `profile.yml` 再 `install`
 一次，实例就更新了。反过来，`reinstall` **只**读存档快照、不看配置 —— 它要的是确定性。
 
 路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
@@ -247,12 +247,12 @@ $ twin install
 
 ```console
 📁 路径映射
-  3 条，来源：配置 config.yml
+  3 条，来源：配置 profile.yml
   私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
   共用  ~/Documents/xwechat_files:~/Documents/xwechat_files   （原地升回可写，数据不搬家）
   私有  ~/.local/state/twin/wechat2/all_users:~/Documents/xwechat_files/all_users
   改：~/.config/twin/rules.d/wechat.toml —— 影响这个程序以后新建的实例（twin rules --init wechat 生成草稿）
-      只改这一个：编辑 config.yml 里的 bind，再 twin install
+      只改这一个：编辑 profile.yml 里的 bind，再 twin install
 
   📋 照抄下面这份（就是规则文件的全部内容）：
 
@@ -289,7 +289,7 @@ $ twin install
     ~/.local/state/foo                           目录存在
     要隔离就先生成一份规则草稿：twin rules --init foo
   改：~/.config/twin/rules.d/foo.toml —— 影响这个程序以后新建的实例（twin rules --init foo 生成草稿）
-      只改这一个：编辑 config.yml 里的 bind，再 twin install
+      只改这一个：编辑 profile.yml 里的 bind，再 twin install
 ```
 
 ### `twin verify <id>`
@@ -342,7 +342,7 @@ foo3             alias      foo3     foo                      foo3.desktop  ← 
 
 按**实例目录里那份快照**重新落盘。它是"这个实例已经装好了，现在要按存档重来一次"那条路。
 
-它不看 `config.yml`：配置可能已经被拷走、提交进仓库、或者删掉了，而"上次到底装了什么"只剩存档这一
+它不看 `profile.yml`：配置可能已经被拷走、提交进仓库、或者删掉了，而"上次到底装了什么"只剩存档这一
 份记录。要按新配置更新实例，改配置再 `twin install` —— 两者走**同一条安装路径**，所以不可能出现
 "install 会做、reinstall 不做"的事。
 
@@ -426,7 +426,7 @@ $ twin reinstall -h    # 重放存档的那一个开关
 
 | 类别 | 描述什么 | 例子 |
 |---|---|---|
-| **描述实例** | 会进 `config.yml`，进而进快照 | 显示名、角标、`--level`、`--tmpfs`、`--no-tray` |
+| **描述实例** | 会进 `profile.yml`，进而进快照 | 显示名、角标、`--level`、`--tmpfs`、`--no-tray` |
 | **描述这次动作** | 只影响这一次调用 | 写到哪、要不要覆盖、`--dry-run`、`--explain` |
 
 只有 `gen` 拥有第一类。`install` 的选项表里一个实例选项都没有，所以"带着描述实例的选项去装一个已存在
@@ -493,7 +493,7 @@ $ twin reinstall -h    # 重放存档的那一个开关
 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 生成器 |
 | `~/.local/share/appicons/<id>.png` | 图标 | 生成器 |
 | `~/.local/share/twin/<id>/launch` | 薄启动器 | 生成器 |
-| `./config.yml`（或 `-o` 指的路径） | 工作副本：你编辑的那一份 | 生成器（`twin gen`），你改，再 `twin install` |
+| `./profile.yml`（或 `-o` 指的路径） | 工作副本：你编辑的那一份 | 生成器（`twin gen`），你改，再 `twin install` |
 | `~/.local/share/twin/<id>/profile.yml` | 实例存档快照 | 生成器（`twin install` 按配置渲染）；你改，再 `twin reinstall <id>` |
 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本（共享，一台机器一份） | 生成器（仅需要时） |
 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（共享） | 生成器（仅需要时） |
@@ -530,7 +530,7 @@ $ twin reinstall -h    # 重放存档的那一个开关
 ```bash
 # 让两份实例彻底分家（连配置目录一起隔离）：映射写进配置，再安装
 twin gen wechat --as wx-alt
-$EDITOR config.yml
+$EDITOR profile.yml
 #   bind:
 #     - ~/.local/state/twin/wx-alt/config:~/.config/wechat
 #     - ~/.local/state/twin/wx-alt/xwechat:~/.xwechat
@@ -538,7 +538,7 @@ twin install
 
 # 一个只想多开小号、其它全共享的浏览器
 twin gen google-chrome --as chrome-alt
-$EDITOR config.yml
+$EDITOR profile.yml
 #   bind:
 #     - ~/.local/state/twin/chrome-alt/profile:~/.config/google-chrome
 twin install

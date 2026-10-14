@@ -131,7 +131,7 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 
 ## 5. 产物与模板
 
-`twin install` 写下面这些。第 0 件（`./config.yml`）不是它写的 —— `twin gen` 写在**你当前所在的
+`twin install` 写下面这些。第 0 件（`./profile.yml`）不是它写的 —— `twin gen` 写在**你当前所在的
 目录**里，因为那是这份 wrap 里唯一需要人读一遍的东西，而"当前目录"是用户已经选好的那个位置。
 
 | # | 路径 | 内容 | 何时写 |
@@ -150,7 +150,7 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 同一份 schema 落在两处，头注释各自指向读它的那条命令：
 
 ```yaml
-# …config.yml 的头 —— twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。
+# …profile.yml 的头 —— twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。
 
 # twin —— 实例定义（存档快照）。改完跑 `twin reinstall wechat2` 重放；
 # `twin install` 会用工作副本那份重新写出它。

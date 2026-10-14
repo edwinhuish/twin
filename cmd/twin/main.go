@@ -42,15 +42,15 @@ const (
 	exitHuman = 3
 )
 
-// DefaultConfigName is the configuration `twin gen` writes and `twin install`
-// reads when neither -o/--output nor -c/--config says otherwise.
+// DefaultProfileName is the configuration `twin gen` writes and `twin install`
+// reads when neither -o/--output nor -p/--profile says otherwise.
 //
 // It is deliberately a path in the current directory rather than one under
 // $HOME: the file is meant to be read, edited, diffed and committed, and the
 // directory the user is standing in is the one place they already chose. An
 // instance directory under ~/.local/share/twin holds the archive of what was
 // installed, which is a different thing with a different lifetime.
-const DefaultConfigName = "config.yml"
+const DefaultProfileName = "profile.yml"
 
 // Colour is decided per stream, and decided here rather than at each print
 // site: `twin gen wechat > log` must leave the log plain while the warnings
@@ -111,7 +111,7 @@ func printManual(rep *verify.Report) {
 const usage = `twin —— 程序双开
 
 用法:
-  twin gen <source> [选项]                在当前目录生成一份配置（默认 ./config.yml）
+  twin gen <source> [选项]                在当前目录生成一份配置（默认 ./profile.yml）
   twin install [选项]                     读那份配置并落盘：桌面项 / 图标 / 启动器 / 托盘
   twin inspect <source> [--name 显示名]   只看：源程序是什么、身份该怎么做
   twin verify <id>                        自检一个实例的身份链路
@@ -269,7 +269,7 @@ var helpFooter = map[string]string{
 		"    并在 install 时写进配置（bwrap.extra）。\n" +
 		"    ⚠️ 不享受 ~/ 展开与 mkdir 补齐；再写一个 `--`、写 --argv0、或写需要 fd 的选项都会被拒绝，\n" +
 		"       其余 token 只做 lint（警告），不改写。\n",
-	"install": "\n  twin install 不接受位置参数：要装哪一份配置用 -c 说，" +
+	"install": "\n  twin install 不接受位置参数：要装哪一份配置用 -p 说，" +
 		"包哪个程序、隔离哪些目录是 twin gen 那一步决定的（都在那份文件里）。\n",
 }
 
@@ -609,7 +609,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	// be seen anywhere — and a wrong default is exactly the kind of thing that
 	// says nothing until two instances fight over one lock file.
 	var (
-		output    = fs.String("output", "", "配置写到哪（默认 ./config.yml；与 -o 是同一个设置）")
+		output    = fs.String("output", "", "配置写到哪（默认 ./profile.yml；与 -o 是同一个设置）")
 		as        = fs.String("as", "", "实例 id，同时是窗口 app_id 与托盘 SNI Id（默认 源基名 ＋ 最小空闲序号，从 2 起）")
 		name      = fs.String("name", "", "显示名（默认 源 Name[当前语言] ＋ 序号）")
 		nameEn    = fs.String("name-en", "", "英文显示名，写 Name[en]（默认 源 Name ＋ 序号；与 --name 相同时不写）")
@@ -656,7 +656,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		fail("同时给了 -o 和 --output：它们是同一个设置，请只留一个")
 		return exitUsage
 	}
-	outPath := firstNonEmpty(*output, shortOutput, DefaultConfigName)
+	outPath := firstNonEmpty(*output, shortOutput, DefaultProfileName)
 
 	// An empty --level means "let the config layers decide", which is not the
 	// same as passing --level alias: the rules.d entry for the program may know
@@ -785,7 +785,7 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 			fail(err.Error())
 			return
 		}
-		fmt.Printf("\n%s\n%s", title("📄 配置内容（config.yml）"), indent(body, "  "))
+		fmt.Printf("\n%s\n%s", title("📄 配置内容（profile.yml）"), indent(body, "  "))
 	}
 	fmt.Printf("\n%s\n", title("👉 下一步"))
 	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也能装）\n", outPath)
@@ -814,27 +814,27 @@ func (r installRun) verbose() bool { return r.dry || r.explain }
 func cmdInstall(p inst.Paths, args []string) int {
 	fs := newFlags("install")
 	var (
-		configPath = fs.String("config", "", "读哪一份配置（默认 ./config.yml；与 -c 是同一个设置）")
-		force      = fs.Bool("force", false, "覆盖已存在但不是 twin 生成的桌面项；也允许落盘时遮蔽同名的系统桌面项")
-		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘将写入的行）")
-		explain    = fs.Bool("explain", false, "打印完整说明（推导值、路径映射的修改粒度、规则模板、候选状态目录、整份自检、手工验证命令）")
+		profilePath = fs.String("profile", "", "读哪一份配置（默认 ./profile.yml；与 -p 是同一个设置）")
+		force       = fs.Bool("force", false, "覆盖已存在但不是 twin 生成的桌面项；也允许落盘时遮蔽同名的系统桌面项")
+		dryRun      = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘将写入的行）")
+		explain     = fs.Bool("explain", false, "打印完整说明（推导值、路径映射的修改粒度、规则模板、候选状态目录、整份自检、手工验证命令）")
 	)
-	var shortConfig string
-	fs.StringVar(&shortConfig, "c", "", "读哪一份配置（--config 的简写；两个拼写同时给是用法错误）")
+	var shortProfile string
+	fs.StringVar(&shortProfile, "p", "", "读哪一份配置（--profile 的简写；两个拼写同时给是用法错误）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
 	}
 	if len(pos) > 0 {
-		fail(fmt.Sprintf("twin install 不接受位置参数（收到 %q）：装哪份配置用 -c 指定，"+
+		fail(fmt.Sprintf("twin install 不接受位置参数（收到 %q）：装哪份配置用 -p 指定，"+
 			"包哪个程序是在 `twin gen` 那一步说的", pos[0]))
 		return exitUsage
 	}
-	if *configPath != "" && shortConfig != "" {
-		fail("同时给了 -c 和 --config：它们是同一个设置，请只留一个")
+	if *profilePath != "" && shortProfile != "" {
+		fail("同时给了 -p 和 --profile：它们是同一个设置，请只留一个")
 		return exitUsage
 	}
-	path := firstNonEmpty(*configPath, shortConfig, DefaultConfigName)
+	path := firstNonEmpty(*profilePath, shortProfile, DefaultProfileName)
 
 	it, err := loadConfigFile(path)
 	if err != nil {
@@ -852,14 +852,14 @@ func cmdInstall(p inst.Paths, args []string) int {
 // loadConfigFile reads the user-facing configuration and refuses a file that
 // says something impossible, before anything on the machine changes.
 //
-// A missing file is turned into the command that writes one: "config.yml: no
+// A missing file is turned into the command that writes one: "profile.yml: no
 // such file" tells a first-time user nothing about `twin gen`.
 func loadConfigFile(path string) (*inst.Instance, error) {
 	it, err := inst.Load(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("读不到 %s（%s）—— 先用 twin gen <source> 生成一份，"+
-				"或用 -c 指定它的位置", path, err)
+				"或用 -p 指定它的位置", path, err)
 		}
 		return nil, err
 	}
@@ -1315,13 +1315,13 @@ type mapFix struct {
 }
 
 // installCommandFor spells the command that installs a given configuration,
-// with -c only when it is not the default name: `twin install` reads
-// ./config.yml, and saying `-c ./config.yml` would suggest otherwise.
+// with -p only when it is not the default name: `twin install` reads
+// ./profile.yml, and saying `-p ./profile.yml` would suggest otherwise.
 func installCommandFor(path string) string {
-	if path == DefaultConfigName {
+	if path == DefaultProfileName {
 		return "twin install"
 	}
-	return "twin install -c " + path
+	return "twin install -p " + path
 }
 
 // printNextSteps says the one thing that still has to happen by hand, and where

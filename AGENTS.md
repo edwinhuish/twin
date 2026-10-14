@@ -69,7 +69,7 @@ go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o t
 
 ```bash
 mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
-cd /tmp/scratch-work                      # gen 默认往**当前目录**写 config.yml
+cd /tmp/scratch-work                      # gen 默认往**当前目录**写 profile.yml
 HOME=/tmp/scratch-home /path/to/twin gen wechat --dry-run
 HOME=/tmp/scratch-home /path/to/twin gen wechat
 HOME=/tmp/scratch-home /path/to/twin install --dry-run
@@ -85,7 +85,7 @@ profile 并以退出码 3 结束，那正是要验的兜底行为）；别在别
 cmd/twin/            CLI 入口：动词分派、flag 解析、全部终端输出
 internal/
   tomlz/               TOML 子集的编解码（自写，非通用库；config.toml 与 rules.d 用它）
-  yamlz/               YAML 子集的编解码（自写，非通用库；config.yml 与 profile.yml 用它）
+  yamlz/               YAML 子集的编解码（自写，非通用库；工作副本与存档两份 profile.yml 用它）
   inst/                实例 schema（真源）＋ Paths（全部产物路径）＋ 语义校验
   desk/                .desktop 读写（含 Name[xx] / Comment[xx] / Keywords[xx]）
   config/              环境层（config.toml）＋ 应用知识层（rules.d）＋ 内置规则
@@ -190,7 +190,7 @@ style → {}    ← 只有标准库
 1. `cmd/twin/main.go` 的 `cmdGen`：加 flag，放进 `generate.Options`；
    **flag 那一行的说明就是这份选项表的正文**（默认值、可接受取值都写在里面，见 §4.13）——
    如果它的用法 PrintDefaults 表达不了（例如它给 `--` 透传区加了一条规则），进 `helpFooter`；
-2. **决定它属于哪一类**：描述**实例**（会进 config.yml，进而进快照）还是描述**这次动作**
+2. **决定它属于哪一类**：描述**实例**（会进 profile.yml，进而进快照）还是描述**这次动作**
    （`-o` / `--force` / `--dry-run` / `--explain`）。只有 `gen` 拥有前者 ——
    `install` 的 flag 表里一个实例选项都没有，所以"带着描述实例的选项去装一个已存在的实例"
    这件事**无法表达**：那不是一条运行时判断，而是动词拆分本身（见 §4.11）；
@@ -201,7 +201,7 @@ style → {}    ← 只有标准库
 
 ### 两段式（`twin gen` / `twin install`）
 - 前半段（`twin gen`）只有一个写点：`it.Render()` ＋ `writeConfigFile`，写的是**工作副本**
-  （`inst.RoleConfig`），默认落在**当前目录**的 `config.yml` —— 那是用户的选择，不是机器的属性
+  （`inst.RoleConfig`），默认落在**当前目录**的 `profile.yml` —— 那是用户的选择，不是机器的属性
   （§4.7）。它拒绝覆盖已存在的文件，除非 `--force`：这份文件正是接下来要被人读、被人改的那一份。
 - 后半段（`twin install`）读那份配置、按 `inst.RoleSnapshot` 重新渲染一份写进
   `~/.local/share/twin/<id>/profile.yml`，再由 `Materialize` 落盘。两半的字节**本来就该不同**：
@@ -209,10 +209,10 @@ style → {}    ← 只有标准库
   这就是 `Role` 这层存在的全部理由。
 - 配置里的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
   **丢掉**注释 —— 手改进来的说明不会被下一次 `gen` 带偏，也所以往返必须是逐字节稳定的。
-- 前后两半不靠重新推导 id 相认，而靠**显式指名的那份文件**（`install -c <文件>`，默认
-  `./config.yml`）：一次 `gen` 只写一份配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到
+- 前后两半不靠重新推导 id 相认，而靠**显式指名的那份文件**（`install -p <文件>`，默认
+  `./profile.yml`）：一次 `gen` 只写一份配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到
   `wechat3`。
-- `install` 不接受位置参数（`len(pos) > 0` 直接报错）：要装哪份配置用 `-c` 说，要包哪个程序是
+- `install` 不接受位置参数（`len(pos) > 0` 直接报错）：要装哪份配置用 `-p` 说，要包哪个程序是
   `gen` 那一步说过的。留一条重新推导的路，就是给"同一个问题两处答案"留机会。
 - 安装半段只有一条路（`installAndCheck`），`twin install` 与 `twin reinstall` 共用；给它们写
   第二份实现就是给"install 会做、reinstall 不做"留机会。

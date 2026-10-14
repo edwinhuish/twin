@@ -429,7 +429,7 @@ func RuleDraft(key, source string, hints []StateHint) string {
 # 这份列表整体替换内置规则里的映射（不是追加）：你写下的就是全部。
 #
 # 生效范围：只影响以后新建的实例。已装好的实例请改它的 profile.yml
-# 再跑 twin reinstall <id>，或者改 config.yml 再 twin install --force。
+# 再跑 twin reinstall <id>，或者改 profile.yml 再 twin install --force。
 `)
 	fmt.Fprintf(&b, "# 写完验证：twin rules %s\n", key)
 	fmt.Fprintf(&b, "\napp = %q\n", key)

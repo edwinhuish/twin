@@ -77,7 +77,7 @@ TWIN_REAL_PROBE=1 go test ./internal/userns/ -run RealProbe -v
 
 ```bash
 mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
-cd /tmp/scratch-work                       # gen 把 config.yml 写在当前目录
+cd /tmp/scratch-work                       # gen 把 profile.yml 写在当前目录
 HOME=/tmp/scratch-home ./twin gen wechat --dry-run
 HOME=/tmp/scratch-home ./twin gen wechat
 HOME=/tmp/scratch-home ./twin install

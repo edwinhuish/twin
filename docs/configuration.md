@@ -7,20 +7,20 @@
 |---|---|---|---|
 | 环境 | `~/.config/twin/config.toml` | **这台机器** | 换机器、换桌面会话 |
 | 应用知识 | `~/.config/twin/rules.d/<app>.toml` | **某个程序** | 你了解了一个新程序的习惯 |
-| 实例 | `./config.yml`（`gen` 写、`install` 读） | **这一个实例** | 你想改这一个实例 |
+| 实例 | `./profile.yml`（`gen` 写、`install` 读） | **这一个实例** | 你想改这一个实例 |
 | 存档 | `~/.local/share/twin/<id>/profile.yml` | 同一个实例的安装记录（`reinstall` 读） | 想按存档重来一次时 |
 | 内置 | （编译进二进制） | 出厂默认 | 永不 |
 
-前两层是"知识"，后两层是"意图"。`config.yml` 是你手上的工作副本；`profile.yml` 是 `install`
-按它渲染出来的**存档**，同一套键、不同的头注释（一个指向 `twin install`，一个指向 `twin reinstall`），
-因为它们回答的是不同的命令。
+前两层是"知识"，后两层是"意图"。后两层是**同一个名字、同一套键**的两份文件：你手上那份在工作
+目录（`gen` 写、`install` 读），`install` 按它渲染出来的**存档**在实例目录（`reinstall` 读）。区别
+只剩头注释里那句"改完敲哪个命令" —— 文件名不再承担这个区分，所以那句必须写准。
 
 ---
 
 ## 1. 优先级
 
 ```
-config.yml      （你正在编辑的那一份：gen 写、install 读）
+profile.yml      （你正在编辑的那一份：gen 写、install 读）
   > rules.d/<app>.toml （应用知识）
     > config.toml      （环境）
       > 内置默认
@@ -42,7 +42,7 @@ config.yml      （你正在编辑的那一份：gen 写、install 读）
 | 动作 | 参与的层 |
 |---|---|
 | `gen`（推导） | CLI > rules.d > config.toml > 内置 |
-| `install`（按配置装） | config.yml > rules.d > config.toml > 内置 |
+| `install`（按配置装） | profile.yml > rules.d > config.toml > 内置 |
 | `reinstall`（重放存档） | profile.yml > 内置（**不读** config / rules） |
 | `reinstall --refresh` | 上面 ＋ config.toml / rules.d（**只补空字段、只追加缺的 token**） |
 
@@ -210,9 +210,9 @@ extra = []
 
 ---
 
-## 4. 实例定义（`config.yml` / `profile.yml`）
+## 4. 实例定义（`profile.yml`：工作副本与存档）
 
-**一份 schema，两处落点。** `twin gen` 把它写进当前目录的 `config.yml`（工作副本，`twin install`
+**一份 schema，两处落点。** `twin gen` 把它写进当前目录的 `profile.yml`（工作副本，`twin install`
 读它）；`twin install` 把**同一份键**渲染进 `~/.local/share/twin/<id>/profile.yml`（存档快照，
 `twin reinstall` 读它）。两者的差别只有头注释里那句"改完敲哪个命令"，因为一个文件不该对着读者
 指一条会静默忽略它的命令。
@@ -338,7 +338,7 @@ twin rules --init myapp
 $EDITOR ~/.config/twin/rules.d/myapp.toml
 
 # 改一个实例（两条路，改哪份文件就用哪个命令）
-$EDITOR config.yml && twin install
+$EDITOR profile.yml && twin install
 $EDITOR ~/.local/share/twin/wechat2/profile.yml && twin reinstall wechat2
 ```
 
@@ -347,7 +347,7 @@ $EDITOR ~/.local/share/twin/wechat2/profile.yml && twin reinstall wechat2
 header 就写着这一点 —— 而且**两处落点各有各的那一句**：
 
 ```yaml
-# --- config.yml（工作副本，twin gen 写出）---
+# --- profile.yml（工作副本，twin gen 写出）---
 # twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。
 # 每个键的说明就写在它自己上面，终端不再重复。
 # 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。

@@ -33,6 +33,12 @@
 
 ### Changed
 
+- **实例配置统一叫 `profile.yml`，`install` 的读取开关改成 `-p/--profile`**（行为变更）：
+  `gen` 写在工作目录的那份原叫 `config.yml`，而 `install` 按它渲染出的存档一直叫 `profile.yml` ——
+  同一个 schema、两个名字，读者要记两套词汇，文件之间也就多了一条"名字即角色"的隐含约定。现在
+  两处同名，区分只剩头注释里那句"改完敲哪个命令"，而那句本来就必须写准。`-c/--config` 是随之而来
+  的改名：读的那份文件不叫 config 了，选项也不该叫 config。旧拼写**被指名报错**（退出码 2，不再
+  静默忽略），`gen` 的 `-o/--output` 不变 —— 它描述的是"这次写到哪"，不是文件的角色。
 - **`twin remove` 不带 `--yes` 时改成交互确认**（行为变更）：先列出将要删的文件，**再问一次**，只
   接受 `y` / `yes`（大小写都行），其余任何回答 —— 直接回车、拼错、Ctrl-D —— 都按"不删"处理。
   标准输入不是终端时不提问、只预览并给出那条显式命令：提问没人能回答就是卡住，这与装 AppArmor
@@ -75,7 +81,7 @@
 
 - 文档里残留的旧动词（`twin new` / `twin new --publish` / `twin regen`）：README、`docs/*` 与
   `CONTRIBUTING.md` 改成现行的 `twin gen` ＋ `twin install` / `twin reinstall <id> --refresh`。
-  手工验收的命令补齐了两段式 —— `gen` 把 `config.yml` 写在**当前目录**，原先那种写法会在仓库根目录
+  手工验收的命令补齐了两段式 —— `gen` 把 `profile.yml` 写在**当前目录**，原先那种写法会在仓库根目录
   里落一份配置。
 - `inst.List` 不再把 `~/.local/share/twin/bin/` 当成一个坏掉的实例 —— 只要这台机器包过
   Chromium 系程序（`bin/` 里是共享的 bwrap 副本与跳板脚本，没有 `profile.yml`），

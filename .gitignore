@@ -13,6 +13,6 @@ coverage.*
 *.swp
 .DS_Store
 
-# 试运行产物（twin gen 默认往当前目录写 config.yml）—— Taskfile.yml 是仓库文件，要除外
+# 试运行产物（twin gen 默认往当前目录写 profile.yml）—— Taskfile.yml 是仓库文件，要除外
 /*.yml
 !/Taskfile.yml

@@ -280,7 +280,7 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 
 ```bash
 mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
-cd /tmp/scratch-work                       # gen 把 config.yml 写在当前目录，所以先挑一个空的
+cd /tmp/scratch-work                       # gen 把 profile.yml 写在当前目录，所以先挑一个空的
 HOME=/tmp/scratch-home twin gen wechat --dry-run
 HOME=/tmp/scratch-home twin gen wechat
 HOME=/tmp/scratch-home twin install
