@@ -79,7 +79,7 @@ internal/
   sandbox/              bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）
   icon/                 纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）
   userns/               userns 限制判定、AppArmor profile 解析、跳板发现
-  tray/                 托盘覆盖表的 read-modify-write
+  tray/                 托盘覆盖表的 read-modify-write ＋ 宿主侧尺寸助手（ext.go ＋ 内嵌的 ext/）
   verify/               回读自证
   doctor/               环境自检
   style/                终端着色判定（TTY / NO_COLOR）与状态字形
@@ -303,5 +303,6 @@ HOME=/tmp/scratch-home twin verify wechat2
 | 跳板是外部依赖 | 那个 Electron 应用被卸载/改名 ⇒ 实例起不来。`verify` 有对应 FAIL |
 | 路线 B 未做真启动验证 | 三条事实由独立探针取证；`--dry-run` 只证明"选择"对 |
 | 托盘表是全局单键 | 写入必须 read-modify-write；并发写入没有加锁（桌面会话里不会有并发 `wrap`） |
+| 扩展目录只在 shell 启动时扫一次 | "装好了但没启用"不是缺陷、也不是可重试的错误 ⇒ 报"注销重登一次"＋退出码 3（`verify` 里它是 WARN ＋ Manual，不是 FAIL） |
 | 只在 Ubuntu / GNOME 上实测过 | 其他发行版/桌面：`doctor` 会如实报告哪些能力缺失 |
 | 依赖 `python3-gi` 做最强的那道自检 | 没有它时 `doctor` 与 `verify` 会报 WARN 并说明损失 |

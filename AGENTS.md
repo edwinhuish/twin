@@ -96,7 +96,7 @@ internal/
   sandbox/             bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）
   icon/                纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）
   userns/              userns 限制判定、AppArmor profile 解析、跳板发现
-  tray/                托盘覆盖表的 read-modify-write
+  tray/                托盘覆盖表的 read-modify-write ＋ 宿主侧尺寸助手（ext.go ＋ 内嵌的 ext/）
   verify/              回读自证
   doctor/              环境自检
   style/               终端着色判定（TTY / NO_COLOR）与状态字形
@@ -201,7 +201,8 @@ style → {}    ← 只有标准库
 
 ### 两段式（`twin gen` / `twin install`）
 - 前半段（`twin gen`）只有一个写点：`it.Render()` ＋ `writeConfigFile`，写的是**工作副本**
-  （`inst.RoleConfig`），默认落在**当前目录**的 `profile.yml` —— 那是用户的选择，不是机器的属性
+  （`inst.RoleConfig`），默认落在**当前目录**的 `profile.yml`（`DefaultProfileName`）——
+  那是用户的选择，不是机器的属性
   （§4.7）。它拒绝覆盖已存在的文件，除非 `--force`：这份文件正是接下来要被人读、被人改的那一份。
 - 后半段（`twin install`）读那份配置、按 `inst.RoleSnapshot` 重新渲染一份写进
   `~/.local/share/twin/<id>/profile.yml`，再由 `Materialize` 落盘。两半的字节**本来就该不同**：

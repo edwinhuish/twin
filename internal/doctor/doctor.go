@@ -263,13 +263,41 @@ func Run(p inst.Paths) *Report {
 		add("托盘宿主", KindOK, tray.Schema+" / "+tray.Key+" = "+truncate(raw, 72), "")
 	}
 
-	// 9. session bus — the write channel. A failure here is exactly the
+	// 9. the shell-side half of the tray override: are the helper's files in
+	//    place, and has the shell been told to load them? It is machine-wide
+	//    and optional — it only changes how big a custom tray icon is drawn —
+	//    so a machine that never wants it can stay this way. Not installed and
+	//    installed-but-not-enabled are both worth naming with the command that
+	//    fixes them, because neither one is a state twin will leave on its own.
+	st := tray.CheckExt(p)
+	const installExt = "twin install --ext"
+	switch {
+	case !st.Installed:
+		why := ""
+		if st.Why != "" {
+			why = "；启用列表也读不到：" + st.Why
+		}
+		add("托盘尺寸扩展", KindWarn,
+			"未安装（自定义图标会比面板图标小一圈）"+why, installExt)
+	case !st.Enabled && st.Why == "":
+		add("托盘尺寸扩展", KindWarn,
+			tray.ExtUUID+" 已装入但未启用（自定义图标按主题的 16px 画）",
+			tray.EnableHint())
+	case !st.Enabled:
+		add("托盘尺寸扩展", KindWarn,
+			tray.ExtUUID+" 已装入，但读不到 shell 的启用列表："+st.Why,
+			"在图形会话的终端里跑一次 "+installExt)
+	default:
+		add("托盘尺寸扩展", KindOK, tray.ExtUUID+" 已启用", "")
+	}
+
+	// 10. session bus — the write channel. A failure here is exactly the
 	//    "gsettings set exits 0 but writes nothing" trap.
 	busName, busKind, busDetail, busFix := busCheck()
 	rep.BusKind = busKind
 	add(busName, busKind, busDetail, busFix)
 
-	// 10. writability of every destination.
+	// 11. writability of every destination.
 	for _, d := range []string{
 		filepath.Join(p.Home, ".local/share/applications"),
 		filepath.Join(p.Home, ".local/share/appicons"),

@@ -144,6 +144,7 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 | 6 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
 | 7 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
 | 8 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本 | 同上 |
+| 9 | `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘尺寸助手扩展（`metadata.json` ＋ `extension.js`，shell 侧那一半） | **不是** `twin install`：`twin install --ext`（机器级，一份服务所有实例） |
 
 ### 5.1 实例定义
 
@@ -346,6 +347,51 @@ custom-icons（按 SNI Id 严格匹配；值以 / 开头 ⇒ 当文件路径加�
 
 ⚠️ 这是**全局单键**：写入必须 read-modify-write 整张表，绝不覆盖别人的条目。
 
+### 7.1 尺寸：覆盖表只管"画哪张图"，不管"画多大"
+
+命中覆盖表的那一项被宿主包成 `GIcon`（`_setGicon`）交给 `St.Icon` 画，而**程序自己发**的位图走
+`_setImageContent(content, S, S)` —— 后者显式给 actor 定了宽高，前者只给内容，屏幕上多大由 actor 的
+**分配框**决定（`st-icon.c` 全文件没有一处 `clutter_actor_set_size()`，它只改"纹理加载多大"）。
+
+那个框在 `IconActor._init()` 里只写一次：
+
+```js
+this.height = iconSize * themeContext.scale_factor;   // iconSize = PANEL_ICON_SIZE || 16
+```
+
+而 `PANEL_ICON_SIZE` 在 gnome-shell 49 就被删掉了（45–48 有，但没 export），所以它恒为 **16**。此后只有
+`notify::scale-factor` 会重刷这个框；`_updateIconSize()` 把 `set_icon_size(this._iconSize)` 写上了，
+**漏了框**。于是：设置里 `icon-size` 调到 30，程序自己的位图跟着变 30，twin 的自定义图标仍是 16
+（Yaru 给 `.system-status-icon` 的 1.091em）—— 同一排图标里小一圈。
+
+**这一环只能在 shell 里面补**：框是宿主在 JS 里写的，外面没有任何接口。所以 `twin` 自带一个**小时助手
+扩展**（uuid `twin-tray@edwinhuish.github.io`，随二进制内嵌，由 `twin install --ext` 写进用户扩展
+目录 —— 它是机器级的，所以 `twin install` 只检查、不写），只做一
+件事：把每个 `appindicator-*` 的 `IconActor` 的框同步到它自己的 `icon-size` 属性。
+
+几个刻意的选择：
+
+- **不 fork 宿主。** 系统那份在 `/usr/share/gnome-shell/modes/ubuntu.json` 里被列为 **mode extension**，
+  用户目录下的同名副本会被 `extensionSystem.js` **静默拒绝**（连 uuid 都不登记）⇒ fork 这条路走不通。
+  助手是**一个新 uuid**，与宿主**并排**运行。
+- **不改宿主的代码，也不读它的私有字段。** 判据是 `Main.panel.statusArea` 里以 `appindicator-` 开头的
+  role —— 那是宿主自己注册的名字。宿主哪天改了内部结构，最坏结果是回到 16px（= 装这个扩展之前的样子），
+  **不是**托盘坏掉。
+- **时机是安全的。** 同步发生在 `notify::icon-size`，而图标内容是之后才建的（`_updateWhenFullyReady`
+  的顺序是 尺寸 → 类名 → custom-icons → 内容）⇒ 位图那条路稍后仍会用自己的显式宽高覆盖它，**位图图标
+  不受影响**。`icon_size > 0` 这个条件同时排除了主题自己算的那条路（主题走 `st_icon_update_icon_size`，
+  不会让这个属性变正）。
+- **装是文件写入，启用是会话动作；而且这件事是机器级的，所以它归 `twin install` 的一个开关。** 一份扩展服务所有
+  实例，挂到 `twin install` 上就成了"包一个实例"的副作用，重放快照时还会重做一遍 ⇒ 写入归
+  `twin install --ext`，`twin install` / `twin reinstall` 只检查并警告。shell **只在启动时**扫一遍
+  扩展目录，所以一个它没见过的 uuid **在下次登录前没有任何命令能启用它**。这是 shell 的事实，
+  不是这里的缺陷 ⇒ `twin install --ext` 报"注销重登
+  一次"并以**退出码 3** 收尾，而不是反复重试。
+
+⚠️ 它只解决**尺寸**。覆盖表本身仍然写在宿主那个 dconf 键里（见上文），所以"写不进去要会话总线"这件事
+没有变化 —— 助手不是那件事的替代品。
+
+
 ## 8. 权限与 AppArmor
 
 | 厚度 | 需要特权吗 |
@@ -391,3 +437,6 @@ custom-icons（按 SNI Id 严格匹配；值以 / 开头 ⇒ 当文件路径加�
 | 私有副本无标签 = EPERM；VS Code 当跳板 ⇒ 标签被换成 unconfined ＋ 嵌套 userns OK | 真机探针 |
 | `gsettings set` 会假成功（`exit 0` 但没写） | 对比 `set` 的退出码与随后的 `get` |
 | `custom-icons` 热重载 | 写入后托盘图标**当场**变化，不需重登 |
+| `custom-icons` 那条路不听 `icon-size`（`_setGicon` ⇒ 主题框），pixmap 那条听（`_setImageContent` ⇒ 显式框） | 从 `/usr/lib/gnome-shell/libshell-18.so` 抽出宿主 JS ＋ 读 `st-icon.c` 源码，再用托盘截图逐像素分类 |
+| `PANEL_ICON_SIZE` 在 gnome-shell ≥ 49 已整条删除（45–48 有但未 export）⇒ `DEFAULT_ICON_SIZE` 恒 16 | `gresource extract /usr/lib/gnome-shell/libshell-18.so /org/gnome/shell/ui/panel.js` 后 grep |
+| 用户目录下与 mode extension 同 uuid 的副本被**静默拒绝**（且不登记 uuid ⇒ 系统版照常加载） | 读 `extensionSystem.js` 的 mode 过滤那一段，并实测一份 fork 副本装上去不生效 |

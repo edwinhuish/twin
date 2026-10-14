@@ -10,10 +10,30 @@
 
 ### Added
 
+- **`twin install --ext`（`twin reinstall --ext` 同形）**：装 shell 侧**托盘尺寸助手扩展**的开关 ——
+  `install` 与 `reinstall` 是同一件事的两个入口（共用 `installAndCheck`），机器级那一半只在一边够得着，
+  就等于「有哪些命令」取决于你走哪扇门；`reinstall --ext` 因此不接受 `<id>`（它不属于任何实例），
+  `--refresh` 也一样。那份扩展是机器级的
+  （一份服务所有实例、比任何一个实例活得久），挂在 `twin install` 上会让"包一个实例"顺手改掉一个
+  与它无关的东西，并在每次重放快照时重做一遍 ⇒ 现在 `install` / `reinstall` 只**检查**它：缺了就打
+  一条 ⚠️ 警告、把那一步写进"还差一步"清单（退出码 3 的含义不变），`verify` / `doctor` 各报一行。
+  它与 `--dry-run` 同用（只报会写到哪几个文件），实例那三个选项（`-p` / `--force` / `--explain`）
+  按名字拒绝而不是默默忽略。**它不占位置参数**：实例 id 收 `[A-Za-z0-9._-]`，任何裸词都同时是一个合法
+  的实例 id，宾语位上的保留字会与用户能取的名字同形（`twin install extension` 装的是扩展，而
+  `twin remove extension` 删的是实例）⇒ `install` 仍然一个位置参数都不收，机器级那一半走开关。
 - **`Taskfile.yml`**：构建与质量门收在一处 —— `task build`（版本号取 `git describe` 注入
   `main.version`）、`task check`（= `gofmt -l` ＋ `go vet` ＋ `go test`）。`task test` 自己把
   `GOTMPDIR` / `TMPDIR` 指到 `$HOME/.cache/gotmp`，本机那个"`/tmp` 只有 10 MB、链接测试二进制会
   `no space left`"的坑不必再手写环境变量。
+- **托盘图标尺寸助手扩展 `twin-tray@edwinhuish.github.io`**：宿主对 `custom-icons` 的图标走
+  `GIcon` → `St.Icon`，屏幕上多大由 `IconActor` 的**分配框**决定，而那个框只在 `_init()` 里按
+  `PANEL_ICON_SIZE || 16` 写一次（`PANEL_ICON_SIZE` 在 gnome-shell 49 已删）⇒ 自定义图标永远 16px，
+  而程序自己的位图跟着 `icon-size` 设置变。框是宿主在 JS 里写的，外面补不了，所以 **`twin install --ext`** 写一份
+  **用户级**小时助手扩展进去（那件东西是机器级的，`twin install` / `twin reinstall` 只检查它
+  并给出这条命令），把每个 `appindicator-*` 的框同步到它自己的 `icon-size`（同步发生在
+  `notify::icon-size`，早于内容构建 ⇒ 位图那条路不受影响）。宿主是 **mode extension**，用户目录下的同名
+  副本会被 shell 静默拒绝，因此助手是**新 uuid、并排运行**，不 fork 宿主。`verify` / `doctor` 各报它的
+  状态；shell 只在启动时扫扩展目录 ⇒ 首次装好后要**注销重登一次**才启用得上，这一步计入退出码 3。
 - **`.github/workflows/ci.yml`**：push 到 `main` 与 PR 时装 Go（版本读 `go.mod`）、跑 `task check`，
   再 `task build` 并冒烟一次 `./twin version` —— 质量门只有 `Taskfile.yml` 一份定义，CI 不另抄。
 - **终端输出着色 ＋ 状态字形**（新包 `internal/style`）：只在终端上着色，重定向 / 管道 /
@@ -39,6 +59,10 @@
   两处同名，区分只剩头注释里那句"改完敲哪个命令"，而那句本来就必须写准。`-c/--config` 是随之而来
   的改名：读的那份文件不叫 config 了，选项也不该叫 config。旧拼写**被指名报错**（退出码 2，不再
   静默忽略），`gen` 的 `-o/--output` 不变 —— 它描述的是"这次写到哪"，不是文件的角色。
+- **两段式 wrap：`twin new` 拆成 `twin gen`（写配置）与 `twin install`（落盘）**（行为变更）：
+  一次 wrap 里唯一随程序而变、又猜错了不出声的是"隔离哪些数据目录"，所以先把它落成一份能读能改
+  的文件，安装才是另一件事。`install` 因此**不接受任何描述实例的选项**，也不接受位置参数 ——
+  "带着描述实例的选项去装一个已存在的实例"这件事不再是运行时判断，而是动词拆分本身。
 - **`twin remove` 不带 `--yes` 时改成交互确认**（行为变更）：先列出将要删的文件，**再问一次**，只
   接受 `y` / `yes`（大小写都行），其余任何回答 —— 直接回车、拼错、Ctrl-D —— 都按"不删"处理。
   标准输入不是终端时不提问、只预览并给出那条显式命令：提问没人能回答就是卡住，这与装 AppArmor
@@ -86,7 +110,7 @@
 
 - 文档里残留的旧动词（`twin new` / `twin new --publish` / `twin regen`）：README、`docs/*` 与
   `CONTRIBUTING.md` 改成现行的 `twin gen` ＋ `twin install` / `twin reinstall <id> --refresh`。
-  手工验收的命令补齐了两段式 —— `gen` 把 `profile.yml` 写在**当前目录**，原先那种写法会在仓库根目录
+  手工验收的命令补齐了两段式 —— `gen` 把 `config.yml` 写在**当前目录**，原先那种写法会在仓库根目录
   里落一份配置。
 - `inst.List` 不再把 `~/.local/share/twin/bin/` 当成一个坏掉的实例 —— 只要这台机器包过
   Chromium 系程序（`bin/` 里是共享的 bwrap 副本与跳板脚本，没有 `profile.yml`），

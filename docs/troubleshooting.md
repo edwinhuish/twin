@@ -86,6 +86,30 @@ twin verify <id>
 
 ---
 
+### B5. 自定义图标比程序自己的图标小一圈
+
+**根因**：托盘覆盖表只决定**画哪张图**，尺寸交给 `St.Icon` 按 actor 的**分配框**算，而那个框在
+`IconActor._init()` 里按 `PANEL_ICON_SIZE || 16` 写死一次（`PANEL_ICON_SIZE` 在 gnome-shell 49 已删）
+⇒ 自定义图标恒定 **16px**；程序自己发的位图那条路显式给了宽高，所以跟着设置里的 `icon-size` 变。
+**这是宿主的 bug，不在你的配置里**，也不在 twin 画的那张 PNG 里（它是满铺的）—— 机制见
+[`architecture.md`](architecture.md) §7.1。
+
+```bash
+twin verify <id>                     # 看「托盘尺寸扩展」那一行
+twin install --ext                   # 缺了就装它（机器级，装一次；不跟着 twin install 走）
+gnome-extensions info twin-tray@edwinhuish.github.io
+```
+
+| 那一行 | 含义 | 做法 |
+|---|---|---|
+| `已启用 → …` | 正常 | — |
+| `已装入但未启用` | shell 还没扫到它（它只在启动时扫扩展目录） | **注销重登一次**（Wayland 无 `Alt+F2 → r`），再 `gnome-extensions enable twin-tray@edwinhuish.github.io` |
+| `未装入`（不在扩展目录里） | 还没装过 —— 它不跟着 `twin install` 走 | `twin install --ext` |
+| `读不到…启用列表` | 这台机器没有 `gsettings` / 无会话总线 | 事实性跳过，身份链路照常 |
+
+启用之后尺寸就挂在那条 `notify::icon-size` 上了 ⇒ 改 `icon-size` 立刻生效，**不用重启程序**。
+
+
 ## C. 程序起不来
 
 ### C1. Electron / Chromium 类程序 FATAL 退出

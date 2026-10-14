@@ -195,8 +195,9 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 		add("私有状态目录", StatusWarn, state+" 不存在（首次启动会自动建）", "")
 	}
 
-	// ---- 6. the tray override table -------------------------------------------
+	// ---- 6. the tray override: the host table, and the shell-side size fix -----
 	rep.Findings = append(rep.Findings, TrayFinding(i, iconPath))
+	rep.Findings = append(rep.Findings, TrayExtFinding(p, i))
 
 	// ---- 7. the L5 rule (only for level=redirect) -----------------------------
 	//
@@ -413,6 +414,51 @@ func TrayFinding(i *inst.Instance, iconPath string) Finding {
 		f.Detail = fmt.Sprintf("%s 里 %q 指向 %s，不是本实例的图标", tray.Key, i.ID, e.Normal)
 	default:
 		f.Detail = fmt.Sprintf("%s → %s", i.ID, iconPath)
+	}
+	return f
+}
+
+// TrayExtFinding checks the shell-side half of the tray override.
+//
+// Two facts, and both have to hold before a twin icon follows the panel icon
+// size: the helper's files are in the user extension directory, and the shell
+// has the uuid in its enable list. The second is why this is Manual — the shell
+// scans extension directories once, at startup, so right after a first install
+// no command can enable the helper and the only honest answer is "log out
+// once". It stays a WARN rather than a FAIL because the override itself does
+// work without it; the icon is just drawn at the theme's size.
+func TrayExtFinding(p inst.Paths, i *inst.Instance) Finding {
+	f := Finding{Name: "托盘尺寸扩展", Status: StatusOK}
+	if !i.TrayOverride {
+		f.Detail = "按设置跳过（tray.override = false）"
+		return f
+	}
+	st := tray.CheckExt(p)
+	switch {
+	case !st.Installed:
+		// The files are not there at all, so the command is unambiguous —
+		// whether or not the enable list could be read. Installing the helper
+		// is its own command now: it is machine-wide, so an instance-level
+		// reinstall is the wrong verb for it and no longer does it.
+		f.Status, f.Manual = StatusWarn, true
+		f.Detail = tray.ExtUUID + " 不在 " + tray.ExtDir(p) + "（自定义图标会比面板图标小一圈）"
+		if st.Why != "" {
+			f.Detail += "；启用列表也读不到：" + st.Why
+		}
+		f.Fix = "twin install --ext"
+	case !st.Enabled && st.Why == "":
+		f.Status, f.Manual = StatusWarn, true
+		f.Detail = tray.ExtUUID + " 已装入但未启用（自定义图标仍按主题的 16px 画）"
+		f.Fix = tray.EnableHint()
+	case !st.Enabled:
+		// Installed, but the list itself could not be read. Saying "not
+		// enabled" here would send the reader to fix the wrong thing — the
+		// enable list is unreadable, which is a session-bus question.
+		f.Status, f.Manual = StatusWarn, true
+		f.Detail = tray.ExtUUID + " 已装入，但读不到 shell 的启用列表：" + st.Why
+		f.Fix = "在图形会话的终端里跑一次 twin install --ext（它会重新问一遍 shell）"
+	default:
+		f.Detail = tray.ExtUUID + " 已启用 → " + tray.ExtDir(p)
 	}
 	return f
 }

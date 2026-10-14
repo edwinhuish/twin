@@ -212,10 +212,10 @@ extra = []
 
 ## 4. 实例定义（`profile.yml`：工作副本与存档）
 
-**一份 schema，两处落点。** `twin gen` 把它写进当前目录的 `profile.yml`（工作副本，`twin install`
-读它）；`twin install` 把**同一份键**渲染进 `~/.local/share/twin/<id>/profile.yml`（存档快照，
-`twin reinstall` 读它）。两者的差别只有头注释里那句"改完敲哪个命令"，因为一个文件不该对着读者
-指一条会静默忽略它的命令。
+**一份 schema，两处落点，同一个名字。** `twin gen` 把它写进当前目录的 `profile.yml`（工作副本，
+`twin install` 读它）；`twin install` 把**同一份键**渲染进 `~/.local/share/twin/<id>/profile.yml`
+（存档快照，`twin reinstall` 读它）。名字相同是故意的：读者只要记住一个词，而"现在是哪一份"由
+头注释回答 —— 一个文件不该对着读者指一条会静默忽略它的命令。
 
 文件是 YAML：下面每个小节是一个键，表里的键名要拼成点号路径 —— `identity.level`
 指的就是 `identity:` 缩进块里的 `level:`。缩进只能用空格。

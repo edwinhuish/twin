@@ -12,6 +12,8 @@ import (
 	"github.com/edwinhuish/twin/internal/generate"
 	"github.com/edwinhuish/twin/internal/inst"
 	"github.com/edwinhuish/twin/internal/style"
+	"github.com/edwinhuish/twin/internal/sysx"
+	"github.com/edwinhuish/twin/internal/tray"
 	"github.com/edwinhuish/twin/internal/verify"
 )
 
@@ -438,5 +440,225 @@ func TestRuleKeyPrefersTheMatchedKey(t *testing.T) {
 	bare := &generate.Inspection{SourceDesktop: "/usr/share/applications/wechat.desktop"}
 	if got := ruleKeyFor(bare); got != "wechat" {
 		t.Errorf("ruleKeyFor fallback = %q, want wechat", got)
+	}
+}
+
+// ---------------------------------------------------------------- 托盘尺寸扩展
+
+// fakeGSettings puts a stand-in `gsettings` on PATH and *only* that, so
+// `gnome-extensions` is genuinely absent. That is the interesting first-install
+// state — the files go down, the shell has never heard of the uuid, and no
+// command on this machine can change that until the next login — and it is also
+// what keeps the test from ever running the real `gnome-extensions` against the
+// shell of whoever is running `go test`.
+func fakeGSettings(t *testing.T, list string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho \"" + list + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "gsettings"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// The one thing `twin install --ext` must not do is claim it finished: on a
+// first install the shell cannot load the helper yet, and that is a logout, not
+// a retry. So the files land, and the run ends with the manual step and exit 3.
+func TestInstallExtWritesTheFilesAndAsksForOneRelogin(t *testing.T) {
+	fakeGSettings(t, "[]")
+	p := inst.Paths{Home: t.TempDir()}
+
+	var code int
+	got := captureStdout(t, func() { code = cmdInstall(p, []string{"--ext"}) })
+	if code != exitHuman {
+		t.Errorf("文件装好了、只差一次注销重登 ⇒ 退出码应为 %d，得到 %d:\n%s", exitHuman, code, got)
+	}
+	for _, name := range tray.ExtFiles() {
+		if !sysx.Exists(filepath.Join(tray.ExtDir(p), name)) {
+			t.Errorf("%s 没落盘", name)
+		}
+	}
+	if !strings.Contains(got, "注销重登") {
+		t.Errorf("没说清那一步要人做：\n%s", got)
+	}
+	if !strings.Contains(got, "gnome-extensions enable "+tray.ExtUUID) {
+		t.Errorf("没给出要跑的那条命令：\n%s", got)
+	}
+}
+
+// --dry-run is the only switch that combines with --ext, and it must stay a
+// read: a rehearsal that wrote the extension directory would be the one thing a
+// rehearsal cannot be.
+func TestInstallExtDryRunWritesNothing(t *testing.T) {
+	fakeGSettings(t, "[]")
+	p := inst.Paths{Home: t.TempDir()}
+
+	var code int
+	got := captureStdout(t, func() { code = cmdInstall(p, []string{"--ext", "--dry-run"}) })
+	if code != exitOK {
+		t.Errorf("预演不是错误：%d\n%s", code, got)
+	}
+	if sysx.Exists(tray.ExtDir(p)) {
+		t.Error("--dry-run 写了盘")
+	}
+	if !strings.Contains(got, tray.ExtDir(p)) {
+		t.Errorf("预演要说清会写到哪：\n%s", got)
+	}
+}
+
+// The three instance switches are refused by name rather than ignored: silently
+// dropping -p would make `twin install --ext -p other.yml` look like it had read
+// that file. The last case is the old spelling of the machine-level half added
+// on top of the new one — the positional check has to win there too, or the two
+// spellings would each be half honoured.
+func TestInstallExtRefusesTheInstanceFlags(t *testing.T) {
+	cases := [][]string{
+		{"--ext", "-p", "other.yml"},
+		{"--ext", "--profile=other.yml"},
+		{"--ext", "--force"},
+		{"--ext", "--explain"},
+		{"extension", "--ext"},
+	}
+	for _, args := range cases {
+		fakeGSettings(t, "[]")
+		p := inst.Paths{Home: t.TempDir()}
+		var code int
+		var msg string
+		captureStdout(t, func() { msg = captureStderr(t, func() { code = cmdInstall(p, args) }) })
+		if code != exitUsage {
+			t.Errorf("%v: 退出码应为 %d，得到 %d（%s）", args, exitUsage, code, msg)
+		}
+		if msg == "" {
+			t.Errorf("%v: 拒绝了却什么都没说", args)
+		}
+	}
+}
+
+// A positional argument is refused whatever it says — `install` has none, and
+// that is what keeps the object position free of reserved words. Both mistakes
+// arrive here: an unknown name (`twin install wechat` reads like "install the
+// instance called wechat") and the word it used to take, so the message has to
+// name both the switch and -p.
+func TestInstallRefusesAPositionalAndNamesBothWays(t *testing.T) {
+	for _, word := range []string{"wechat", "extension"} {
+		p := inst.Paths{Home: t.TempDir()}
+		var code int
+		var msg string
+		captureStdout(t, func() { msg = captureStderr(t, func() { code = cmdInstall(p, []string{word}) }) })
+		if code != exitUsage {
+			t.Fatalf("%q: 退出码应为 %d，得到 %d（%s）", word, exitUsage, code, msg)
+		}
+		if !strings.Contains(msg, "--ext") {
+			t.Errorf("%q: 报错要给出现在那个开关：%s", word, msg)
+		}
+		if !strings.Contains(msg, "-p") {
+			t.Errorf("%q: 报错也要说明实例走 -p：%s", word, msg)
+		}
+	}
+}
+
+// install / reinstall only look. If this ever writes again, the helper is back
+// to being a side effect of wrapping one instance — and the switch that exists
+// to install it becomes a second way to do the same thing.
+func TestCheckTrayExtOnlyChecks(t *testing.T) {
+	fakeGSettings(t, "[]")
+	p := inst.Paths{Home: t.TempDir()}
+
+	got := checkTrayExt(p, &inst.Instance{ID: "demo2", TrayOverride: true})
+	if !strings.Contains(got, "twin install --ext") {
+		t.Errorf("缺扩展时要给出那个开关：%q", got)
+	}
+	if sysx.Exists(tray.ExtDir(p)) {
+		t.Error("install / reinstall 上的这一句碰了扩展目录：它只许看")
+	}
+
+	if got := checkTrayExt(p, &inst.Instance{ID: "demo2"}); !strings.Contains(got, "跳过") {
+		t.Errorf("tray.override = false 时应当跳过：%q", got)
+	}
+
+	// Both halves in place: the files are there and the shell's list names the
+	// uuid, which is the only state that may come out green.
+	fakeGSettings(t, "['"+tray.ExtUUID+"']")
+	if _, err := tray.EnsureExt(p); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkTrayExt(p, &inst.Instance{ID: "demo2", TrayOverride: true}); !strings.Contains(got, "已启用") {
+		t.Errorf("文件在、启用列表里也有它时应当报已启用：%q", got)
+	}
+}
+
+// The help for `install` is the only place the switch is explained, and the
+// usage block is the only place a user looks before typing it.
+func TestInstallHelpNamesTheMachineLevelSwitch(t *testing.T) {
+	if h := helpFooter["install"]; !strings.Contains(h, "--ext") {
+		t.Errorf("twin install -h 没提这个开关：%q", h)
+	}
+	if !strings.Contains(usage, "twin install --ext") {
+		t.Error("用法块里没有 `twin install --ext` —— 那是它唯一被看见的地方")
+	}
+}
+
+// `reinstall --ext` and `install --ext` are one action through two doors:
+// installing a configuration and replaying the snapshot it wrote differ only in
+// where the instance comes from, and the helper belongs to neither. So the
+// switch has to mean here exactly what it means there — including the exit code
+// that says the last step is a logout rather than a retry.
+func TestReinstallExtIsTheSameActionAsInstallExt(t *testing.T) {
+	fakeGSettings(t, "[]")
+	p := inst.Paths{Home: t.TempDir()}
+
+	var code int
+	got := captureStdout(t, func() { code = cmdReinstall(p, []string{"--ext"}) })
+	if code != exitHuman {
+		t.Errorf("与 install --ext 是同一件事 ⇒ 退出码也应当是 %d，得到 %d:\n%s", exitHuman, code, got)
+	}
+	for _, name := range tray.ExtFiles() {
+		if !sysx.Exists(filepath.Join(tray.ExtDir(p), name)) {
+			t.Errorf("%s 没落盘", name)
+		}
+	}
+	if !strings.Contains(got, "注销重登") {
+		t.Errorf("没说清那一步要人做：\n%s", got)
+	}
+}
+
+// ...and the arguments that mean nothing under --ext are refused by name rather
+// than dropped: an <id> names an instance the helper does not belong to, and
+// --refresh reads the snapshot, which is the instance half. --dry-run outside
+// --ext is the same rule seen from the other side — a replay writes the bytes
+// the install wrote, so there is nothing to rehearse, and a rehearsal that
+// looked like it had happened would be worse than the error.
+func TestReinstallRefusesWhatMeansNothing(t *testing.T) {
+	cases := [][]string{
+		{"--ext", "wechat2"},
+		{"--ext", "--refresh"},
+		{"wechat2", "--dry-run"},
+	}
+	for _, args := range cases {
+		fakeGSettings(t, "[]")
+		p := inst.Paths{Home: t.TempDir()}
+		var code int
+		var msg string
+		captureStdout(t, func() { msg = captureStderr(t, func() { code = cmdReinstall(p, args) }) })
+		if code != exitUsage {
+			t.Errorf("%v: 退出码应为 %d，得到 %d（%s）", args, exitUsage, code, msg)
+		}
+		if msg == "" {
+			t.Errorf("%v: 拒绝了却什么都没说", args)
+		}
+		if sysx.Exists(tray.ExtDir(p)) {
+			t.Errorf("%v: 被拒的那次运行碰了扩展目录", args)
+		}
+	}
+}
+
+// The same two places `install` has to say it: -h is where the switch is
+// explained, the usage block is what a user reads before typing anything.
+func TestReinstallHelpNamesTheMachineLevelSwitch(t *testing.T) {
+	if h := helpFooter["reinstall"]; !strings.Contains(h, "--ext") {
+		t.Errorf("twin reinstall -h 没提这个开关：%q", h)
+	}
+	if !strings.Contains(usage, "twin reinstall --ext") {
+		t.Error("用法块里没有 `twin reinstall --ext`")
 	}
 }

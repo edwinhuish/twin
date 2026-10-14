@@ -42,14 +42,14 @@ const (
 	exitHuman = 3
 )
 
-// DefaultProfileName is the configuration `twin gen` writes and `twin install`
-// reads when neither -o/--output nor -p/--profile says otherwise.
+// DefaultProfileName is the profile `twin gen` writes and `twin install` reads
+// when neither -o/--output nor -p/--profile says otherwise.
 //
 // It is deliberately a path in the current directory rather than one under
 // $HOME: the file is meant to be read, edited, diffed and committed, and the
 // directory the user is standing in is the one place they already chose. An
-// instance directory under ~/.local/share/twin holds the archive of what was
-// installed, which is a different thing with a different lifetime.
+// archive under ~/.local/share/twin/<id>/ carries the same name on purpose:
+// one schema, one word for it, and the header line is what tells the two apart.
 const DefaultProfileName = "profile.yml"
 
 // Colour is decided per stream, and decided here rather than at each print
@@ -113,9 +113,11 @@ const usage = `twin —— 程序双开
 用法:
   twin gen <source> [选项]                在当前目录生成一份配置（默认 ./profile.yml）
   twin install [选项]                     读那份配置并落盘：桌面项 / 图标 / 启动器 / 托盘
+  twin install --ext                      装入 shell 侧的托盘尺寸助手扩展（机器级，一次即可）
   twin inspect <source> [--name 显示名]   只看：源程序是什么、身份该怎么做
   twin verify <id>                        自检一个实例的身份链路
   twin reinstall <id> [--refresh]         按实例快照重新落盘
+  twin reinstall --ext                    同 twin install --ext（两个入口，同一件事）
   twin remove <id> [--yes] [--purge]      删除产物
   twin list                               列出全部实例
   twin doctor                             环境自检（先跑这个）
@@ -269,8 +271,16 @@ var helpFooter = map[string]string{
 		"    并在 install 时写进配置（bwrap.extra）。\n" +
 		"    ⚠️ 不享受 ~/ 展开与 mkdir 补齐；再写一个 `--`、写 --argv0、或写需要 fd 的选项都会被拒绝，\n" +
 		"       其余 token 只做 lint（警告），不改写。\n",
-	"install": "\n  twin install 不接受位置参数：要装哪一份配置用 -p 说，" +
-		"包哪个程序、隔离哪些目录是 twin gen 那一步决定的（都在那份文件里）。\n",
+	"install": "\n  twin install [选项]\n" +
+		"    不接受位置参数（实例不是位置参数：落盘哪一份配置用 -p 说）。\n" +
+		"    不带 --ext：读一份配置落盘 —— 包哪个程序、隔离哪些目录是 twin gen 那一步\n" +
+		"    决定的（都在那份文件里）。\n" +
+		"    带 --ext：只装入 shell 侧的托盘尺寸助手扩展（机器级、与实例无关，\n" +
+		"    只与 --dry-run 同用；装完之后要注销重登一次才启用得上）。\n",
+	"reinstall": "\n  twin reinstall <id> [--refresh] | --ext\n" +
+		"    给 <id>：按快照重新落盘，--refresh 才回读 config.toml / rules.d。\n" +
+		"    带 --ext：只装入 shell 侧的托盘尺寸助手扩展 —— 与 `twin install --ext` 是同一个\n" +
+		"    动作（因而也不带 <id>：机器级的东西不属于任何实例），同样只与 --dry-run 同用。\n",
 }
 
 // splitPassthrough cuts args at the first `--`. Everything left of it belongs
@@ -785,7 +795,7 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 			fail(err.Error())
 			return
 		}
-		fmt.Printf("\n%s\n%s", title("📄 配置内容（profile.yml）"), indent(body, "  "))
+		fmt.Printf("\n%s\n%s", title("📄 工作副本（profile.yml）"), indent(body, "  "))
 	}
 	fmt.Printf("\n%s\n", title("👉 下一步"))
 	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也能装）\n", outPath)
@@ -816,8 +826,13 @@ func cmdInstall(p inst.Paths, args []string) int {
 	var (
 		profilePath = fs.String("profile", "", "读哪一份配置（默认 ./profile.yml；与 -p 是同一个设置）")
 		force       = fs.Bool("force", false, "覆盖已存在但不是 twin 生成的桌面项；也允许落盘时遮蔽同名的系统桌面项")
-		dryRun      = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘将写入的行）")
+		dryRun      = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘覆盖将写入的行、尺寸扩展的当前状态）")
 		explain     = fs.Bool("explain", false, "打印完整说明（推导值、路径映射的修改粒度、规则模板、候选状态目录、整份自检、手工验证命令）")
+		// The machine-level half of install is a switch, not an object word:
+		// any bare word would also be a legal instance id (see the comment on
+		// the positional check below), and the object position is the one place
+		// where a reserved word would collide with a name a user can pick.
+		ext = fs.Bool("ext", false, "装入 shell 侧的托盘尺寸助手扩展（机器级，与实例无关；只与 --dry-run 同用）")
 	)
 	var shortProfile string
 	fs.StringVar(&shortProfile, "p", "", "读哪一份配置（--profile 的简写；两个拼写同时给是用法错误）")
@@ -825,14 +840,45 @@ func cmdInstall(p inst.Paths, args []string) int {
 	if err != nil {
 		return usageError(fs, err)
 	}
-	if len(pos) > 0 {
-		fail(fmt.Sprintf("twin install 不接受位置参数（收到 %q）：装哪份配置用 -p 指定，"+
-			"包哪个程序是在 `twin gen` 那一步说的", pos[0]))
-		return exitUsage
-	}
 	if *profilePath != "" && shortProfile != "" {
 		fail("同时给了 -p 和 --profile：它们是同一个设置，请只留一个")
 		return exitUsage
+	}
+	if len(pos) > 0 {
+		// `install` takes no positional argument, and that is load-bearing:
+		// every bare word is also a legal instance id (ValidateID accepts
+		// letters, digits, dot, dash and underscore), so a reserved object word
+		// would collide with a name the user is allowed to pick — `twin install
+		// extension` would write the shell helper while `twin remove extension`
+		// deletes an instance. The machine-level half is spelled as a switch
+		// instead, which has no such second reading.
+		//
+		// The message names that switch as well as -p, because the old
+		// spelling is what arrives here: `twin install extension`.
+		fail(fmt.Sprintf("twin install 不接受位置参数（收到 %q）——"+
+			"落盘哪一份配置用 -p 指定，包哪个程序是在 `twin gen` 那一步说的；"+
+			"装助手扩展走开关：`twin install --ext`", pos[0]))
+		return exitUsage
+	}
+	// --ext is the machine-level half of install: the helper serves every
+	// instance and outlives all of them, so it is not a property of the file -p
+	// names. The three instance switches would each be silently ignored here —
+	// the failure mode this tool exists to prevent — so they are refused by
+	// name rather than quietly dropped.
+	if *ext {
+		if *profilePath != "" || shortProfile != "" {
+			fail("twin install --ext 不读配置：-p/--profile 说的是实例落盘那一步")
+			return exitUsage
+		}
+		if *force {
+			fail("twin install --ext 没有 --force：它只写扩展目录里的两个文件，覆盖不覆盖由内容比对决定")
+			return exitUsage
+		}
+		if *explain {
+			fail("twin install --ext 没有 --explain：它要写什么已经全在输出里了")
+			return exitUsage
+		}
+		return installExt(p, *dryRun)
 	}
 	path := firstNonEmpty(*profilePath, shortProfile, DefaultProfileName)
 
@@ -1148,9 +1194,42 @@ func cmdList(p inst.Paths) int {
 func cmdReinstall(p inst.Paths, args []string) int {
 	fs := newFlags("reinstall")
 	refresh := fs.Bool("refresh", false, "重读 config.toml / rules.d：只补快照里为空的字段、只追加缺的 bwrap token，绝不改写已有值（默认只读快照）")
+	dryRun := fs.Bool("dry-run", false, "只打印，不落盘（只与 --ext 同用：重放快照是确定性的，没有可预演的东西）")
+	// The same switch with the same meaning as in `install`: installing a
+	// configuration and replaying the snapshot install wrote are one operation
+	// through two doors (they share installAndCheck), so the machine-level half
+	// has to be reachable from both — otherwise which commands exist would
+	// depend on which door you happened to come in by.
+	ext := fs.Bool("ext", false, "装入 shell 侧的托盘尺寸助手扩展（机器级，与实例无关；只与 --dry-run 同用）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
+	}
+	if *ext {
+		// The helper serves every instance and outlives all of them, so an
+		// <id> here would be an argument that gets silently dropped — the
+		// failure mode this tool exists to prevent. --refresh reads the
+		// snapshot, which is the instance half, so it goes for the same
+		// reason. What is left is exactly `twin install --ext`.
+		if len(pos) > 0 {
+			fail(fmt.Sprintf("twin reinstall --ext 不接受 <id>（收到 %q）——"+
+				"助手扩展是机器级的：装一次就服务所有实例，与哪一个实例无关", pos[0]))
+			return exitUsage
+		}
+		if *refresh {
+			fail("twin reinstall --ext 不读快照：--refresh 说的是实例重放那一步")
+			return exitUsage
+		}
+		return installExt(p, *dryRun)
+	}
+	if *dryRun {
+		// A replay is deterministic by design: it writes the bytes the install
+		// that made the snapshot wrote, so a rehearsal has nothing to add over
+		// `twin inspect <id>` — and silently ignoring the flag would leave the
+		// reader thinking a dry run had happened.
+		fail("twin reinstall 没有 --dry-run：重放快照是确定性的（产物与上次逐字节相同），" +
+			"要看它会写什么用 `twin inspect <id>`；预演只对 --ext 有意义")
+		return exitUsage
 	}
 	if len(pos) < 1 {
 		fail("缺少 <id>：twin list 看有哪些实例")
@@ -1239,7 +1318,11 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 
 	// The tray override is written here, before the self-check, so the check
 	// reads back what this run just did rather than a state from last time.
+	// The shell-side helper is only *looked at*: it is machine-wide, so it has
+	// its own switch (`twin install --ext`) and this run must not quietly
+	// change something that outlives the instance it was called for.
 	trayLine := applyTray(p, it)
+	extLine := checkTrayExt(p, it)
 	rep := verify.Run(it, p)
 
 	fmt.Printf("%s\n", report.lead)
@@ -1251,6 +1334,7 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		fmt.Printf("  L5 规则  %s\n", res.Rule)
 	}
 	fmt.Printf("  %s\n", trayLine)
+	fmt.Printf("  %s\n", extLine)
 	if report.verbose {
 		// The derived values are all already in profile.yml, and their whole
 		// point is to be visible — visible is profile.yml, not a wall of
@@ -1369,10 +1453,27 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 	// The tray row is host state, not a file, but it is still part of what a
 	// real run would change — so the rehearsal has to show it too.
 	if !it.TrayOverride {
-		fmt.Printf("\n%s\n  跳过（tray.override = false），不动宿主表\n", title("🔔 托盘覆盖"))
+		fmt.Printf("\n%s\n  跳过（tray.override = false），不动宿主表；尺寸扩展也不检查（它只为这一半服务）\n",
+			title("🔔 托盘覆盖"))
 	} else {
 		fmt.Printf("\n%s\n  %s\n  将写入 [('%s', '%s', '%s')]（合并，不覆盖别人的条目）\n",
 			title("🔔 托盘覆盖"), tray.Schema+" / "+tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
+		// The rehearsal has to show this too, and it has to show the *check*: the
+		// helper is machine-wide, so a real run looks at it and names the command
+		// that installs it — previewing a file write here would describe a
+		// different command than the one the user is about to run.
+		st := tray.CheckExt(p)
+		state := "已启用"
+		switch {
+		case !st.Installed:
+			state = "未装入（装它：twin install --ext）"
+		case !st.Enabled && st.Why == "":
+			state = "已装入但未启用 —— " + tray.EnableHint()
+		case !st.Enabled:
+			state = "已装入，但读不到启用列表（" + st.Why + "）"
+		}
+		fmt.Printf("  尺寸扩展 %s → %s\n  只检查，不写：它是机器级的，与这份配置无关\n",
+			tray.ExtUUID, state)
 	}
 	printDerived(report.der)
 	printPathMaps(p, it, insp, report.origin, report.fix, report.verbose)
@@ -1386,7 +1487,7 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 		fail(err.Error())
 		return
 	}
-	fmt.Printf("\n%s\n%s", title("📄 实例定义（profile.yml）"), indent(body, "  "))
+	fmt.Printf("\n%s\n%s", title("📄 存档快照（profile.yml）"), indent(body, "  "))
 	fmt.Printf("\n%s\n%s", title("📄 桌面项（"+filepath.Base(p.Desktop(it.ID))+"）"),
 		indent(generate.DesktopEntry(p, it, insp).Bytes(), "  "))
 	if it.Level == inst.LevelRedirect {
@@ -1617,6 +1718,113 @@ func applyTray(p inst.Paths, it *inst.Instance) string {
 		return "托盘覆盖 已是最新" + vague
 	}
 }
+
+// installExt is `twin install --ext`: the one place that puts the shell-side
+// half of the tray override on this machine.
+//
+// It is separate from the instance install on purpose. The helper is
+// machine-wide — one copy serves every wrapped program, and it outlives each of
+// them — so writing it from `twin install` made an optional fix a side effect of
+// an unrelated action, repeated on every replay and indistinguishable in the
+// output from the artefacts that really were this instance's. The install path
+// only *checks* it now and names the missing piece; this command is what changes
+// it.
+//
+// The one honest failure is "the files are there but the shell has not scanned
+// them yet": that is a login, not a retry, and it is reported as the manual step
+// it is (exit code 3), never as a FAIL.
+func installExt(p inst.Paths, dry bool) int {
+	dir := tray.ExtDir(p)
+	if dry {
+		fmt.Printf("%s\n", title("🔍 预演（--dry-run，未写盘）"))
+		fmt.Printf("  扩展目录 %s（内容相同则整个跳过，不碰 mtime —— shell 只在启动时读它）\n", dir)
+		for _, name := range tray.ExtFiles() {
+			fmt.Printf("  %s %s\n", outStyle.Dim("·"), filepath.Join(dir, name))
+		}
+		fmt.Printf("  然后请 shell 启用它：gnome-extensions enable %s\n", tray.ExtUUID)
+		fmt.Printf("  它是机器级的：装一次就服务所有实例，与 -p 那份配置无关。\n")
+		return exitOK
+	}
+
+	oc, err := tray.EnsureExt(p)
+	if err != nil {
+		fail("装入托盘尺寸扩展失败：" + err.Error())
+		return exitFail
+	}
+
+	lead := outStyle.Green(style.Glyph(style.LevelOK)+" 托盘尺寸扩展") + " " + outStyle.Bold(tray.ExtUUID)
+	fmt.Printf("%s\n", lead)
+	// Written or already right is the one thing the reader cannot tell from the
+	// exit code, and it is the whole reason ExtOutcome carries a flag for it.
+	if oc.Installed {
+		fmt.Printf("  文件     %s（本次写入／更新）\n", dir)
+	} else {
+		fmt.Printf("  文件     %s（与内嵌副本逐字节相同，没碰）\n", dir)
+	}
+	fmt.Printf("  作用     让指向自定义图标的托盘项跟着面板图标大小缩放（不动宿主扩展）\n")
+	switch {
+	case oc.Enabled:
+		fmt.Printf("  启用     已启用\n")
+	case oc.NeedsRelogin:
+		if oc.Detail != "" {
+			fmt.Printf("  启用     还没有 —— 在装的当下做不到（%s）\n", oc.Detail)
+		} else {
+			fmt.Printf("  启用     还没有 —— 在装的当下做不到\n")
+		}
+		fmt.Printf("\n%s\n", title(fmt.Sprintf("✋ 还差一步（脚本里写不了 —— 这就是退出码 %d 的含义）", exitHuman)))
+		fmt.Printf("  1. 注销重登一次：shell 只在启动时扫一遍扩展目录，它现在还不认识这个 uuid。\n")
+		fmt.Printf("  2. gnome-extensions enable %s\n", tray.ExtUUID)
+		fmt.Printf("  在此之前，自定义图标仍按主题的 16px 画 —— 覆盖表本身已经生效，只是画得小。\n")
+		return exitHuman
+	default:
+		fmt.Printf("  启用     状态未知\n")
+	}
+	return exitOK
+}
+
+// checkTrayExt reports the shell-side half of the tray override, and warns when
+// it is not there.
+//
+// It deliberately does not install it: the helper belongs to the machine while
+// the install that calls this belongs to one instance (see installExt above).
+// What is left to do here is exactly what the user asked for at wrap time — say
+// whether it is in place, and if not, name the one command that fixes it.
+//
+// The line is coloured and glyphed rather than quiet because a missing helper is
+// not a file this run forgot: it is a degraded tray icon that nothing else in
+// the output would mention. `verify` and the ✋ block repeat it with the same
+// wording, which is how every other not-OK check in this tool behaves.
+func checkTrayExt(p inst.Paths, it *inst.Instance) string {
+	if !it.TrayOverride {
+		return "托盘尺寸扩展 跳过（tray.override = false）"
+	}
+	st := tray.CheckExt(p)
+	const install = "twin install --ext"
+	switch {
+	case !st.Installed:
+		why := ""
+		if st.Why != "" {
+			why = "；启用列表也读不到：" + st.Why
+		}
+		return outStyle.Yellow(style.Glyph(style.LevelWarn) + " 托盘尺寸扩展 未装入 —— " +
+			"自定义图标会比面板图标小一圈（这是它的全部作用，其余照常）" + why +
+			"；装它：`" + install + "`")
+	case !st.Enabled:
+		if st.Why != "" {
+			return outStyle.Yellow(style.Glyph(style.LevelWarn) + " 托盘尺寸扩展 已装入，" +
+				"但读不到 shell 的启用列表：" + st.Why + "；在图形会话的终端里跑 `" + install + "` 重新问一遍")
+		}
+		return outStyle.Yellow(style.Glyph(style.LevelWarn) + " 托盘尺寸扩展 已装入但未启用 —— " +
+			"自定义图标仍按主题的 16px 画；" + tray.EnableHint())
+	default:
+		// Plain, like every other line in the artefact block: only the two
+		// not-OK cases below carry a verdict, because they are the ones the
+		// reader has to act on.
+		return "托盘尺寸扩展 " + tray.ExtUUID + " 已启用"
+	}
+}
+
+// applyTray points the host's tray override table at this instance, and returns
 
 // dropTray removes this instance's row from the host table. The table is global
 // and the row is a claim about a program that is about to stop existing, so

@@ -247,6 +247,15 @@ func (p Paths) RulesDir() string {
 	return filepath.Join(p.Home, ".config/twin/rules.d")
 }
 
+// ExtensionsDir is where the shell looks for *user* extensions. twin's tray
+// helper goes there and nowhere else: the system directory would need root, and
+// the point of the helper is that twin can install it without any. It is a
+// shared directory — every other user extension lives in it too, which is why
+// nothing but the helper's own subdirectory is ever written.
+func (p Paths) ExtensionsDir() string {
+	return filepath.Join(p.Home, ".local/share/gnome-shell/extensions")
+}
+
 // GlobalConfig is the environment layer: machine-scoped defaults. It is not the
 // same file as Profile(id), which is one instance's snapshot.
 func (p Paths) GlobalConfig() string {
