@@ -79,6 +79,11 @@
 
 ### Fixed
 
+- 图标合成先裁掉透明边距：官方图标画的时候留了约 4.5% 的透明边距（给不同桌面环境的间距差别
+  留余地），而程序自己往托盘发的位图是满铺的 —— 于是 twin 生成的图标在托盘里看着比它替换掉的那
+  张"小一圈"。这不是缩放比例不对，是画布里有空气：`Compose()` 现在先 `trimAlpha` 再 `scaleTo`，
+  让作品占满画布，并把这件事写进合成报告（只在真的裁掉东西时出现）。
+
 - 文档里残留的旧动词（`twin new` / `twin new --publish` / `twin regen`）：README、`docs/*` 与
   `CONTRIBUTING.md` 改成现行的 `twin gen` ＋ `twin install` / `twin reinstall <id> --refresh`。
   手工验收的命令补齐了两段式 —— `gen` 把 `profile.yml` 写在**当前目录**，原先那种写法会在仓库根目录

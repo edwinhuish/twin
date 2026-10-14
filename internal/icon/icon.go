@@ -108,7 +108,13 @@ func Compose(spec Spec, outPath string, size int) (*Report, error) {
 	sb := src.Bounds()
 	rep.SrcW, rep.SrcH = sb.Dx(), sb.Dy()
 
-	canvas := scaleTo(src, size, size)
+	tight, trimmed := trimAlpha(src)
+	canvas := scaleTo(tight, size, size)
+	if trimmed {
+		tb := tight.Bounds()
+		rep.Notes = append(rep.Notes, fmt.Sprintf(
+			"trimmed transparent padding: %dx%d → %dx%d", sb.Dx(), sb.Dy(), tb.Dx(), tb.Dy()))
+	}
 	if spec.Style != StyleDot {
 		drawBadge(canvas, spec.Badge, spec.Style)
 	} else {
@@ -306,6 +312,50 @@ func toRGBA(src image.Image) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
 	draw.Draw(dst, dst.Bounds(), src, b.Min, draw.Src)
 	return dst
+}
+
+// trimAlpha crops fully transparent rows and columns from the edges and reports
+// whether it changed anything.
+//
+// Launcher icons are drawn with a few percent of transparent padding, while a
+// program's own tray bitmap is drawn edge to edge. Keeping the padding makes
+// twin's icon render visibly smaller than the bitmap it replaces — the tray
+// shows the artwork, not the canvas. Cropping first lets the artwork fill the
+// canvas, which is also what the padded original looked like before whichever
+// window manager drew it on a matching background.
+//
+// An image with nothing opaque to crop to is returned unchanged.
+func trimAlpha(src image.Image) (image.Image, bool) {
+	rgba := toRGBA(src)
+	b := rgba.Bounds()
+	minX, minY := b.Max.X, b.Max.Y
+	maxX, maxY := b.Min.X-1, b.Min.Y-1
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if rgba.RGBAAt(x, y).A == 0 {
+				continue
+			}
+			if x < minX {
+				minX = x
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+	}
+	if maxX < minX || maxY < minY {
+		return src, false
+	}
+	if minX == b.Min.X && minY == b.Min.Y && maxX == b.Max.X-1 && maxY == b.Max.Y-1 {
+		return src, false
+	}
+	return rgba.SubImage(image.Rect(minX, minY, maxX+1, maxY+1)), true
 }
 
 func scaleTo(src image.Image, w, h int) *image.RGBA {
