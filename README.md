@@ -41,7 +41,8 @@ $ twin install wechat2  # 读它，落盘，然后自检这条身份链路的每
   "内核不放行非特权 userns、机器上又没有跳板"时的唯一退路，`twin install` 会问你密码去装它，
   **不给密码就用不了它**（那时打印 profile 全文，你自己决定）。
 - ❌ 不隔离网络（`isolation.unshare` 里出现 `net` 会被直接拒绝）
-- ❌ 不做"权限沙箱" —— 它给的是**身份**，不是安全边界
+- ❌ 不做"权限沙箱" —— 它给的是**身份**，不是安全边界。基座那一行就是整个宿主根（`--dev-bind / /`，
+  可写、设备可用）：沙箱在这里的职责是"换名字 ＋ 分开数据目录"，不是拦住不受信任的代码
 - ❌ 不提供 GUI（为什么不做，见 [`docs/architecture.md`](docs/architecture.md) §7）
 
 ## 30 秒上手
@@ -57,7 +58,7 @@ twin inspect wechat
 #    （命令结束时报出这个路径与下一步敲哪条命令）
 twin gen wechat
 
-# 3. 改定义（可选）：`bind` 那一节最容易猜错，每个键的说明都写在文件里的注释里
+# 3. 改定义（可选）：`bwrap.bind` 那一节最容易猜错，每个键的说明都写在文件里的注释里
 $EDITOR ~/.local/share/twin/wechat2/profile.yml
 
 # 4. 安装 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
@@ -167,43 +168,40 @@ mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files"
 mount_pair "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users"
 
 exec '/usr/bin/bwrap' \
-  '--ro-bind' '/' '/' \
-  '--dev' '/dev' \
-  '--dev-bind-try' '/dev/dri' '/dev/dri' \
-  '--proc' '/proc' \
-  '--bind' '/run/user' '/run/user' \
-  '--tmpfs' '/tmp' \
+  '--dev-bind' '/' '/' '--proc' '/proc' '--tmpfs' '/dev/shm' '--tmpfs' '/tmp' '--die-with-parent' '--setenv' 'TWIN_INSTANCE' 'wechat2' \
   '--overlay-src' '/opt/wechat' \
   '--tmp-overlay' '/opt/wechat' \
   '--ro-bind' '/opt/wechat/wechat' '/opt/wechat/wechat2' \
   '--bind' "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" \
   '--bind' "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" \
   '--bind' "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users" \
-  '--setenv' 'TWIN_INSTANCE' 'wechat2' \
-  '--die-with-parent' \
   -- \
   '/opt/wechat/wechat2' "$@"
 ```
 
 （上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
-`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端。）
+`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端。第二行那串 token 是一整份**来自
+`profile.yml` 的 `bwrap.args`**：`twin` 不知道任何 bwrap 选项的元数，所以不替它分行 —— 想换根、
+想加减隔离，改的就是那份定义里的这一串。）
 
 几处关键点，每一条都对应一次实测：
 
 1. `--overlay-src` 必须排在 `--ro-bind … 别名` **之前**，否则挂载点建不出来；
-2. `--bind /run/user /run/user` 必须排在 `--ro-bind / /` **之后**，否则 Wayland socket、
-   会话总线、PipeWire 全断；
+2. `profile.yml` 里那份选项列表排在**所有映射之前**：映射要能覆盖基座，就不能被基座覆盖
+   （bubblewrap 的规则是"后挂载遮蔽前者"）；
 3. 程序名写成 `/opt/wechat/wechat2`（别名，只在命名空间里存在）⇒ `/proc/self/exe` 的
    basename 就是 `wechat2`，`argv[0]` 默认也是它 ⇒ **窗口与托盘的 id 天然一致**；
-4. 每个 bind 的**两端**都要先在宿主机上存在 —— bwrap 看到的根是 `--ro-bind / /`，它自己建不了
-   挂载点（`Can't mkdir parents …: Read-only file system`）。但**形态要判**：一条映射的两端必须
+4. 每个 bind 的**两端**都要先在宿主机上存在。`--dev-bind / /` 之后 bwrap 其实建得出来，但它会把
+   挂载点建在**宿主的家目录**里；换成 `--ro-bind / /` 时更是完全建不了
+   （`Can't mkdir parents …: Read-only file system`）。而**形态要判**：一条映射的两端必须
    同形（bwrap：`Can't create file at <目录>: Is a directory`），而 `mkdir -p` 打在**文件**上会报
    `Already exists` 并让这份脚本死在 `set -e` 上 —— 所以形态按磁盘上**已有的那一端**决定，两端
    都没在时按目录。这样"源是文件"的映射（单个配置文件，如 `vlcrc`）才走得通，`twin install`
    也会按同一条规则把私有侧建成文件而不是目录。
 5. `/tmp` 必须是这两种之一：`--tmpfs /tmp`（空的私有 `/tmp`）或 `--bind /tmp /tmp`（宿主那个，
    可写）。只读的 `/tmp` 是最糟的一种 —— 建不出临时目录的程序会在别处报错：Chromium 会打印
-   `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。
+   `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。这一条写在
+   `bwrap.args` 里，就在根那一行的旁边。
 
 ## Electron / Chromium 的特殊情况
 
@@ -276,8 +274,10 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 `profile.yml` 是**这一个实例**的全部意图：`gen` 写它，`install <id>` 与 `reinstall <id>` 读它
 （两者读的是同一个文件，也都不会改写它）。定义放在别处（`-o` / `-p`）时，实例目录里那份才是
 `install` 写下的**存档记录**，`reinstall` 重放的是它。
-`config.toml` 不存在是正常的（用内置默认）。数组类字段（`tmpfs` / `bind` / `bwrap.extra`）
-按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。
+`config.toml` 不存在是正常的（用内置默认）。数组类字段（实例定义里的 `bwrap.args` /
+`bwrap.tmpfs` / `bwrap.bind`，规则文件里的 `tmpfs` / `bind` / `[bwrap] args`）
+按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。`bwrap.args` 是交给
+bwrap 的**完整**选项列表（沙箱基座也在里面），所以"这个程序拿到哪个根"在文件里看得见也改得动。
 
 ```bash
 twin config > ~/.config/twin/config.toml   # 生成一份带注释的模板

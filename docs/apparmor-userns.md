@@ -173,7 +173,7 @@ exec env ELECTRON_RUN_AS_NODE=1 \
   '/usr/share/code/code' \
   "$HOME/.local/share/twin/bin/bootstrap.js" \
   "$HOME/.local/share/twin/bin/bwrap" \
-  --ro-bind / / \
+  --dev-bind / / \
   ... \
   -- '/opt/WorkBuddy/workbuddy2' "$@"
 ```

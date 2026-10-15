@@ -9,6 +9,7 @@ import (
 	"github.com/edwinhuish/twin/internal/config"
 	"github.com/edwinhuish/twin/internal/desk"
 	"github.com/edwinhuish/twin/internal/inst"
+	"github.com/edwinhuish/twin/internal/sandbox"
 	"github.com/edwinhuish/twin/internal/sysx"
 )
 
@@ -535,7 +536,7 @@ func ruleInspection() *Inspection {
 		Keywords:   "wechat;微信;im",
 		Categories: "Utility;Chat;",
 		Tmpfs:      []string{"/tmp"},
-		Bwrap:      []string{"--rule-flag"},
+		Args:       []string{"--rule-flag"},
 	}
 	return insp
 }
@@ -563,8 +564,14 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	if got := derivationFor(der, "desktop.categories"); got == "" {
 		t.Error("规则提供的 categories 必须出现在推导来源里")
 	}
-	if len(it.Tmpfs) != 1 || it.Tmpfs[0] != "/tmp" {
-		t.Errorf("tmpfs = %v, want the rule's", it.Tmpfs)
+	// The rule's /tmp moves into the base's line — it is a fact about the root
+	// the base binds, so it is written where the root is — and must not be left
+	// in isolation.tmpfs as well, or the same mount would be printed twice.
+	if got := strings.Join(it.Args, " "); !strings.Contains(got, "--tmpfs /tmp") {
+		t.Errorf("规则给的 /tmp 没落到 bwrap.args 里：%q", got)
+	}
+	if len(it.Tmpfs) != 0 {
+		t.Errorf("tmpfs = %v，规则里那一条已经由基座表达了", it.Tmpfs)
 	}
 	if got := derivationFor(der, "tmpfs"); got == "" {
 		t.Error("规则提供的 tmpfs 必须出现在推导来源里")
@@ -621,26 +628,30 @@ func TestPlanLevelFromRuleThenConfig(t *testing.T) {
 	}
 }
 
-// The passthrough tail is concatenated low priority first, so the last writer
-// shadows an earlier mount on the same destination (bwrap's own rule).
-func TestPlanBwrapOrderIsConfigRuleCLI(t *testing.T) {
+// The option list is concatenated low priority first — the base twin writes,
+// then config, then rules.d, then the CLI — so the last writer shadows an
+// earlier mount on the same destination (bwrap's own rule), while the base
+// stays first, where the mappings emitted after the whole list can overrule it.
+func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 	cfg := config.Builtin()
-	cfg.Bwrap = []string{"--from-config"}
+	cfg.Args = []string{"--from-config"}
 
-	it, _, err := Plan(p, Options{Cfg: cfg, Bwrap: []string{"--from-cli"}}, ruleInspection())
+	it, der, err := Plan(p, Options{Cfg: cfg, Args: []string{"--from-cli"}}, ruleInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--from-config", "--rule-flag", "--from-cli"}
-	if len(it.Bwrap) != len(want) {
-		t.Fatalf("bwrap = %v, want %v", it.Bwrap, want)
+	base := sandbox.BaseArgs(it.ID, true)
+	want := append(append(append([]string(nil), base...), "--from-config"), "--rule-flag", "--from-cli")
+	if strings.Join(it.Args, " ") != strings.Join(want, " ") {
+		t.Fatalf("bwrap.args = %v, want %v", it.Args, want)
 	}
-	for i := range want {
-		if it.Bwrap[i] != want[i] {
-			t.Fatalf("bwrap = %v, want %v", it.Bwrap, want)
-		}
+	// The base's provenance has to be in the derivation log: it is the one part
+	// of this list the user did not write, and the whole point is that they can
+	// see it and change it.
+	if derivationFor(der, "bwrap.args") == "" {
+		t.Error("基座必须出现在推导来源里")
 	}
 }
 
@@ -651,7 +662,7 @@ func TestPlanBlamesTheLayerForABadToken(t *testing.T) {
 	p := inst.Paths{Home: t.TempDir()}
 	cfg := config.Builtin()
 	cfg.Path = "/home/x/.config/twin/config.toml"
-	cfg.Bwrap = []string{"--argv0"}
+	cfg.Args = []string{"--argv0"}
 
 	_, _, err := Plan(p, Options{Cfg: cfg}, ruleInspection())
 	if err == nil {
@@ -661,7 +672,7 @@ func TestPlanBlamesTheLayerForABadToken(t *testing.T) {
 		t.Errorf("错误应指出是 config.toml 里的，得到 %v", err)
 	}
 
-	_, _, err = Plan(p, Options{Bwrap: []string{"--argv0"}}, ruleInspection())
+	_, _, err = Plan(p, Options{Args: []string{"--argv0"}}, ruleInspection())
 	if err == nil || !strings.Contains(err.Error(), "命令行") {
 		t.Errorf("命令行透传的错误应点名命令行，得到 %v", err)
 	}
@@ -682,7 +693,7 @@ func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
 	}
 	it.Level = inst.LevelAlias
 	cfg := config.Builtin()
-	cfg.Bwrap = []string{"--from-config"}
+	cfg.Args = []string{"--from-config"}
 
 	notes, err := Refresh(it, ruleInspection(), cfg)
 	if err != nil {
@@ -694,8 +705,8 @@ func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
 	if it.Categories == "" {
 		t.Error("空的 categories 应当被补上")
 	}
-	if len(it.Bwrap) != 2 {
-		t.Fatalf("bwrap = %v, want config + rule", it.Bwrap)
+	if strings.Join(it.Args, " ") != "--from-config --rule-flag" {
+		t.Fatalf("bwrap.args = %v, want config + rule（基座属于定义本身，--refresh 不碰它）", it.Args)
 	}
 	if len(notes) == 0 {
 		t.Error("补了东西就该说出来")
@@ -711,21 +722,30 @@ func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
 	}
 }
 
+// Both spellings have to be read: the base's line in bwrap.args (what `twin
+// gen` writes) and a hand-written entry in isolation.tmpfs. Missing the first
+// one would let the warning go quiet exactly where it matters — a Wayland
+// instance replayed in an X11 session.
 func TestSessionWarning(t *testing.T) {
-	it := &inst.Instance{ID: "x", Tmpfs: []string{"/tmp"}, Target: "/bin/true"}
+	fromArgs := &inst.Instance{ID: "x", Target: "/bin/true",
+		Args: []string{"--dev-bind", "/", "/", "--tmpfs", "/tmp"}}
+	fromTmpfs := &inst.Instance{ID: "x", Tmpfs: []string{"/tmp"}, Target: "/bin/true"}
+	neither := &inst.Instance{ID: "x", Target: "/bin/true",
+		Args: []string{"--dev-bind", "/", "/", "--bind", "/tmp", "/tmp"}}
 
-	t.Setenv("WAYLAND_DISPLAY", "")
-	if SessionWarning(it) == "" {
-		t.Error("有 tmpfs 但会话没有 WAYLAND_DISPLAY，应当警告")
+	for name, it := range map[string]*inst.Instance{"bwrap.args": fromArgs, "isolation.tmpfs": fromTmpfs} {
+		t.Setenv("WAYLAND_DISPLAY", "")
+		if SessionWarning(it) == "" {
+			t.Errorf("%s 里有 tmpfs /tmp 而会话没有 WAYLAND_DISPLAY，应当警告", name)
+		}
+		t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+		if SessionWarning(it) != "" {
+			t.Errorf("%s：Wayland 会话下不该警告", name)
+		}
 	}
-	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-	if SessionWarning(it) != "" {
-		t.Error("Wayland 会话下不该警告")
-	}
-	it.Tmpfs = nil
 	t.Setenv("WAYLAND_DISPLAY", "")
-	if SessionWarning(it) != "" {
-		t.Error("没有 tmpfs 时不该警告")
+	if SessionWarning(neither) != "" {
+		t.Error("没有盖住 /tmp 时不该警告")
 	}
 }
 

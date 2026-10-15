@@ -97,7 +97,7 @@ Keywords   微信;wechat;
   · /usr/bin/wechat 是指向 /opt/wechat/wechat 的链接 —— 别名要建在 /opt/wechat 里（$ORIGIN 与 /proc/self/exe 都看真实路径）
   · Wayland 原生 + 静态链接的 Qt：窗口 app_id 由 Qt 从可执行文件真实路径派生（已实测）
   · 同时含 Wayland 与 X11 平台插件：本会话有 WAYLAND_DISPLAY 时按 Wayland 走
-  · 应用规则 wechat：内置规则（3 条路径映射 ⇒ 定义里的 bind）
+  · 应用规则 wechat：内置规则（3 条路径映射 ⇒ bwrap.bind）
 ```
 
 `显示名` / `说明` 打印的是**语言化**取值（`Name[<当前语言>]` 优先），因为 `wrap` 就是这么
@@ -122,7 +122,7 @@ Keywords   微信;wechat;
 | 命令 | 做什么 |
 |---|---|
 | `twin gen wechat` | 写一份配置（默认 `~/.local/share/twin/wechat2/profile.yml`；id、显示名、路径映射全部推导出来写进去），然后说清文件落在哪、下一步敲什么 |
-| `$EDITOR ~/.local/share/twin/wechat2/profile.yml` | 改 `bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
+| `$EDITOR ~/.local/share/twin/wechat2/profile.yml` | 改 `bwrap.bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
 | `twin install wechat2` | 读那份定义 → 落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 检查托盘扩展 ＋ 自检。`twin reinstall wechat2` 是同一个动作的另一个入口 |
 | `twin install --ext` | 装入 shell 侧的托盘扩展（机器级；`install` / `reinstall` 只检查它）。`twin reinstall --ext` 是同一个动作的另一个入口 |
 
@@ -148,7 +148,7 @@ $ twin gen wechat
 ```
 
 `gen` 的输出刻意短：它只做两件事 —— **只写一个文件**（桌面项、图标、启动器、私有状态目录都等
-`install`），并且**把落点指出来**。逐键的说明、`bind` 的语义、`rules.d` 的存在，全都写在**那份文件
+`install`），并且**把落点指出来**。逐键的说明、`bwrap.bind` 的语义、`rules.d` 的存在，全都写在**那份文件
 的注释里**：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件两处说法各表一套。
 要看推导值与**这一份配置的**路径映射一节，加 `--explain`。
 
@@ -157,7 +157,7 @@ $ twin gen wechat
 ```console
 $ twin gen foo
 ✅ 已写出配置 /home/you/.local/share/twin/foo2/profile.yml
-  ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind
+  ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bwrap.bind
 
 👉 下一步
   …
@@ -245,7 +245,7 @@ shell 下次扫扩展目录（注销重登一次）；那一步连同原因一�
 `reinstall <id>` 重放 —— 那份才是"上次到底装了什么"的存档。
 
 路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
-抢同一个锁文件时才暴露。两个命令各有各的交代方式：`gen` 把它写进配置的 `bind`（连同"空着意味着
+抢同一个锁文件时才暴露。两个命令各有各的交代方式：`gen` 把它写进配置的 `bwrap.bind`（连同"空着意味着
 什么"的注释），只在一条都没有时于终端补一句警告；`install` 把它展开成单独一节，因为它这时已经
 变成了启动器里的 `--bind`。这一节说明共有几条、知识来自哪一层（内置规则 / `rules.d` / **这一份
 配置**）。
@@ -313,7 +313,7 @@ $ twin install wechat2            # 标准输入不是终端
   共用  ~/Documents/xwechat_files:~/Documents/xwechat_files   （原地升回可写，数据不搬家）
   私有  ~/.local/state/twin/wechat2/all_users:~/Documents/xwechat_files/all_users
   改：~/.config/twin/rules.d/wechat.toml —— 影响这个程序以后新建的实例（twin rules --init wechat 生成草稿）
-      只改这一个：编辑 /home/you/.local/share/twin/wechat2/profile.yml 里的 bind，再 twin install wechat2
+      只改这一个：编辑 /home/you/.local/share/twin/wechat2/profile.yml 里的 bwrap.bind，再 twin install wechat2
 
   📋 照抄下面这份（就是规则文件的全部内容）：
 
@@ -326,7 +326,7 @@ $ twin install wechat2            # 标准输入不是终端
     ]
 
   源:目标 ⇒ 私有副本，两个实例互不干扰；单写一条路径 ⇒ 与该目录共用，只把只读升回可写；
-  源:目标:ro ⇒ 只读挂载。
+  源:目标:ro ⇒ 只读挂载；源:目标:dev ⇒ 带设备访问（--dev-bind，给设备节点目录用）。
 ```
 
 模板里的 `{id}` 占位符 —— 本实例的私有状态目录会被写回成 `~/.local/state/twin/{id}` —— 照抄出来的
@@ -350,7 +350,7 @@ $ twin install wechat2            # 标准输入不是终端
     ~/.local/state/foo                           目录存在
     要隔离就先生成一份规则草稿：twin rules --init foo
   改：~/.config/twin/rules.d/foo.toml —— 影响这个程序以后新建的实例（twin rules --init foo 生成草稿）
-      只改这一个：编辑 /home/you/.local/share/twin/foo2/profile.yml 里的 bind，再 twin install foo2
+      只改这一个：编辑 /home/you/.local/share/twin/foo2/profile.yml 里的 bwrap.bind，再 twin install foo2
 ```
 
 #### 机器级的那一份：`--ext`（`install` 与 `reinstall` 同形）
@@ -534,13 +534,19 @@ $ twin reinstall -h    # 重放存档的那一个开关
 它读的那份文件里。
 
 **路径映射没有 CLI 选项**，两条路都是文件：`rules.d/<程序>.toml` 管这个程序**以后新建**的实例，手上
-那份配置的 `bind` 管**这一个**。一条映射正是最该在安装任何东西**之前**被读一遍的东西，而命令行参数
+那份配置的 `bwrap.bind` 管**这一个**。一条映射正是最该在安装任何东西**之前**被读一遍的东西，而命令行参数
 没人会回头再看第二眼 —— 所以它先落成文件（见 [`configuration.md`](configuration.md)）。
 
 `--` 透传区的形式、边界与它写进哪个键，都在 `-h` 里（它不是 flag，PrintDefaults 打不出来，所以那几行
-是手写的）。这里只留 `-h` 装不下的那条**理由**：透传参数拼在**基座之后** ⇒ 同目标的挂载由**它**
-胜出（bubblewrap 自己就是"后挂载遮蔽前者"），所以它不是一个"额外选项"，而是**覆盖 bwrap 基座**的那
-只手 —— 这也是为什么它的校验只到 lint 为止：改写它等于替用户猜他要覆盖什么。
+是手写的）。这里只留 `-h` 装不下的那条**理由**：它写进实例定义 `bwrap.args` 的**尾部**（基座与
+config/rules 层之后），所以同目标的挂载由**它**胜出（bubblewrap 自己就是"后挂载遮蔽前者"）——
+它不是一个"额外选项"，而是这份定义里最终说话的那几个 token。而 `bwrap.args` 整份又排在路径映射
+**之前**，于是两件事同时成立：映射覆盖基座，`--` 覆盖基座。校验只到 lint 为止：改写它等于替用户猜
+他要覆盖什么。
+
+**基座也在 `bwrap.args` 里**（`gen` 写的那几条，见
+[`configuration.md`](configuration.md) §4）—— 这正是"不要偷偷给 bwrap 加参数"的落点：想换根
+（比如把 `--dev-bind / /` 换成 `--ro-bind / /`）就是改那份定义里的一行，不必去猜 twin 还加了什么。
 
 ---
 
@@ -637,16 +643,18 @@ $ twin reinstall -h    # 重放存档的那一个开关
 # 让两份实例彻底分家（连配置目录一起隔离）：映射写进定义，再安装
 twin gen wechat --as wx-alt
 $EDITOR ~/.local/share/twin/wx-alt/profile.yml
-#   bind:
-#     - ~/.local/state/twin/wx-alt/config:~/.config/wechat
-#     - ~/.local/state/twin/wx-alt/xwechat:~/.xwechat
+#   bwrap:
+#     bind:
+#       - ~/.local/state/twin/wx-alt/config:~/.config/wechat
+#       - ~/.local/state/twin/wx-alt/xwechat:~/.xwechat
 twin install wx-alt
 
 # 一个只想多开小号、其它全共享的浏览器
 twin gen google-chrome --as chrome-alt
 $EDITOR ~/.local/share/twin/chrome-alt/profile.yml
-#   bind:
-#     - ~/.local/state/twin/chrome-alt/profile:~/.config/google-chrome
+#   bwrap:
+#     bind:
+#       - ~/.local/state/twin/chrome-alt/profile:~/.config/google-chrome
 twin install chrome-alt
 
 # 底层的额外隔离（透传）

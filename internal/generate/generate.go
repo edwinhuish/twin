@@ -36,10 +36,12 @@ type Options struct {
 	// which is what `regen` uses: replaying a snapshot must not depend on a
 	// file the user may have edited since (设计 §3.5 rule three).
 	Cfg *config.Config
-	// Bwrap is the CLI `--` passthrough region: bubblewrap option tokens that
-	// twin forwards verbatim (设计 §2). It is not parsed here; inst.Check
+	// Args is the CLI `--` region: bubblewrap option tokens forwarded verbatim
+	// (设计 §2). They are appended to the instance's own list, behind its base
+	// and its global/rule layers, and they land in the file from then on — this
+	// is a seed, not a launch-time override. Nothing here is parsed; inst.Check
 	// only refuses the three token classes that cannot work.
-	Bwrap   []string
+	Args    []string
 	NoTmpfs bool
 	// NoTray opts this one instance out of the host tray override. The
 	// machine-wide switch is config.toml's defaults.tray_override; either one
@@ -206,12 +208,12 @@ func Inspect(p inst.Paths, source string) (*Inspection, error) {
 			where = rule.Path
 		}
 		insp.Notes = append(insp.Notes, fmt.Sprintf(
-			"应用规则 %s：%s（%d 条路径映射 ⇒ bind）", matched, where, len(insp.Presets)))
+			"应用规则 %s：%s（%d 条路径映射 ⇒ bwrap.bind）", matched, where, len(insp.Presets)))
 	} else {
 		insp.Notes = append(insp.Notes,
 			"没有该程序的状态路径知识：本实例只做身份包裹。若它有单实例锁或共享配置，"+
 				"在 "+p.RulesDir()+"/"+key+".toml 里写一条 bind（twin rules --init "+key+" 生成草稿），"+
-				"或只给这一个实例改那份定义里的 bind")
+				"或只给这一个实例改那份定义里的 bwrap.bind")
 	}
 	return insp, nil
 }
@@ -369,7 +371,6 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		BadgeStyle: firstNonEmpty(o.BadgeStyle, cfg.Defaults.BadgeStyle, icon.StyleCorner),
 		Target:     insp.Target,
 		Alias:      id,
-		Env:        map[string]string{},
 		NestedNS:   insp.Traits.NeedsNestedNS,
 	}
 	if level.Renames() {
@@ -435,6 +436,17 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	default:
 		it.Tmpfs = nil
 	}
+	// The /tmp half of that decision does not stay in the list: it is a fact
+	// about the root the base binds, so it is written where the root is — a line
+	// of bwrap.args (see sandbox.BaseArgs). Both branches have to leave /tmp
+	// *writable*; which one it is now says so in the file instead of being
+	// decided invisibly at launch, and leaving the same mount in isolation.tmpfs
+	// as well would print it twice in the command line, where twin has no
+	// conflict rule to hide it.
+	privateTmp := tmpfsCovers(it.Tmpfs, "/tmp")
+	if privateTmp {
+		it.Tmpfs = withoutPath(it.Tmpfs, "/tmp")
+	}
 
 	// Path maps come from the rule and from nowhere else. There is deliberately
 	// no CLI flag for them: a mapping is the one thing in a wrap that varies
@@ -448,19 +460,33 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		})
 	}
 
-	// Passthrough tail, low priority first (设计 §3.5 rule two). Later tokens
-	// shadow earlier mounts on the same destination, so putting the global
-	// default first is enough to make the CLI win — no conflict resolution
-	// code is owed.
-	it.Bwrap = append(it.Bwrap, cfg.Bwrap...)
+	// bwrap.args, low priority first (设计 §3.5 rule two): the base twin writes
+	// for this instance, then the global default, then the rule, then the
+	// command line's `--` region. Later tokens shadow earlier mounts on the same
+	// destination, so no conflict-resolution code is owed — and the base is
+	// first for exactly that reason: everything that has to be able to overrule
+	// it (a path mapping, the alias overlay) is emitted after this whole list.
+	//
+	// The base goes into the file rather than staying in the sandbox builder.
+	// Which root a program gets is the decision that varies most per program
+	// (a program that touches devices cannot live under a read-only root), and
+	// the only way to change a hard-coded one was the `--` region — which lands
+	// at the *end*, where binding the root again shadows every mapping before
+	// it. Writing it here is what makes the option list the file's business.
+	if level.Renames() {
+		base := sandbox.BaseArgs(id, privateTmp)
+		it.Args = append(it.Args, base...)
+		note("bwrap.args", strings.Join(base, " "), "gen 写的沙箱基座（要改就在这份定义里改）")
+	}
+	it.Args = append(it.Args, cfg.Args...)
 	if rule != nil {
-		it.Bwrap = append(it.Bwrap, rule.Bwrap...)
+		it.Args = append(it.Args, rule.Args...)
 	}
-	it.Bwrap = append(it.Bwrap, o.Bwrap...)
-	if len(it.Bwrap) == 0 {
-		it.Bwrap = nil
+	it.Args = append(it.Args, o.Args...)
+	if len(it.Args) == 0 {
+		it.Args = nil
 	}
-	for _, tok := range it.Bwrap {
+	for _, tok := range it.Args {
 		if err := inst.CheckBwrapToken(tok); err != nil {
 			return nil, nil, fmt.Errorf("%s：%w", bwrapSource(o, rule, cfg), err)
 		}
@@ -486,26 +512,26 @@ func ruleOrigin(r *config.Rule) string {
 // bwrapSource guesses which layer a rejected token came from, so the error can
 // point at the file to edit instead of the whole merge.
 func bwrapSource(o Options, r *config.Rule, c *config.Config) string {
-	if len(o.Bwrap) > 0 {
-		for _, tok := range o.Bwrap {
+	if len(o.Args) > 0 {
+		for _, tok := range o.Args {
 			if inst.CheckBwrapToken(tok) != nil {
-				return "命令行 `--` 透传的 " + tok
+				return "命令行 `--` 传的 " + tok
 			}
 		}
 	}
 	if r != nil {
-		for _, tok := range r.Bwrap {
+		for _, tok := range r.Args {
 			if inst.CheckBwrapToken(tok) != nil {
 				return ruleOrigin(r) + " 里的 " + tok
 			}
 		}
 	}
-	for _, tok := range c.Bwrap {
+	for _, tok := range c.Args {
 		if inst.CheckBwrapToken(tok) != nil {
-			return c.Path + " [bwrap] extra 里的 " + tok
+			return c.Path + " [bwrap] args 里的 " + tok
 		}
 	}
-	return "bwrap 透传 token"
+	return "bwrap.args 里的 token"
 }
 
 // freeID returns the smallest unused name of the form <base><n>, n >= 2.
@@ -980,21 +1006,23 @@ func Refresh(it *inst.Instance, insp *Inspection, cfg *config.Config) ([]string,
 
 	// The bwrap region is additive by nature, so refreshed tokens are appended
 	// rather than substituted; a token that is already in the list is skipped,
-	// which keeps the operation idempotent.
+	// which keeps the operation idempotent. The base is not touched: it is part
+	// of the definition, and `--refresh` only ever adds what the environment
+	// layers say (设计 §3.5).
 	var want []string
-	want = append(want, cfg.Bwrap...)
+	want = append(want, cfg.Args...)
 	if rule != nil {
-		want = append(want, rule.Bwrap...)
+		want = append(want, rule.Args...)
 	}
 	for _, tok := range want {
-		if containsToken(it.Bwrap, tok) {
+		if containsToken(it.Args, tok) {
 			continue
 		}
 		if err := inst.CheckBwrapToken(tok); err != nil {
 			return notes, err
 		}
-		it.Bwrap = append(it.Bwrap, tok)
-		notes = append(notes, "bwrap.extra += "+tok)
+		it.Args = append(it.Args, tok)
+		notes = append(notes, "bwrap.args += "+tok)
 	}
 
 	if len(notes) > 0 {
@@ -1009,11 +1037,58 @@ func Refresh(it *inst.Instance, insp *Inspection, cfg *config.Config) ([]string,
 // session it is about to run in. It is a warning, not a rewrite: the snapshot
 // records intent, and silently changing it here is the thing regen must not do.
 func SessionWarning(it *inst.Instance) string {
-	if len(it.Tmpfs) == 0 || os.Getenv("WAYLAND_DISPLAY") != "" {
+	if os.Getenv("WAYLAND_DISPLAY") != "" || !tmpfsHidesTmp(it) {
 		return ""
 	}
-	return "定义里有 --tmpfs " + strings.Join(it.Tmpfs, " ") +
-		"，但当前会话没有 WAYLAND_DISPLAY：程序若退到 X11 就连不上 X（/tmp/.X11-unix/X0 已被屏蔽）"
+	return "定义里给 /tmp 盖了 tmpfs，但当前会话没有 WAYLAND_DISPLAY：" +
+		"程序若退到 X11 就连不上 X（/tmp/.X11-unix/X0 已被屏蔽）"
+}
+
+// tmpfsHidesTmp asks whether the definition hides /tmp behind an empty tmpfs.
+//
+// Two spellings have to be read, because the definition may hold it either way:
+// the line the base carries in bwrap.args (what `twin gen` writes, see
+// sandbox.BaseArgs), or an entry someone kept in isolation.tmpfs by hand.
+//
+// Matching one literal pair is not the arity table the passthrough region
+// refuses to build (设计 §2.1): the pattern is one option name twin itself
+// writes, nothing is derived from the match, and the only thing it feeds is the
+// session warning above.
+func tmpfsHidesTmp(it *inst.Instance) bool {
+	if tmpfsCovers(it.Tmpfs, "/tmp") {
+		return true
+	}
+	for n, tok := range it.Args {
+		if tok == "--tmpfs" && n+1 < len(it.Args) && strings.TrimRight(it.Args[n+1], "/") == "/tmp" {
+			return true
+		}
+	}
+	return false
+}
+
+// tmpfsCovers reports whether a tmpfs list covers path. Entries are compared
+// with trailing slashes ignored: "/tmp/" and "/tmp" are the same directory to
+// everyone except a shell.
+func tmpfsCovers(list []string, path string) bool {
+	for _, e := range list {
+		if strings.TrimRight(e, "/") == path {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutPath returns list minus every entry that names path (same comparison),
+// and keeps "no list" and "empty list" apart the way profile.yml does.
+func withoutPath(list []string, path string) []string {
+	var out []string
+	for _, e := range list {
+		if strings.TrimRight(e, "/") == path {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func containsToken(list []string, tok string) bool {

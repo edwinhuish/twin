@@ -174,7 +174,7 @@ func TestEnsureMountPointsCreatesFilesForFileMappings(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------- passthrough
+// ---------------------------------------------------------------- option list
 
 func passthroughInstance(extra ...string) *inst.Instance {
 	return &inst.Instance{
@@ -184,27 +184,73 @@ func passthroughInstance(extra ...string) *inst.Instance {
 		BadgeStyle: "corner",
 		Target:     "/opt/wechat/wechat",
 		Alias:      "wechat2",
-		Bwrap:      extra,
+		// A real instance carries a base: twin does not add one any more, so an
+		// instance without it is one bwrap would start with nothing mounted.
+		Args: append(BaseArgs("wechat2", false), extra...),
 	}
 }
 
-// The passthrough must land after the base and before the program — that
-// placement is exactly what gives it the final word on a shared mount target.
-func TestBuildAppendsPassthroughLast(t *testing.T) {
+// The base twin writes into the definition: every branch has to leave /tmp
+// *writable*, because a read-only /tmp is what a read-only root quietly
+// produced — Chromium reports it as "[process_singleton_posix.cc] Failed to
+// create socket directory", a message about a socket from a program the user
+// only just wrapped. Which branch it is has to be visible in the file, so both
+// spellings are asserted here rather than left to a launch-time decision.
+func TestBaseArgsKeepsTmpWritable(t *testing.T) {
+	cases := []struct {
+		name       string
+		privateTmp bool
+		want       []string
+		absent     []string
+	}{
+		{"私有 /tmp", true, []string{"--tmpfs", "/tmp"}, []string{"--bind /tmp /tmp"}},
+		{"宿主 /tmp", false, []string{"--bind /tmp /tmp"}, []string{"--tmpfs /tmp"}},
+	}
+	for _, c := range cases {
+		args := BaseArgs("wechat2", c.privateTmp)
+		joined := strings.Join(args, " ")
+		for _, want := range append([]string{
+			"--dev-bind / /",
+			"--proc /proc",
+			"--tmpfs /dev/shm",
+			"--die-with-parent",
+			"--setenv TWIN_INSTANCE wechat2",
+		}, c.want...) {
+			if !strings.Contains(joined, want) {
+				t.Errorf("%s：基座里没有 %q：%s", c.name, want, joined)
+			}
+		}
+		for _, a := range c.absent {
+			if strings.Contains(joined, a) {
+				t.Errorf("%s：两个方向不该同时出现（%q）：%s", c.name, a, joined)
+			}
+		}
+	}
+}
+
+// The option list is the definition's, emitted first and verbatim. It has to
+// come *before* the mappings: `--dev-bind / /` binds the host root, and putting
+// it after them would shadow every one of them.
+func TestBuildEmitsTheDefinitionsArgsFirst(t *testing.T) {
 	i := passthroughInstance("--unshare-pid", "--setenv", "TWIN_FOO", "bar")
+	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := plan.Groups[len(plan.Groups)-1]
-	want := []string{"--unshare-pid", "--setenv", "TWIN_FOO", "bar"}
-	if strings.Join(last, " ") != strings.Join(want, " ") {
-		t.Fatalf("passthrough is not the last group: %q", last)
+	first := plan.Groups[0]
+	if strings.Join(first, " ") != strings.Join(i.Args, " ") {
+		t.Fatalf("第一组应当就是定义里那份选项列表，得到 %q，want %q", first, i.Args)
 	}
-	// ...immediately after --die-with-parent, i.e. after the whole base.
-	prev := plan.Groups[len(plan.Groups)-2]
-	if len(prev) != 1 || prev[0] != "--die-with-parent" {
-		t.Fatalf("passthrough is not directly after the base: %q", prev)
+	// Everything twin derives comes after it, so a mapping can overrule a base
+	// mount the way bwrap promises (the later mount wins).
+	for _, g := range plan.Groups[1:] {
+		if len(g) == 0 {
+			continue
+		}
+		if g[0] == "--dev-bind" {
+			t.Fatalf("派生出来的参数排在了选项列表里面：%q", g)
+		}
 	}
 	// The argv must carry the separator twin owns.
 	argv := plan.Argv()
@@ -225,39 +271,106 @@ func TestBuildNoSeparatorWithoutBwrap(t *testing.T) {
 	}
 }
 
-// /tmp has to come out writable in **both** branches, and which branch it is has
-// to be visible in the plan: the tmpfs one is an empty private /tmp, the other
-// is the host's own. A read-only /tmp is not a third option — it is what the
-// read-only root quietly produced, and what Chromium reports as "[process_
-// singleton_posix.cc] Failed to create socket directory".
-func TestBuildKeepsTmpWritable(t *testing.T) {
-	cases := []struct {
-		name   string
-		tmpfs  []string
-		want   string
-		absent []string
-	}{
-		{"没有 tmpfs ⇒ 用宿主那个 /tmp", nil, "--bind /tmp /tmp", []string{"--tmpfs /tmp"}},
-		{"tmpfs /tmp ⇒ 空的那一个", []string{"/tmp"}, "--tmpfs /tmp", []string{"--bind /tmp /tmp"}},
-		{"尾斜杠也算 tmpfs", []string{"/tmp/"}, "--tmpfs /tmp/", []string{"--bind /tmp /tmp"}},
-		{"tmpfs 别的目录时 /tmp 仍要可写", []string{"/home/edwin/private"},
-			"--bind /tmp /tmp", []string{"--tmpfs /tmp"}},
+// Extra tmpfs entries are the definition's, and they land *after* the option
+// list. /tmp is deliberately not among them: it is a decision about the root the
+// base binds, so it is written in the file where the root is — twin adding one
+// here would be exactly the invisible argument this design removed.
+func TestBuildEmitsExtraTmpfsButNeverInventsTmp(t *testing.T) {
+	i := passthroughInstance()
+	i.Tmpfs = []string{"/var/cache/wechat"}
+	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		i := passthroughInstance()
-		i.Tmpfs = c.tmpfs
-		plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
-		if err != nil {
-			t.Fatal(err)
+	args := strings.Join(plan.Args(), " ")
+	if !strings.Contains(args, "--tmpfs /var/cache/wechat") {
+		t.Errorf("argv 里没有那份 tmpfs 列表：%s", args)
+	}
+	if strings.Contains(args, "--tmpfs /tmp") {
+		t.Errorf("Build 自己补了 /tmp 的 tmpfs —— 那一条只该来自定义：%s", args)
+	}
+}
+
+// The mode is the reason a mapping is not just two paths: `:ro` hands over
+// somebody else's data, `:dev` lets a directory of device nodes through, and
+// the bare form is the private copy everything else is built from.
+func TestBuildMapsEachModeToItsFlag(t *testing.T) {
+	i := passthroughInstance()
+	i.Binds = []inst.Bind{
+		{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
+		{Source: "/usr/share/wechat/theme.conf", Target: "~/.config/wechat/theme.conf", ReadOnly: true},
+		{Source: "/dev/dri", Target: "/dev/dri", Dev: true},
+	}
+	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(plan.Args(), " ")
+	for _, want := range []string{
+		"--bind /home/edwin/.local/state/twin/wechat2/xwechat /home/edwin/.xwechat",
+		"--ro-bind /usr/share/wechat/theme.conf /home/edwin/.config/wechat/theme.conf",
+		"--dev-bind /dev/dri /dev/dri",
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("argv 里没有 %q：%s", want, args)
 		}
-		args := strings.Join(plan.Args(), " ")
-		if !strings.Contains(args, c.want) {
-			t.Errorf("%s：argv 里没有 %q：%s", c.name, c.want, args)
+	}
+}
+
+// 形状化的挂载出现在它们必须出现的位置上：tmpfs 在映射之前（先盖空，再把数据挂进去），
+// remount-ro 在所有挂载之后（否则它收紧的那条挂载会把它盖回去，又变回可写），
+// 而 setenv 与顺序无关，收在最后。
+func TestBuildEmitsTheShapedMountsInOrder(t *testing.T) {
+	i := passthroughInstance()
+	i.Args = []string{"--dev-bind", "/", "/"}
+	i.Proc = "/proc"
+	i.Tmpfs = []string{"/var/cache/wechat"}
+	i.RemountRO = []string{"/var/cache/secrets"}
+	i.Env = []inst.EnvVar{{Key: "TWIN_FOO", Value: "bar"}}
+	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
+	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Join(plan.Args(), " ")
+	// The paths are folded to absolute form on the way out; the relative order
+	// is what this test is about.
+	order := []string{
+		"--dev-bind / /",
+		"--proc /proc",
+		"--tmpfs /var/cache/wechat",
+		"--overlay-src /opt/wechat",
+		"--bind /home/edwin/.local/state/twin/wechat2/xwechat /home/edwin/.xwechat",
+		"--remount-ro /var/cache/secrets",
+		"--setenv TWIN_FOO bar",
+	}
+	at := -1
+	for _, want := range order {
+		idx := strings.Index(argv, want)
+		if idx < 0 {
+			t.Fatalf("argv 里没有 %q：%s", want, argv)
 		}
-		for _, a := range c.absent {
-			if strings.Contains(args, a) {
-				t.Errorf("%s：两个方向不该同时出现（%q）：%s", c.name, a, args)
-			}
+		if idx < at {
+			t.Errorf("%q 排在它该在的位置之前：%s", want, argv)
+		}
+		at = idx
+	}
+}
+
+// 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在 args 里，是文件里
+// 看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其不能再被凭空加回来。
+func TestBuildEmitsNothingForEmptyShapedMounts(t *testing.T) {
+	i := passthroughInstance()
+	i.Args = []string{"--ro-bind", "/", "/"}
+	i.Proc, i.Tmpfs, i.RemountRO, i.Env = "", nil, nil, nil
+	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Join(plan.Args(), " ")
+	for _, unwanted := range []string{"--proc", "--tmpfs", "--remount-ro", "--setenv"} {
+		if strings.Contains(argv, unwanted) {
+			t.Errorf("空的 %s 不该发出任何东西：%s", unwanted, argv)
 		}
 	}
 }
@@ -286,7 +399,7 @@ func TestBuildRedirectRenamesLikeAlias(t *testing.T) {
 	}
 }
 
-func TestRenderLauncherCarriesPassthroughAndSeparator(t *testing.T) {
+func TestRenderLauncherCarriesTheOptionListAndSeparator(t *testing.T) {
 	i := passthroughInstance("--unshare-pid")
 	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
@@ -298,8 +411,10 @@ func TestRenderLauncherCarriesPassthroughAndSeparator(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(body)
-	if !strings.Contains(got, "'--unshare-pid' \\\n") {
-		t.Errorf("launcher dropped the passthrough token:\n%s", got)
+	for _, want := range []string{"'--dev-bind' '/' '/'", "'--unshare-pid'"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("launcher dropped %s from the option list:\n%s", want, got)
+		}
 	}
 	if !strings.Contains(got, "  -- \\\n") {
 		t.Errorf("launcher is missing twin's own `--`:\n%s", got)

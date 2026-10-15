@@ -191,22 +191,27 @@ twin doctor | grep -A2 userns
 
 ### C2. X11 程序报 `cannot open display` / `No protocol specified`
 
-**根因**：`--tmpfs /tmp` 把 `/tmp/.X11-unix/X0` 一起砍掉了。
+**根因**：基座那一行的 `--tmpfs /tmp` 把 `/tmp/.X11-unix/X0` 一起砍掉了。
 
 ```bash
-twin gen <source> --no-tmpfs && twin install
+# 改那一行（它是这份定义里的文本，不是 twin 的常量）
+$EDITOR ~/.local/share/twin/<id>/profile.yml      # --tmpfs /tmp → --bind /tmp /tmp
+twin reinstall <id>
+# 或者重新推导一次：twin gen <source> --no-tmpfs && twin install
 ```
 
-去掉 tmpfs 之后 `/tmp` 不是"什么都没有"，而是宿主那个 `/tmp`（**可写**，X11 socket 也在里面）——
-所以 `--no-tmpfs` 不会顺带带来另一个问题（见 C5）。
+换成 `--bind /tmp /tmp` 之后 `/tmp` 不是"什么都没有"，而是宿主那个 `/tmp`（**可写**，X11 socket
+也在里面）—— 所以这一步不会顺带带来另一个问题（见 C5）。
 
-`twin inspect` 的 `/tmp 策略` 一节会告诉你这个程序是 Wayland 还是 X11。同时支持两套的
-程序会有一条警告：它今天走 Wayland，但哪天真退到 X11，`--tmpfs /tmp` 就会踩这个坑。
+`twin gen --explain` 的 `/tmp 策略` 一节会告诉你这个程序是 Wayland 还是 X11。同时支持两套的
+程序会有一条警告：它今天走 Wayland，但哪天真退到 X11，`--tmpfs /tmp` 就会踩这个坑 ——
+那时改的也是 `bwrap.args` 里那一行。
 
 ### C3. 程序起不来，报 `Can't create file: Read-only file system`（或 `Can't mkdir …`）
 
-**根因**：一条路径映射的**目标**（程序看到那一侧）在沙箱里不存在，而基座是 `--ro-bind / /` ——
-只读的根里建不出挂载点。
+**根因**：一条路径映射的**目标**（程序看到那一侧）在沙箱里不存在，而沙箱的根是只读的 ——
+只读的根里建不出挂载点。（`twin gen` 写的基座是 `--dev-bind / /`，根是可写的，bwrap 其实建得出来
+—— 但它会把挂载点建在**宿主的家目录**里。所以"先把两端建出来"这一步一直留在启动器里。）
 
 `twin` 会在挂载**两端**都先建出来（`twin install` 建自己那一侧，生成的启动器每次启动前再确认
 一遍），所以正常情况不会遇到。若你在**透传区**手工写了 bind，那就踩了透传区"不享受这套补齐"这条：
@@ -253,8 +258,9 @@ abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 
 ### C5. 程序报 `Failed to create socket directory` / `mktemp: Read-only file system`
 
-**根因**：沙箱里的 `/tmp` 是**只读**的 —— 实例落盘时 `/tmp` 既不在 `isolation.tmpfs` 里，也没被
-显式挂成可写（`--ro-bind / /` 之后它默认只读）。
+**根因**：沙箱里的 `/tmp` 是**只读**的 —— 这份定义的 `bwrap.args` 里既没有 `--tmpfs /tmp`
+也没有 `--bind /tmp /tmp`，`bwrap.tmpfs` 里也没有 `/tmp`（改了那一行、或把根换成了 `--ro-bind / /`
+而没补回来的实例会这样）。
 
 **最典型的一例**是 Chromium / Electron：单实例锁的 socket 目录建在 `base::GetTempDir()`
 （`$TMPDIR`，否则 `/tmp`）下的一个 `mkdtemp` 里，建不出来就打
@@ -262,15 +268,16 @@ abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 一条关于 socket 的报错，看着像 profile 出了问题。
 
 ```bash
-twin reinstall <id>                                  # 重新落盘，启动器会带上 /tmp 的明确决定
-grep -n "tmpfs\|'--bind' '/tmp'" ~/.local/share/twin/<id>/launch
+grep -n "tmpfs\|/tmp" ~/.local/share/twin/<id>/profile.yml   # 决定就写在这份定义里
 ```
 
-修复后的启动器里 `/tmp` 必定是这两种之一：`--tmpfs /tmp`（空的私有 `/tmp`）或
-`--bind /tmp /tmp`（宿主那个 `/tmp`，可写）。若两条都没有，说明这份启动器是旧版本落的盘。
+修复后必定有这两种之一：基座那一行的 `--tmpfs /tmp`（空的私有 `/tmp`）或 `--bind /tmp /tmp`
+（宿主那个 `/tmp`，可写）—— 或者 `bwrap.tmpfs: ["/tmp"]`（它在命令里排在基座之后，所以哪怕基座
+那条是 `--bind`，这几条也会把它盖成空的 tmpfs）。若三条都没有，说明这份定义是旧版本写的
+（那时基座在 twin 里，`bwrap.extra` 只装你追加的 token）—— 重新 `twin gen` 一份。
 
-⚠️ 别用"把 `/tmp` 加进 `isolation.tmpfs`"来救 X11 的程序：那样连 `/tmp/.X11-unix/X0` 一起没了
-（见 C2）。X11 那一路要的正是宿主那个可写的 `/tmp`。
+⚠️ 反过来，别用"把 `/tmp` 加进 `bwrap.tmpfs`"来救 X11 的程序：那样连 `/tmp/.X11-unix/X0` 一起
+没了（见 C2）。X11 那一路要的正是宿主那个可写的 `/tmp`。
 
 ### C6. `错误：HOME is not set`
 

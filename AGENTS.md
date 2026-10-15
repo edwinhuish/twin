@@ -152,9 +152,9 @@ style → {}    ← 只有标准库
    **一个 id 一份**：这份配置要在下一个 shell、明天、别人的 bug 报告里都还找得到，而"当前目录"
    只是这次站的地方，两份 wrap 挤同一个文件名还会互相覆盖 —— 想写到别处就显式 `-o`。
    定义里的路径还可以**写成相对的**，基准是那份文件自己所在的目录（`inst.Load` 解析，见 §5"两段式"）
-   —— 一个 bundle 因此能整体搬走。唯一不解析的是 `bwrap.extra`（透传区逐 token 照搬，猜不出哪个是
-   路径），而 `rules.d` 里的相对路径被指名拒绝：规则服务这个程序的所有实例，它没有"自己所在目录"
-   这个基准。
+   —— 一个 bundle 因此能整体搬走。唯一不解析的是 `bwrap.args`（那是一份 bwrap 选项列表，逐 token
+   照搬，猜不出哪个是路径），而 `rules.d` 里的相对路径被指名拒绝：规则服务这个程序的所有实例，
+   它没有"自己所在目录"这个基准。
 8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
    stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
    （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
@@ -182,19 +182,34 @@ style → {}    ← 只有标准库
     而默认值属于"猜错了一个字都不会有人告诉你"的那类信息。PrintDefaults 打不出来的用法
     （`--` 透传区、`install <id> | -p` 的二选一）进 `cmd/twin/main.go` 的 `helpFooter`，也不进文档。
     文档只写**为什么**：这个命令是干什么的、这条边界对应哪次实测。
-14. **挂载点两端同形，形态看磁盘。** bwrap 的根是只读的（`--ro-bind / /`），它建不了挂载点；
-    而一条映射的两端必须是同一种东西（文件挂到目录上 bwrap 直接拒绝），`mkdir -p` 打在文件上
-    还会报 `Already exists` 并让 `set -e` 的启动器在 exec 之前死掉。所以两端都建，形态由**磁盘上
-    已有的那一端**决定，两端都没在时按目录。这条规则有**两份实现**，各管一段时间：生成的
-    启动器里是 `sandbox.mountHelpers` 的 `mount_point` / `mount_pair`（每次启动判一次），
+14. **挂载点两端同形，形态看磁盘。** bwrap 的根在基座里定（`gen` 写的是 `--dev-bind / /`，可写；
+    换成 `--ro-bind / /` 它就建不了挂载点），而一条映射的两端必须是同一种东西（文件挂到目录上
+    bwrap 直接拒绝），`mkdir -p` 打在文件上还会报 `Already exists` 并让 `set -e` 的启动器在 exec
+    之前死掉。所以两端都建，形态由**磁盘上已有的那一端**决定，两端都没在时按目录 —— 可写根下也
+    照建：省掉它，bwrap 会把挂载点建到**宿主的家目录**里。这条规则有**两份实现**，各管一段时间：
+    生成的启动器里是 `sandbox.mountHelpers` 的 `mount_point` / `mount_pair`（每次启动判一次），
     install 里是 `sandbox.EnsureMountPoints`（落盘时判一次，否则一个被造成目录的私有副本会一直
     留着 —— 启动器不碰已经存在的路径）。**改一处必须改两处**。
-15. **`/tmp` 两条路都必须可写。** `--ro-bind / /` 把宿主的 `/tmp` 变成**只读**，而没被
-   `isolation.tmpfs` 盖住的 `/tmp` 恰好落在这个状态：建不出临时目录的程序会在跟 twin 无关的
-   地方炸（Chromium 的单实例 socket → `process_singleton_posix.cc: Failed to create socket
-   directory`，Electron 实测）。所以 `sandbox.Build` 在不 tmpfs 时补 `--bind /tmp /tmp` ——
-   X11 那一路要的正是宿主那个 `/tmp`（tmpfs 会把 `/tmp/.X11-unix/X0` 一起带走）。往
-   `isolation.tmpfs` 加新目录之前先问：去掉它之后这里还写得进去吗。
+15. **沙箱基座是文件里的一段文本，不是 Go 里的常量。** `sandbox.BaseArgs` 只负责在 `gen` 时把它
+   **写进** `profile.yml` 的 `bwrap.args`（`--dev-bind / /` ＋ `--proc /proc` ＋ `--tmpfs /dev/shm`
+   ＋ `/tmp` 那条 ＋ `--die-with-parent` ＋ `--setenv TWIN_INSTANCE <id>`），`sandbox.Build` 一字不
+   改地照发，并把这份列表排在**所有映射之前**；twin 不再自己补任何 bwrap 选项。之所以这么费劲：
+   "这个程序拿到哪个根"是定义里唯一随程序而变、又曾经完全表达不了的决定 —— 基座原先是硬编码的
+   `--ro-bind / /`，要碰设备的程序只能从透传区开口，而透传区排在所有映射**之后**，在那里重新绑
+   一次根会把前面的挂载全盖掉。**`/tmp` 那一条同样属于基座**（`bwrap.tmpfs` 只装**额外**要盖成
+   空目录的路径，`gen` 会把落在它里面的 `/tmp` 归一化到基座那一行，免得同一处挂载印两遍），而且
+   两个方向都必须是**可写**的：建不出临时目录的程序会在跟 twin 无关的地方炸（Chromium 的单实例
+   socket → `process_singleton_posix.cc: Failed to create socket directory`，Electron 实测）。
+   走 tmpfs 的程序拿空的私有 `/tmp`，X11 那一路拿宿主那个 —— tmpfs 会把 `/tmp/.X11-unix/X0`
+   一起带走。映射写在**同层的 `bwrap.bind`**（它和 `args` 是同一次调用的两半，所以共用一个节点；
+   `rules.d` 里那条仍在顶层，那是应用知识、不是一个 bwrap 调用），顶层 `bind` **指名报错** ——
+   读成"没有映射"会让程序看不见自己的文件，而那时离这次编辑已经很远。旧键 `bwrap.extra`
+   （instance / config.toml / rules.d 三处同名）同理；会改名的 level 之下 `bwrap.args` 为空也
+   **指名报错** —— 少了根挂载，程序会在一个什么都没挂的命名空间里"找不到自己"，而那条失败信息里
+   不会有一个字提到 twin。同一个节点下还有四个**有形状的挂载**（`proc` / `tmpfs` / `remountRO` /
+   `env`，见 `inst.toTree`）：空值发出零个参数，`Build` 按文件里的键序发它们，`remountRO` 排在所有
+   挂载之后（只能作用在自己就是一条挂载的路径上，实测）。往 `bwrap.tmpfs` 加新目录之前先问：
+   去掉它之后这里还写得进去吗。
 16. **启动器里每一步失败都要自己说一句话。** 桌面项启动的进程没有终端，脚本死在 `exec` 之前
    在用户眼里就是"点了没反应"，而这是 `verify`/`doctor` 补不回来的（等到能跑它们的时候，用户
    早忘了刚才点过什么）。所以 `mount_point` / `mount_pair` / `exec` 后面都跟着
@@ -248,9 +263,9 @@ style → {}    ← 只有标准库
 - 配置里的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
   **丢掉**注释 —— 这也是 install 不能重写定义的原因：写回一次，手写的注释就没了。
 - **定义里的路径可以写成相对的**，基准是那份文件自己所在的目录：`inst.Load` 解析一次
-  （`resolvePath`），下游每个读者拿到的是同一个绝对路径。读者自己解析不行 —— 那等于按"用户当时站
-  在哪个目录"解析。`~` 仍然留给 `Paths.Expand` 在用的时候折叠成本机 HOME（§4.7）。`bwrap.extra`
-  照旧不解析（§4.3 的透传区规矩），`rules.d` 里的相对路径被 `config.checkRulePaths` 指名拒绝。
+  （  `resolvePath`），下游每个读者拿到的是同一个绝对路径。读者自己解析不行 —— 那等于按"用户当时站
+  在哪个目录"解析。`~` 仍然留给 `Paths.Expand` 在用的时候折叠成本机 HOME（§4.7）。`bwrap.args`
+  照旧不解析（§4.3 的规矩），`rules.d` 里的相对路径被 `config.checkRulePaths` 指名拒绝。
 - 前后两半不靠重新推导 id 相认，而靠 `<id>`（或 `-p` 显式指的那份文件）：一次 `gen` 只写一份
   配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到 `wechat3`。
 - `install` 接 `<id>` 或 `-p <文件>`，`len(pos) > 1`、两者都给、以及一个都不给都直接报错：

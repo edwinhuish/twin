@@ -3,6 +3,7 @@ package inst
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -25,9 +26,14 @@ func base() *Instance {
 		BadgeStyle: "corner",
 		Target:     "/opt/wechat/wechat",
 		Alias:      "wechat2",
-		Env:        map[string]string{},
+		Proc:       "/proc",
 		Tmpfs:      []string{"/tmp"},
-		Bwrap:      []string{"--unshare-pid", "--setenv", "TWIN_FOO", "bar"},
+		RemountRO:  []string{"~/.ssh"},
+		// Two pairs, and the second one has a colon in its *value*: the file
+		// spelling has to survive that (`PATH:/a:/b` splits at the first colon
+		// and nowhere else).
+		Env:  []EnvVar{{Key: "TWIN_FOO", Value: "bar"}, {Key: "PATH", Value: "/a:/b"}},
+		Args: []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar"},
 		Binds: []Bind{
 			{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
 		},
@@ -98,8 +104,8 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	if len(out.Tmpfs) != 1 || out.Tmpfs[0] != "/tmp" {
 		t.Errorf("tmpfs lost: %+v", out.Tmpfs)
 	}
-	if strings.Join(out.Bwrap, " ") != strings.Join(in.Bwrap, " ") {
-		t.Errorf("bwrap passthrough lost: %q", out.Bwrap)
+	if strings.Join(out.Args, " ") != strings.Join(in.Args, " ") {
+		t.Errorf("bwrap args lost: %q", out.Args)
 	}
 	if out.CommentEn != in.CommentEn || out.Keywords != in.Keywords || out.Categories != in.Categories {
 		t.Errorf("desktop overrides lost: comment_en=%q keywords=%q categories=%q",
@@ -167,28 +173,35 @@ func TestLoadReadsThePreSectionSpelling(t *testing.T) {
 }
 
 // The Docker Compose spelling, source first: the private copy is where the data
-// lives, ~/.xwechat is where the program looks for it.
+// lives, ~/.xwechat is where the program looks for it. The entries live under
+// `bwrap`, next to the option list they are emitted with — a mapping is another
+// argument of the same invocation, not a separate subject.
 func TestRenderWritesBindsAsDockerSpecs(t *testing.T) {
 	data, err := base().Render()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "- ~/.local/state/twin/wechat2/xwechat:~/.xwechat") {
-		t.Errorf("bind 条目没写进快照：\n%s", data)
+	s := string(data)
+	if !strings.Contains(s, "\n  bind:\n") {
+		t.Errorf("bind 应当是 bwrap 节点下的一个键：\n%s", s)
+	}
+	if !strings.Contains(s, "\n    - ~/.local/state/twin/wechat2/xwechat:~/.xwechat\n") {
+		t.Errorf("bind 条目没写进 bwrap 节点：\n%s", s)
 	}
 }
 
-// An instance with no passthrough still has to say so, or a reader cannot tell
-// "nothing extra" from "the key was forgotten".
-func TestRenderAlwaysWritesBwrapExtra(t *testing.T) {
+// An instance with an empty option list still has to say so, or a reader cannot
+// tell "there is nothing to pass" from "the key was forgotten".
+func TestRenderAlwaysWritesBwrapArgs(t *testing.T) {
 	it := base()
-	it.Bwrap = nil
+	it.Args = nil
+	it.Level = LevelNone // an empty list is only legitimate without a sandbox
 	data, err := it.Render()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "extra: []") {
-		t.Errorf("empty passthrough is not visible in the snapshot:\n%s", data)
+	if !strings.Contains(string(data), "args: []") {
+		t.Errorf("empty option list is not visible in the snapshot:\n%s", data)
 	}
 	// And it must round-trip as empty, not as a one-element list.
 	dir := t.TempDir()
@@ -200,8 +213,71 @@ func TestRenderAlwaysWritesBwrapExtra(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Bwrap) != 0 {
-		t.Errorf("empty passthrough came back as %q", out.Bwrap)
+	if len(out.Args) != 0 {
+		t.Errorf("empty option list came back as %q", out.Args)
+	}
+}
+
+// twin no longer keeps a sandbox base of its own, so an empty option list is a
+// namespace with nothing mounted: the program would not find itself, and
+// nothing in the failure would name twin. Refusing here is the only place that
+// can say which file to fix.
+func TestCheckRefusesEmptyArgsWithASandbox(t *testing.T) {
+	it := base()
+	it.Args = nil
+	err := it.Check()
+	if err == nil || !strings.Contains(err.Error(), "bwrap.args") {
+		t.Fatalf("空 bwrap.args 必须被拒绝并指名那个键，得到 %v", err)
+	}
+	// Level none runs no bubblewrap at all, so an empty list there is honest.
+	plain := base()
+	plain.Level = LevelNone
+	plain.Args = nil
+	if err := plain.Check(); err != nil {
+		t.Errorf("level=none 不过 bwrap，空列表不该是错误：%v", err)
+	}
+}
+
+// `bwrap.extra` was only what the user appended; `bwrap.args` is the whole
+// list, base included. Reading one as the other would hand bwrap a namespace
+// with no root — a launch that fails for reasons that never mention twin.
+func TestLoadRefusesTheOldExtraKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProfileName)
+	body := `id: demo
+exec:
+  target: /opt/demo/demo
+bwrap:
+  extra:
+    - --unshare-pid
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "bwrap.args") {
+		t.Fatalf("旧写法必须指名报错（它现在是另一个键、另一套语义），得到 %v", err)
+	}
+}
+
+// `bind` 从顶层搬进 `bwrap` 之后，一份老定义里的顶层 bind 不能再被当成空列表读掉：
+// 前者描述"程序的数据挂在哪"，后者描述"什么都没挂"，而后者会一直到程序看不见自己的文件
+// 才暴露，那时离这次编辑已经很远了。
+func TestLoadRefusesTheTopLevelBindKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProfileName)
+	body := `id: demo
+exec:
+  target: /opt/demo/demo
+bind:
+  - ~/.local/state/twin/demo/x:~/.x
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "bwrap.bind") {
+		t.Fatalf("顶层 bind 必须指名报错并给出新位置，得到 %v", err)
 	}
 }
 
@@ -278,7 +354,7 @@ func TestCheckAcceptsRedirect(t *testing.T) {
 	}
 }
 
-// The three passthrough classes that must never reach bwrap (设计 §2.4).
+// The three token classes that must never reach bwrap (设计 §2.4).
 func TestCheckRefusesForbiddenPassthrough(t *testing.T) {
 	cases := []struct{ tok, why string }{
 		{"--", "it would truncate bwrap's own option parsing"},
@@ -291,7 +367,7 @@ func TestCheckRefusesForbiddenPassthrough(t *testing.T) {
 	}
 	for _, c := range cases {
 		it := base()
-		it.Bwrap = []string{c.tok}
+		it.Args = []string{c.tok}
 		if err := it.Check(); err == nil {
 			t.Errorf("CheckBwrapToken(%q) must be refused: %s", c.tok, c.why)
 		}
@@ -300,7 +376,7 @@ func TestCheckRefusesForbiddenPassthrough(t *testing.T) {
 
 func TestCheckAcceptsOrdinaryPassthrough(t *testing.T) {
 	it := base()
-	it.Bwrap = []string{"--unshare-pid", "--unshare-uts", "--setenv", "TWIN_FOO", "bar", "--chdir", "/tmp"}
+	it.Args = []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar", "--chdir", "/tmp"}
 	if err := it.Check(); err != nil {
 		t.Fatalf("ordinary bwrap tokens must pass: %v", err)
 	}
@@ -332,14 +408,21 @@ exec:
   target: ./bin/demo
 icon:
   source: assets/demo.png
-isolation:
+bwrap:
+  proc: proc-mirror
   tmpfs:
     - cache
     - /tmp
-bind:
-  - ./state/demo:~/.demo
-  - /abs/data:~/abs
-  - ~/data:~/data-in-home
+  bind:
+    - ./state/demo:~/.demo
+    - /abs/data:~/abs
+    - ~/data:~/data-in-home
+  remountRO:
+    - secrets
+    - ~/.ssh
+  env:
+    - DEMO_MODE:on
+    - PATH:/a:/b
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -355,7 +438,17 @@ bind:
 		t.Errorf("icon.source = %q, want %q", it.IconSource, want)
 	}
 	if len(it.Tmpfs) != 2 || it.Tmpfs[0] != filepath.Join(dir, "cache") || it.Tmpfs[1] != "/tmp" {
-		t.Errorf("isolation.tmpfs = %v（/tmp 这类绝对路径不该被动）", it.Tmpfs)
+		t.Errorf("bwrap.tmpfs = %v（/tmp 这类绝对路径不该被动）", it.Tmpfs)
+	}
+	if want := filepath.Join(dir, "proc-mirror"); it.Proc != want {
+		t.Errorf("bwrap.proc = %q, want %q", it.Proc, want)
+	}
+	if len(it.RemountRO) != 2 || it.RemountRO[0] != filepath.Join(dir, "secrets") || it.RemountRO[1] != "~/.ssh" {
+		t.Errorf("bwrap.remountRO = %v（~ 留给 Expand，绝对路径不该被动）", it.RemountRO)
+	}
+	wantEnv := []EnvVar{{Key: "DEMO_MODE", Value: "on"}, {Key: "PATH", Value: "/a:/b"}}
+	if !reflect.DeepEqual(it.Env, wantEnv) {
+		t.Errorf("bwrap.env = %+v, want %+v（冒号只在第一个处断开）", it.Env, wantEnv)
 	}
 	if len(it.Binds) != 3 {
 		t.Fatalf("binds = %v", it.Binds)
@@ -640,6 +733,8 @@ func TestParseBindRoundTrips(t *testing.T) {
 		"~/.xwechat",
 		"/src:/dst:ro",
 		"/src:/dst:rw",
+		"/src:/dst:dev",
+		"/dev/dri:/dev/dri:dev",
 		"/src:/dst",
 	} {
 		got, err := ParseBind(spec)
@@ -665,6 +760,12 @@ func TestParseBindRoundTrips(t *testing.T) {
 	if b, err := ParseBind("/src:/dst:ro"); err != nil || !b.ReadOnly {
 		t.Errorf(":ro：%+v / %v", b, err)
 	}
+	// `:dev` is a mode of its own, not a second word for read-only: it is what
+	// asks for `--dev-bind` (a directory of device nodes, once the base has
+	// stopped handing the whole host over).
+	if b, err := ParseBind("/dev/dri:/dev/dri:dev"); err != nil || !b.Dev || b.ReadOnly {
+		t.Errorf(":dev：%+v / %v", b, err)
+	}
 }
 
 // Every shape that would otherwise be read as something it is not.
@@ -675,11 +776,90 @@ func TestParseBindRefusesAmbiguousShapes(t *testing.T) {
 		":/y",        // 缺一侧
 		"/x:ro",      // 右侧看着像模式，其实是漏写了目标
 		"/x:rw",      // 同上
+		"/x:dev",     // 同上：设备路径也要把两侧写全
 		"/x:/y:rx",   // 不认识的模式
 		"/x:/y:ro:9", // 冒号太多
 	} {
 		if got, err := ParseBind(spec); err == nil {
 			t.Errorf("ParseBind(%q) 应当报错，得到 %+v", spec, got)
 		}
+	}
+}
+
+// 一行写法是盘上的完整契约，`键:值` 也一样：写出去要能原样读回来，读不回来就是改了
+// 用户写下的东西。这里同时钉住那个必然会被写出来的形状 —— 值里带冒号（PATH:/a:/b）。
+func TestParseEnvVarRoundTrips(t *testing.T) {
+	for _, spec := range []string{
+		"TWIN_FOO:bar",
+		"PATH:/a:/b",
+		"LC_ALL:", // 空值：程序分得清"设了但为空"和"没设"
+		"URL:https://example.com:8443/x",
+	} {
+		got, err := ParseEnvVar(spec)
+		if err != nil {
+			t.Errorf("ParseEnvVar(%q): %v", spec, err)
+			continue
+		}
+		if again, err := ParseEnvVar(got.String()); err != nil || again != got {
+			t.Errorf("%q → %q → %+v（%v）", spec, got, again, err)
+		}
+	}
+}
+
+// 键名是 bwrap 的一个参数，值可以是任何东西 —— 所以不能有冒号的只有冒号左边那一半。
+func TestParseEnvVarRefusesUnusableKeys(t *testing.T) {
+	for _, spec := range []string{
+		"TWIN_FOO",     // 少了冒号：那是一个键，不是一个值
+		":bar",         // 少了键名
+		"TWIN FOO:bar", // 键名里的空格会变成一个谁也查不到的名字
+		"TWIN_FOO=bar", // shell 的写法；默认成"设了但没生效"比拒掉更糟
+	} {
+		if got, err := ParseEnvVar(spec); err == nil {
+			t.Errorf("ParseEnvVar(%q) 应当报错，得到 %+v", spec, got)
+		}
+	}
+}
+
+// 两个键从别的节点搬进了 `bwrap`（tmpfs 来自 isolation、env 来自 exec）。读成"没设置"
+// 会让两份定义各表一套：一份把目录盖空、另一份什么都没盖，而终端上一个字都不说。
+func TestLoadRefusesTheMovedTmpfsAndEnvKeys(t *testing.T) {
+	cases := map[string]string{
+		"isolation.tmpfs": `id: demo
+exec:
+  target: /opt/demo/demo
+isolation:
+  tmpfs:
+    - /var/cache/demo
+`,
+		"exec.env": `id: demo
+exec:
+  target: /opt/demo/demo
+  env:
+    FOO: bar
+`,
+	}
+	for key, body := range cases {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ProfileName)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "bwrap.") {
+			t.Errorf("旧键 %s 必须指名报错并给出新位置，得到 %v", key, err)
+		}
+	}
+}
+
+// ro 与 dev 同时写不是"更严格"，而是 bwrap 表达不出来的东西（--dev-bind 天生可写）。
+// String() 也会在其中丢一个，所以必须在 Check 那一层被拒，而不是让其中一个悄悄赢。
+func TestCheckRefusesReadOnlyDeviceBind(t *testing.T) {
+	i := &Instance{
+		ID:    "x",
+		Level: LevelNone,
+		Binds: []Bind{{Source: "/dev/dri", Target: "/dev/dri", ReadOnly: true, Dev: true}},
+	}
+	if err := i.Check(); err == nil {
+		t.Errorf(":ro + :dev 应当报错，得到 %+v", i.Binds[0])
 	}
 }

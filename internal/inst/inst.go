@@ -90,50 +90,73 @@ type Bind struct {
 	// isolation is for, while read-only is for handing a program somebody
 	// else's files without letting it touch them.
 	ReadOnly bool
+	// Dev renders `--dev-bind`, which bubblewrap describes as "bind mount the
+	// host path SRC on DEST, allowing device access". It is here because the
+	// root a program runs under stopped being twin's constant: a definition
+	// that tightens the base to `--ro-bind / /` needs a way to say which
+	// bindings are meant to hand over devices, and that is a distinction only
+	// the mapping's own line can carry.
+	//
+	// It is a way to say it, not a workaround for something `--bind` cannot
+	// do: measured on bubblewrap 0.11, both spellings come out of `ls -l` as a
+	// character-device mount, so nothing here depends on `:dev` being the only
+	// one that works. What cannot be expressed at all is `:ro` together with
+	// `:dev` — bubblewrap has no read-only device bind — so Check refuses that
+	// pair rather than silently dropping one of the two.
+	Dev bool
 }
 
 // String renders the one-line form the config files carry.
 func (b Bind) String() string {
 	s := b.Source + ":" + b.Target
-	if b.ReadOnly {
+	switch {
+	case b.ReadOnly:
 		s += ":ro"
+	case b.Dev:
+		s += ":dev"
 	}
 	return s
 }
 
 // ParseBind reads the one-line form: "source:target", "source:target:ro",
-// "source:target:rw", or a bare "path" meaning the same directory both ways.
+// "source:target:rw", "source:target:dev", or a bare "path" meaning the same
+// directory both ways.
 //
 // The bare form is not an optimisation. A directory bound onto itself is what
 // upgrades it to writable in place under `--ro-bind / /`, which is the one
 // mapping WeChat's received-files directory has always needed.
 //
-// The split is Docker's: a trailing ":ro"/":rw" is the mode, then the first
-// colon separates the two sides. A path that itself contains a colon is
+// The split is Docker's: a trailing ":ro"/":rw"/":dev" is the mode, then the
+// first colon separates the two sides. A path that itself contains a colon is
 // therefore ambiguous, and — as in Docker — the ambiguity is resolved the
 // documented way rather than guessed at.
 func ParseBind(spec string) (Bind, error) {
 	parts := strings.Split(strings.TrimSpace(spec), ":")
-	if len(parts) == 2 && (parts[1] == "ro" || parts[1] == "rw") {
+	if len(parts) == 2 && isBindMode(parts[1]) {
 		// `x:ro` has no target, only what looks like a mode. Reading it as
 		// "target named ro" would build a relative mount point out of a typo,
-		// so it is refused instead.
+		// so it is refused instead. `:dev` lands here too — and the advice below
+		// covers it, since `x:x:dev` is exactly how a device path bound onto
+		// itself is written.
 		return Bind{}, fmt.Errorf("路径映射 %q 的右侧是访问模式而不是目标路径："+
-			"两侧写全（%s:%s:ro），或去掉模式（同一路径默认可写）", spec, parts[0], parts[0])
+			"两侧写全（%s:%s:%s），或去掉模式（同一路径默认可写）", spec, parts[0], parts[0], parts[1])
 	}
 	b := Bind{}
 	if len(parts) == 3 {
 		switch parts[2] {
 		case "ro":
 			b.ReadOnly = true
+		case "dev":
+			b.Dev = true
 		case "rw":
 		default:
-			return Bind{}, fmt.Errorf("路径映射 %q 的访问模式 %q 不认识（只有 ro 和 rw）", spec, parts[2])
+			return Bind{}, fmt.Errorf("路径映射 %q 的访问模式 %q 不认识（只有 ro、rw 和 dev）", spec, parts[2])
 		}
 		parts = parts[:2]
 	}
 	if len(parts) > 3 {
-		return Bind{}, fmt.Errorf("路径映射 %q 的冒号太多（形如 \"源:目标[:ro|:rw]\"）", spec)
+		return Bind{}, fmt.Errorf("路径映射 %q 的冒号太多（形如 \"源:目标[:ro|:rw|:dev]\"）；"+
+			"ro 与 dev 也不能同时用：bwrap 没有只读的设备映射", spec)
 	}
 	b.Source = parts[0]
 	b.Target = b.Source
@@ -144,6 +167,56 @@ func ParseBind(spec string) (Bind, error) {
 		return Bind{}, fmt.Errorf("路径映射 %q 少了一侧路径", spec)
 	}
 	return b, nil
+}
+
+// isBindMode reports whether a token is an access mode rather than a path. It
+// is the list ParseBind accepts, kept in one place so that "one path plus a
+// mode" — which has no target and would otherwise be read as a path named
+// after the mode — is caught for every mode there is.
+func isBindMode(s string) bool {
+	switch s {
+	case "ro", "rw", "dev":
+		return true
+	}
+	return false
+}
+
+// EnvVar is one `--setenv` pair, written on one line as "键:值".
+//
+// It is a pair rather than a YAML mapping because the file's job is to say what
+// bwrap will be called with, and `--setenv KEY VALUE` is two arguments: writing
+// `键: 值` would put a second, differently-shaped spelling of the same thing in
+// the same file. The split is at the *first* colon, so a value may contain as
+// many as it likes (`PATH:/a:/b`, a URL) — the same rule `bind` uses, and for
+// the same reason.
+type EnvVar struct {
+	Key   string
+	Value string
+}
+
+// String renders the one-line form the definition carries.
+func (e EnvVar) String() string { return e.Key + ":" + e.Value }
+
+// ParseEnvVar reads the one-line form: "键:值". The value may be empty (a
+// program that treats "set but empty" differently from "unset" needs that),
+// which is why the colon is not optional.
+func ParseEnvVar(spec string) (EnvVar, error) {
+	key, value, ok := strings.Cut(strings.TrimSpace(spec), ":")
+	if !ok {
+		return EnvVar{}, fmt.Errorf("环境变量 %q 少了冒号：写成 `键:值`（值可以是空的，键不行）", spec)
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return EnvVar{}, fmt.Errorf("环境变量 %q 没有键名：写成 `键:值`", spec)
+	}
+	// A key with a space in it would reach bwrap as one argument that no
+	// program can look up; `=` is here because KEY=VALUE is the shell spelling
+	// and someone will write it — silently exporting nothing is worse than a
+	// refused line.
+	if strings.ContainsAny(key, " \t=") {
+		return EnvVar{}, fmt.Errorf("环境变量 %q 的键名里有空格或 =：键名得是一个词，写法是 `键:值`", spec)
+	}
+	return EnvVar{Key: key, Value: value}, nil
 }
 
 // Instance is one wrapped program.
@@ -190,15 +263,35 @@ type Instance struct {
 	Target string // absolute path of the real program
 	Alias  string // file name created next to Target inside the sandbox
 	Argv0  string // reserved; empty means "let argv[0] default to the alias"
-	Env    map[string]string
 
-	Tmpfs   []string
+	// The bwrap mounts that have a shape of their own, as opposed to the raw
+	// token list in Args. They are separate keys because each one is a *kind* of
+	// mount — a proc, a throwaway tmpfs, a path re-tightened to read-only —
+	// which is exactly what `bind`'s `:ro` and `:dev` say for a mapping, and
+	// nothing in a flat token list can say it. Empty means "not asked for":
+	// these are knobs, not decisions, so an empty one emits no argument at all.
+	Proc      string   // `--proc DEST`; empty = no proc mount of our own
+	Tmpfs     []string // `--tmpfs DEST` each: hidden behind an empty directory
+	RemountRO []string // `--remount-ro DEST` each: re-tightened to read-only
+	// Env is `--setenv` pairs, in the order written (later pairs win, as bwrap
+	// does it). The instance's own TWIN_INSTANCE lives in Args with the rest of
+	// the base, not here.
+	Env []EnvVar
+
 	Unshare []string
-	// Bwrap holds verbatim bubblewrap option tokens collected from the CLI's
-	// `--` region. twin never parses or rewrites them (设计 §2.1): the
-	// arity of a bwrap option is bwrap's business, and re-deriving it here
-	// would be a table that rots on every bwrap release.
-	Bwrap []string
+	// Args is the bubblewrap option list, verbatim. It is emitted first, in the
+	// order written, and twin adds nothing ahead of it — the sandbox base lives
+	// in this list, put there by `twin gen` and readable in the file, because
+	// which root a program needs is a property of that program. It used to be
+	// hard-coded here as `--ro-bind / /`: a program that has to touch devices
+	// then had no way to ask for `--dev-bind / /`, and asking for it through the
+	// old passthrough region put it *after* every mapping, where binding the
+	// root again shadows all of them.
+	//
+	// twin never parses or rewrites these tokens (设计 §2.1): the arity of a
+	// bwrap option is bwrap's business, and re-deriving it here would be a table
+	// that rots on every bwrap release.
+	Args []string
 
 	Binds []Bind
 }
@@ -472,12 +565,49 @@ func (i *Instance) Check() error {
 	}
 	for n, b := range i.Binds {
 		if b.Source == "" || b.Target == "" {
-			return fmt.Errorf("bind[%d] %q: 源和目标是两条路径，都要写", n, b)
+			return fmt.Errorf("bwrap.bind[%d] %q: 源和目标是两条路径，都要写", n, b)
+		}
+		// Both flags at once is not expressible in bubblewrap, and String()
+		// would have to drop one of them when writing the file back — so it is
+		// an error rather than a precedence rule. ParseBind cannot produce this
+		// pair; a program that fills Bind in directly can.
+		if b.ReadOnly && b.Dev {
+			return fmt.Errorf("bwrap.bind[%d] %q: :ro 与 :dev 不能同时用 —— bwrap 没有只读的设备映射"+
+				"（--dev-bind 天生可写）", n, b)
 		}
 	}
-	for n, tok := range i.Bwrap {
+	// The shaped mounts. An empty value means "not asked for" and emits nothing,
+	// so only a *present but empty* path is an error — that one reaches bwrap as
+	// an empty argument, which it reads as a relative path with no name.
+	for n, dest := range i.RemountRO {
+		if strings.TrimSpace(dest) == "" {
+			return fmt.Errorf("bwrap.remountRO[%d] 是空的：要收紧哪条路径就写哪条，不然整条去掉", n)
+		}
+	}
+	for n, e := range i.Env {
+		// Round-tripping the one-line form is the whole check: a key carrying a
+		// colon (or a space, or an =) cannot be told from the value when the
+		// pair is written back out, and a file that reads back as something else
+		// is the failure this project refuses to ship.
+		if got, err := ParseEnvVar(e.String()); err != nil || got != e {
+			return fmt.Errorf("bwrap.env[%d] %q 不是「键:值」—— 键名不能带冒号、空格或 =（值里可以有冒号）", n, e)
+		}
+		if strings.ContainsAny(e.Value, "\x00\n") {
+			return fmt.Errorf("bwrap.env[%d] %q 的值里有换行或 NUL —— bwrap 的 --setenv 收不下", n, e)
+		}
+	}
+	// An empty list is not "a sandbox with defaults" any more: twin no longer
+	// keeps any base of its own, so this file is the only thing that could have
+	// put a root in there. bwrap without one starts the program in a namespace
+	// where nothing is mounted, which reads at the far end as "the program
+	// cannot find itself" — a failure with no trace of twin in it.
+	if i.Level.Renames() && len(i.Args) == 0 {
+		return fmt.Errorf("bwrap.args 是空的：bwrap 至少要有一个根挂载（--dev-bind / / 或 --ro-bind / /），" +
+			"twin 不再自己补一个 —— 请用 `twin gen` 重新生成，或照它的注释手写一份")
+	}
+	for n, tok := range i.Args {
 		if err := CheckBwrapToken(tok); err != nil {
-			return fmt.Errorf("bwrap.extra[%d]: %w", n, err)
+			return fmt.Errorf("bwrap.args[%d]: %w", n, err)
 		}
 	}
 	return nil
@@ -591,7 +721,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 
 	ex := t.Ensure("exec")
 	ex.SetComment("target", "真实程序的路径。可以绝对、可以 ~/ 开头，也可以相对 ——\n"+
-		"相对的话基准是这份 profile.yml 自己所在的目录（下同：icon.source、bind 两侧、isolation.tmpfs）。")
+		"相对的话基准是这份 profile.yml 自己所在的目录（下同：icon.source、bwrap 里那几个路径键）。")
 	ex.Set("target", i.Target)
 	ex.SetComment("alias", "沙箱内建在 target 同目录下的别名文件名。窗口 app_id 取自真实路径名，\n"+
 		"托盘 SNI Id 取自 argv[0]，两者都等于它 —— 让它们分叉，就有一个找不到桌面项。")
@@ -602,25 +732,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	if i.Argv0 != "" {
 		ex.Set("argv0", i.Argv0)
 	}
-	// A nested mapping rather than TOML's one-line {k = v}: with YAML the
-	// hierarchy is free, and env is a hierarchy.
-	ex.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），写成 `键: 值`。")
-	envT := yamlz.New()
-	for _, k := range sortedKeys(i.Env) {
-		envT.Set(k, i.Env[k])
-	}
-	ex.Set("env", envT)
 
 	iso := t.Ensure("isolation")
-	iso.SetComment("tmpfs", "在沙箱内被盖成空目录的路径（相对路径的基准是这份 profile.yml 所在的目录）。\n"+
-		"写后即弃，宿主看不见；代价是 /tmp 里"+
-		"原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0。\n"+
-		"不写 /tmp 不等于什么都没有：程序看到的是宿主那个 /tmp，可写、也与宿主共享。")
-	if len(i.Tmpfs) == 0 {
-		iso.Set("tmpfs", []string{})
-	} else {
-		iso.Set("tmpfs", i.Tmpfs)
-	}
 	iso.SetComment("unshare", "额外 unshare 的命名空间。含 `net` 会被拒绝：它切断网络，\n"+
 		"也打破基于 abstract socket 的单实例锁。")
 	if len(i.Unshare) == 0 {
@@ -635,18 +748,119 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"它跟着程序走；用哪个跳板是机器属性，留在 config.toml 里。")
 	iso.Set("nested_ns", i.NestedNS)
 
-	// The passthrough region, stored in the same flat-token shape the CLI and
-	// the (future) rules.d use, so merging stays "concatenate the arrays"
-	// rather than "invent a quoting rule" (设计 §3.2).
+	// The option list, stored in the same flat-token shape the CLI and rules.d
+	// use, so merging stays "concatenate the arrays" rather than "invent a
+	// quoting rule" (设计 §3.2).
+	//
+	// The base is part of it now. twin used to keep the base in Go and let this
+	// list only *append*, which made the one decision that actually varies per
+	// program — which root the program sees — the one decision the file could
+	// not express.
 	bw := t.Ensure("bwrap")
-	bw.SetComment("extra", "逐 token 原样透传给 bwrap；twin 不解析它们（不猜每个选项的元数）。\n"+
-		"拼在基座之后、程序之前，所以同目标挂载会由后写的那个胜出。\n"+
-		"这里是合并后的最终列表，低优先级在前：config.toml → rules.d → gen 的 -- 透传区；手写进来的照旧保留。")
-	if len(i.Bwrap) == 0 {
-		bw.Set("extra", []string{})
+	bw.SetComment("args", "交给 bwrap 的完整选项列表，逐 token 原样排列；twin 不解析它们（不猜每个选项的元数）。\n"+
+		"它排在路径映射之前、程序之前：同目标挂载由后写的那个胜出，所以想覆盖下面这几条，就把自己的写在它们后面。\n"+
+		"`twin gen` 写进来的基座是：\n"+
+		"  --dev-bind / /   整个宿主根挂进来（含设备）—— 换来的是设备可用，代价是它不再是只读的；\n"+
+		"                   改成 --ro-bind / / 的话，设备与 /run/user 都要自己补回来\n"+
+		"                   （--dev-bind /dev /dev、--bind /run/user /run/user），否则 Wayland socket 与会话总线全断；\n"+
+		"  --proc /proc\n"+
+		"  --tmpfs /dev/shm 空的私有共享内存\n"+
+		"  --tmpfs /tmp      空的私有 /tmp；程序若只走 X11，这一条换成 --bind /tmp /tmp（宿主那个，可写）——\n"+
+		"                    两者必居其一，只读的 /tmp 会让程序在别处报错（Chromium 的 process_singleton_posix.cc）\n"+
+		"  --die-with-parent\n"+
+		"  --setenv TWIN_INSTANCE <id>\n"+
+		"这里是合并后的最终列表，低优先级在前：上面这份基座 → config.toml → rules.d → gen 的 -- 透传区；\n"+
+		"手写进来的照旧保留。会改名的 level 之下空列表会被拒绝：bwrap 至少要有一个根挂载。")
+	if len(i.Args) == 0 {
+		bw.Set("args", []string{})
 	} else {
-		bw.Set("extra", i.Bwrap)
+		bw.Set("args", i.Args)
 	}
+
+	// The shaped mounts, in the order Build emits them: args first, then these,
+	// then `bind` between them, then remountRO (which has to come after whatever
+	// it tightens). The file reads top-to-bottom like the command line it turns
+	// into, which is the only reason these have keys of their own at all: each
+	// one names a *kind* of mount that a flat token list cannot name.
+	//
+	// All four are written even when empty, so that a reader discovers them
+	// where they belong; an empty one emits no argument, which is what "not
+	// asked for" has to mean for a knob as opposed to a decision (a decision is
+	// something like `bind: []`, which says the program shares its data).
+	bw.SetComment("proc", "再挂一个 proc 到这条路径（bwrap --proc）。留空 = 不挂 —— `gen` 写的基座里\n"+
+		"已经有一条 `--proc /proc` 了（在 args 里），这一条是额外再挂一个的口子。\n"+
+		"路径可以绝对、可以 ~/ 开头，也可以相对（基准是这份 profile.yml 所在的目录）。")
+	if i.Proc == "" {
+		bw.Set("proc", "")
+	} else {
+		bw.Set("proc", i.Proc)
+	}
+
+	bw.SetComment("tmpfs", "额外盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主看不见，\n"+
+		"代价是那里原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0。\n"+
+		"留空 = 不额外盖。/tmp 不在这个列表里：它的取舍属于基座那一行（args 里的\n"+
+		"`--tmpfs /tmp` 或 `--bind /tmp /tmp`），因为「用哪个 /tmp」是「用哪个根」的一部分。")
+	if len(i.Tmpfs) == 0 {
+		bw.Set("tmpfs", []string{})
+	} else {
+		bw.Set("tmpfs", i.Tmpfs)
+	}
+
+	// Written unconditionally too, empty case included. "twin redirected
+	// nothing" is the default decision, and once the terminal stopped printing
+	// it this comment became the only place the shared-state warning can live —
+	// so the key has to be there even when there is nothing to list.
+	//
+	// It lives under `bwrap` because that is what it becomes: more of the same
+	// invocation the list above fills, emitted in the order written here. Two
+	// keys that have to agree about one command line belong next to each other
+	// in the file, not in two halves of it.
+	bw.SetComment("bind", "隔离哪个数据目录。整段替换内置规则（不是追加）。\n"+
+		"写法同 Docker Compose 的卷：源:目标[:ro|:dev]，源是数据实际所在，目标是程序看到它的位置。\n"+
+		"路径可以绝对、可以 ~/ 开头，也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。\n"+
+		"（同层那个 args 例外：那里逐字照搬，twin 不认、也解析不了里面的路径。）\n"+
+		"  源路径:目标路径        ⇒ 私有副本，两个实例互不干扰\n"+
+		"  只写一条路径           ⇒ 该路径挂回自己（数据不搬家）；基座是可写的 --dev-bind / / 时\n"+
+		"                            它不改变什么，把根换成 --ro-bind / / 之后它才是「把只读升回可写」\n"+
+		"  源路径:目标路径:ro     ⇒ 只读挂载，程序看得见但改不动\n"+
+		"  源路径:目标路径:dev    ⇒ 带上设备访问（--dev-bind），给设备节点用。\n"+
+		"                            bwrap 没有只读的设备映射，所以 dev 不能与 ro 同用；\n"+
+		"                            基座 --dev-bind / / 已让整个宿主带设备可用，这一条是\n"+
+		"                            给把根收紧成 --ro-bind / / 的定义留着表达这件事用的\n"+
+		"两端也可以是同一个文件（单个配置文件）：形态照磁盘上已经存在的那一端，都没在时按目录。\n"+
+		"空着 = 数据目录与源程序共用；程序若有单实例锁（Electron / Qt / GTK 系常见），\n"+
+		"两个实例会互相干扰。这里只影响这一个实例；要让这个程序以后新建的实例也用同样\n"+
+		"的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init <程序名> 生成草稿）。")
+	binds := make([]string, 0, len(i.Binds))
+	for _, b := range i.Binds {
+		binds = append(binds, b.String())
+	}
+	bw.Set("bind", binds)
+
+	// After the mappings, on purpose. `--remount-ro` re-mounts a *destination*
+	// read-only, and a destination is something a mapping above (or the base in
+	// args) made writable — put it anywhere earlier and the mount it was meant
+	// to tighten would be laid down on top of it, writable again. This is the
+	// counterpart of the writable root the base binds: `--dev-bind / /` hands
+	// over the whole host, so taking a path back is a per-path decision.
+	bw.SetComment("remountRO", "把哪些路径收回只读（bwrap --remount-ro），写在所有挂载之后，所以能压住\n"+
+		"bind 给出的那种可写。⚠️ 只能作用在「自己就是一条挂载」的路径上：bind 的**目标端**、\n"+
+		"overlay 或 tmpfs 那条路径、或者整个 `/`。宿主本来就属于那一条大根挂载的路径（比如\n"+
+		"~ 底下某个目录）底下没有单独的挂载，bwrap 会拒绝启动：Can't remount readonly on …:\n"+
+		"Unable to find … in mount table（实测）。整根要收紧就把基座那行换成 --ro-bind / /。\n"+
+		"留空 = 不收回。路径的基准同 bind（可以 ~/、可以相对这份 profile.yml）。")
+	remount := make([]string, 0, len(i.RemountRO))
+	remount = append(remount, i.RemountRO...)
+	bw.Set("remountRO", remount)
+
+	bw.SetComment("env", "额外注入沙箱的环境变量（bwrap --setenv），一条一个 `键:值`。\n"+
+		"冒号只在第一个处断开，所以值里可以再有冒号（PATH:/a:/b）。值可以是空的（写 `键:`），\n"+
+		"键名不能带冒号、空格或 =。留空 = 不额外注入；实例自己的 TWIN_INSTANCE 在基座里（args）。")
+	env := make([]string, 0, len(i.Env))
+	for _, e := range i.Env {
+		env = append(env, e.String())
+	}
+	bw.Set("env", env)
 
 	// Host integration. Written unconditionally: "we did not override the tray"
 	// is a decision worth seeing in the file, and an absent section would make
@@ -660,26 +874,6 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"读不到列表）⇒ 写宿主的 custom-icons 覆盖表兜底。")
 	trayT.Set("override", i.TrayOverride)
 
-	// Written unconditionally too, empty case included. "twin redirected
-	// nothing" is the default decision, and once the terminal stopped printing
-	// it this comment became the only place the shared-state warning can live —
-	// so the key has to be there even when there is nothing to list.
-	t.SetComment("bind", "隔离哪个数据目录。整段替换内置规则（不是追加）。\n"+
-		"写法同 Docker Compose 的卷：源:目标[:ro]，源是数据实际所在，目标是程序看到它的位置。\n"+
-		"路径可以绝对、可以 ~/ 开头，也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。\n"+
-		"（透传区 bwrap.extra 例外：那里逐字照搬，twin 不认、也解析不了里面的路径。）\n"+
-		"  源路径:目标路径        ⇒ 私有副本，两个实例互不干扰\n"+
-		"  只写一条路径           ⇒ 该路径挂回自己，只把只读升回可写（数据不搬家）\n"+
-		"  源路径:目标路径:ro     ⇒ 只读挂载，程序看得见但改不动\n"+
-		"两端也可以是同一个文件（单个配置文件）：形态照磁盘上已经存在的那一端，都没在时按目录。\n"+
-		"空着 = 数据目录与源程序共用；程序若有单实例锁（Electron / Qt / GTK 系常见），\n"+
-		"两个实例会互相干扰。这里只影响这一个实例；要让这个程序以后新建的实例也用同样\n"+
-		"的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init <程序名> 生成草稿）。")
-	binds := make([]string, 0, len(i.Binds))
-	for _, b := range i.Binds {
-		binds = append(binds, b.String())
-	}
-	t.Set("bind", binds)
 	return t, nil
 }
 
@@ -767,6 +961,19 @@ func Load(path string) (*Instance, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	base := filepath.Dir(path)
+	// The old key is refused by name rather than read as "no option list". The
+	// rename is not a spelling change: `extra` was only what the user appended,
+	// while `args` is the whole list including the sandbox base that twin used
+	// to keep to itself. Reading one as the other would hand bwrap a namespace
+	// with no root mounted and no hint of why — the program would simply not
+	// start, with nothing anywhere naming twin. (Same reasoning as the
+	// instance.toml error below: an instance twin cannot read is reported, never
+	// silently dropped.)
+	if root.At("bwrap").Has("extra") {
+		return nil, fmt.Errorf("%s: `bwrap.extra` 现在叫 `bwrap.args`，而且语义变了 —— "+
+			"它是交给 bwrap 的**完整**选项列表，基座（--dev-bind / /、--proc /proc、--tmpfs /tmp 等）也在里面，"+
+			"twin 不再自己补。请用 `twin gen` 重新生成一份，再把你原来的 token 补进去", path)
+	}
 	// The entry's text lives under `desktop:`. The spelling that predates the
 	// section — the same keys at the root — is still read: it is not ambiguous
 	// (there is nowhere else a root-level `name` could have belonged), and a
@@ -798,17 +1005,52 @@ func Load(path string) (*Instance, error) {
 		Target:     resolvePath(base, root.At("exec").Str("target")),
 		Alias:      root.At("exec").Str("alias"),
 		Argv0:      root.At("exec").Str("argv0"),
-		Tmpfs:      resolvePaths(base, root.At("isolation").StrList("tmpfs")),
 		Unshare:    root.At("isolation").StrList("unshare"),
 		NestedNS:   root.At("isolation").Bool("nested_ns"),
-		Bwrap:      root.At("bwrap").StrList("extra"),
+		Args:       root.At("bwrap").StrList("args"),
+		// The shaped mounts resolve like every other path in this file: they are
+		// known to *be* paths, which is exactly what cannot be said about the
+		// tokens in `args` (hence the passthrough rule).
+		Proc:      resolvePath(base, root.At("bwrap").Str("proc")),
+		Tmpfs:     resolvePaths(base, root.At("bwrap").StrList("tmpfs")),
+		RemountRO: resolvePaths(base, root.At("bwrap").StrList("remountRO")),
 	}
-	env := root.At("exec").At("env")
-	it.Env = make(map[string]string)
-	for _, k := range env.Keys() {
-		it.Env[k] = env.Str(k)
+	// `isolation.tmpfs` and `exec.env` moved under `bwrap`, for the reason
+	// `bind` did: each one is a bwrap option, and the node that says "this is
+	// what bwrap is called with" should be the only place they live. They are
+	// refused by name rather than read as aliases — two keys emitting one
+	// argument is how a file starts disagreeing with itself, and the .env one
+	// also changed shape (list of `键:值`, not a mapping).
+	if root.At("isolation").Has("tmpfs") {
+		return nil, fmt.Errorf("%s: `isolation.tmpfs` 现在在 `bwrap` 节点里（bwrap.tmpfs）—— "+
+			"它就是 `--tmpfs`，和 bwrap.args 一起决定这次调用；把它缩进到 `bwrap:` 下面即可", path)
 	}
-	specs, err := root.StrListStrict("bind")
+	if root.At("exec").Has("env") {
+		return nil, fmt.Errorf("%s: `exec.env` 现在是 `bwrap.env`，而且换成了列表：一条一个 `键:值`"+
+			"（冒号只在第一个处断开，所以值里可以再有冒号）。请把 `键: 值` 那几行改写进 `bwrap:` 下面", path)
+	}
+	envSpecs, err := root.At("bwrap").StrListStrict("env")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	for _, spec := range envSpecs {
+		e, err := ParseEnvVar(spec)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		it.Env = append(it.Env, e)
+	}
+	// `bind` lives under `bwrap`: it is one more thing that ends up in the same
+	// invocation as `args`, which is written right there. A top-level `bind` is
+	// refused rather than ignored — the two readings do not describe the same
+	// instance (one mounts the program's data, the other mounts nothing), and
+	// the failure would surface as "the program cannot see its files" long after
+	// the edit.
+	if root.Has("bind") {
+		return nil, fmt.Errorf("%s: `bind` 现在在 `bwrap` 节点里（bwrap.bind）—— 它和 bwrap.args 一起"+
+			"决定这次 bwrap 调用拿到什么，所以搬到了同一个节点下；把这一段缩进到 `bwrap:` 下面即可", path)
+	}
+	specs, err := root.At("bwrap").StrListStrict("bind")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -910,13 +1152,4 @@ func List(p Paths) ([]*Instance, error) {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].ID < out[b].ID })
 	return out, nil
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

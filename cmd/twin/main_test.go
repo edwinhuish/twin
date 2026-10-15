@@ -628,7 +628,10 @@ func TestInstallWithAnIDReadsThatInstancesDefinition(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("id: wechat2\nexec:\n  target: /bin/true\n"), 0o644); err != nil {
+	// The option list is part of the definition now (twin keeps no base of its
+	// own), so a minimal-but-valid one carries a root mount.
+	body := "id: wechat2\nexec:\n  target: /bin/true\nbwrap:\n  args: [--dev-bind, /, /]\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := loadConfigFile(p.Profile("wechat2"))

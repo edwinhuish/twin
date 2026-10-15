@@ -42,10 +42,13 @@ var knownOptions = map[string]bool{
 }
 
 // bindish are the options whose *destination* twin would normally pre-create
-// with mkdir. In the passthrough region nothing is pre-created, so a directory
-// destination under the read-only `/` fails at launch ("Can't create file:
-// Read-only file system") — while a file destination quietly succeeds, which
-// makes the channel look more reliable than it is (设计 §2.5).
+// with mkdir. In the passthrough region nothing is pre-created, and there is no
+// good outcome: under a read-only root a directory destination fails at launch
+// ("Can't create file: Read-only file system"), and under the writable root
+// `twin gen` writes by default (`--dev-bind / /`) bwrap creates the mount point
+// itself — inside the *host's* tree, leaving a stray empty directory in the
+// user's home with nothing to say it happened. That is why the warning points
+// at the supported route rather than at a workaround (设计 §2.5).
 var bindish = map[string]bool{
 	"--bind": true, "--bind-try": true, "--ro-bind": true, "--ro-bind-try": true,
 	"--dev-bind": true, "--dev-bind-try": true,
@@ -84,8 +87,9 @@ func LintBwrap(tokens []string) []string {
 	if len(seenBind) > 0 {
 		sort.Strings(seenBind)
 		warns = append(warns, strings.Join(seenBind, " ")+
-			" 出现在透传区：两侧目录 twin 不会预建，目录目标会因只读的 / 而失败"+
-			"（文件目标反而会成功，所以别被假象骗了）—— 数据路径建议写进 rules.d 或那份实例定义的 bind")
+			" 出现在透传区：两侧目录 twin 不会预建 —— 只读根（--ro-bind / /）下目录目标会在启动那一刻失败，"+
+			"而默认那个可写根（--dev-bind / /）下 bwrap 会把挂载点建在**宿主的家目录**里"+
+			"（无声地留下一个空目录）—— 数据路径建议写进 rules.d 或那份实例定义的 bwrap.bind")
 	}
 	return warns
 }

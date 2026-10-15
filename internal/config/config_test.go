@@ -61,7 +61,7 @@ python = "/usr/bin/python3"
 theme = "Adwaita"
 
 [bwrap]
-extra = ["--unshare-pid", "--setenv", "FOO", "bar"]
+args = ["--unshare-pid", "--setenv", "FOO", "bar"]
 `)
 	c, err := Load(p)
 	if err != nil {
@@ -85,13 +85,24 @@ extra = ["--unshare-pid", "--setenv", "FOO", "bar"]
 	// The flat token array must survive verbatim, including a value that looks
 	// like an option.
 	want := []string{"--unshare-pid", "--setenv", "FOO", "bar"}
-	if len(c.Bwrap) != len(want) {
-		t.Fatalf("[bwrap] extra = %#v, want %#v", c.Bwrap, want)
+	if len(c.Args) != len(want) {
+		t.Fatalf("[bwrap] args = %#v, want %#v", c.Args, want)
 	}
 	for i := range want {
-		if c.Bwrap[i] != want[i] {
-			t.Fatalf("[bwrap] extra = %#v, want %#v", c.Bwrap, want)
+		if c.Args[i] != want[i] {
+			t.Fatalf("[bwrap] args = %#v, want %#v", c.Args, want)
 		}
+	}
+}
+
+// The key was renamed, and its meaning with it: `extra` was only what the user
+// appended, `args` is the whole list. Reading the old spelling as "no global
+// tokens" would leave a file that says something and does nothing.
+func TestLoadRefusesTheOldExtraKey(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	write(t, p.Home, ".config/twin/config.toml", "[bwrap]\nextra = [\"--unshare-pid\"]\n")
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "[bwrap] args") {
+		t.Fatalf("旧的 [bwrap] extra 必须指名报错，得到 %v", err)
 	}
 }
 

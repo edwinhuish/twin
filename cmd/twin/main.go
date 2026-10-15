@@ -254,8 +254,8 @@ func usageError(fs *flag.FlagSet, err error) int {
 // 文档会烂：选项表若在别处再抄一份，`-h` 与它迟早各表一套；这里与实现同一次编译。
 var helpFooter = map[string]string{
 	"gen": "\n  twin gen <source> [选项] -- <bwrap 选项…>\n" +
-		"    `--` 之后的 token 原样透传给 bwrap（它排在基座之后 ⇒ 同目标的挂载由它胜出），\n" +
-		"    并在 install 时写进配置（bwrap.extra）。\n" +
+		"    `--` 之后的 token 原样进配置的 bwrap.args（排在基座与全局/规则层之后 ⇒\n" +
+		"    同目标的挂载由它胜出）。它是**写进文件**的一份，不是每次启动的覆盖。\n" +
 		"    ⚠️ 不享受 ~/ 展开与 mkdir 补齐；再写一个 `--`、写 --argv0、或写需要 fd 的选项都会被拒绝，\n" +
 		"       其余 token 只做 lint（警告），不改写。\n",
 	"install": "\n  twin install <id> | -p <文件> [选项]   （二选一，同时给是用法错误）\n" +
@@ -401,8 +401,8 @@ func cmdRules(p inst.Paths, args []string) int {
 		for _, b := range rule.Binds {
 			fmt.Printf("  bind       %s\n", b)
 		}
-		if len(rule.Bwrap) > 0 {
-			fmt.Printf("  bwrap      %s\n", strings.Join(rule.Bwrap, " "))
+		if len(rule.Args) > 0 {
+			fmt.Printf("  bwrap.args %s\n", strings.Join(rule.Args, " "))
 		}
 		return exitOK
 	}
@@ -572,18 +572,20 @@ func cmdInspect(p inst.Paths, args []string) int {
 	fmt.Printf("  多合一二进制  %s\n", yn(t.MultiCall))
 	switch {
 	case insp.Rule != nil && len(insp.Rule.Tmpfs) > 0:
-		fmt.Printf("\n📂 /tmp 策略：%s（来自应用规则 %s）\n",
-			strings.Join(insp.Rule.Tmpfs, " "), orBuiltin(insp.Rule))
+		fmt.Printf("\n📂 /tmp 策略：用应用规则 %s 里的 tmpfs（%s）—— 其中 /tmp 那一条落在基座上\n",
+			orBuiltin(insp.Rule), strings.Join(insp.Rule.Tmpfs, " "))
 	case t.Wayland && t.X11:
-		fmt.Printf("\n📂 /tmp 策略：可用 --tmpfs /tmp —— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
-		fmt.Printf("  %s 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X。\n",
+		fmt.Printf("\n📂 /tmp 策略：基座里写 --tmpfs /tmp —— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
+		fmt.Printf("  %s 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X；\n"+
+			"     那时把生成出来的 bwrap.args 里那一行改成 --bind /tmp /tmp。\n",
 			outStyle.Yellow("⚠️"))
 	case t.Wayland && cfg.Defaults.TmpfsUnlessX11:
-		fmt.Printf("\n📂 /tmp 策略：可用 --tmpfs /tmp（该程序走 Wayland）\n")
+		fmt.Printf("\n📂 /tmp 策略：基座里写 --tmpfs /tmp（该程序走 Wayland）\n")
 	case t.Wayland:
-		fmt.Printf("\n📂 /tmp 策略：不加 --tmpfs /tmp（config.toml 关掉了 tmpfs_unless_x11）\n")
+		fmt.Printf("\n📂 /tmp 策略：基座里写 --bind /tmp /tmp（config.toml 关掉了 tmpfs_unless_x11）\n")
 	default:
-		fmt.Printf("\n📂 /tmp 策略：%s\n", outStyle.Red("**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）"))
+		fmt.Printf("\n📂 /tmp 策略：基座里写 --bind /tmp /tmp，%s\n",
+			outStyle.Red("**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）"))
 	}
 
 	if len(insp.Notes) > 0 {
@@ -630,7 +632,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		force      = fs.Bool("force", false, "覆盖已存在的输出文件（默认拒绝：那份文件正是你要改的东西）")
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（连配置正文一起打印）")
 		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、路径映射的修改粒度、规则模板）")
-		noTmpfs    = fs.Bool("no-tmpfs", false, "完全不要 tmpfs —— X11 程序必须如此（--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0）")
+		noTmpfs    = fs.Bool("no-tmpfs", false, "基座里的 /tmp 不盖 tmpfs，改成 --bind /tmp /tmp（宿主那个，可写）—— X11 程序必须如此：--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0")
 		noTray     = fs.Bool("no-tray", false, "不要把这个实例的托盘图标指给 twin（写文件表还是宿主覆盖表见 tray_override 的说明；整机开关在 config.toml 的 defaults.tray_override）")
 	)
 	// Go's flag package has no aliases, so the documented `-o` is a second
@@ -639,7 +641,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	var shortOutput string
 	fs.StringVar(&shortOutput, "o", "", "配置写到哪（--output 的简写；两个拼写同时给是用法错误）")
 	var tmpfs listFlag
-	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录，可重复（享受 ~/ 展开与 mkdir 补齐；透传区不享受）")
+	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录（空 tmpfs），可重复，写到 bwrap.tmpfs 里；写 /tmp 时会落到基座那一行上（路径享受 ~/ 展开；bwrap.args 里逐字照搬，不展开）")
 	// Cut the bwrap passthrough off before twin's own parser runs: tokens
 	// after `--` are not twin's to interpret (设计 §2.2).
 	head, bwrapTokens, err := splitPassthrough(args)
@@ -701,7 +703,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		Level:      lvl,
 		Tmpfs:      tmpfs,
 		Cfg:        cfg,
-		Bwrap:      bwrapTokens,
+		Args:       bwrapTokens,
 		NoTmpfs:    *noTmpfs,
 		NoTray:     *noTray,
 	}
@@ -807,7 +809,7 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	// needs the line here (saying it twice is how a reader learns to skip it).
 	if len(it.Binds) == 0 && (!explain || insp.Rule != nil) {
 		fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 没有隔离任何数据目录：这个程序若有单实例锁"+
-			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind"))
+			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bwrap.bind"))
 	}
 	if dry {
 		body, err := renderDefinition(p, it, outPath)
@@ -2074,6 +2076,8 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 			switch {
 			case b.ReadOnly:
 				fmt.Printf("  %s  %s\n", outStyle.Cyan("只读"), b)
+			case b.Dev:
+				fmt.Printf("  %s  %s   （带设备访问：--dev-bind）\n", outStyle.Cyan("设备"), b)
 			case b.Source == b.Target:
 				fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）\n", outStyle.Cyan("共用"), b)
 			default:
@@ -2098,7 +2102,7 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 func printMapFix(it *inst.Instance, key, rulePath string, fix mapFix) {
 	fmt.Printf("  改：%s —— 影响这个程序以后新建的实例（twin rules --init %s 生成草稿）\n",
 		rulePath, key)
-	fmt.Printf("      只改这一个：编辑 %s 里的 bind，再 %s\n", fix.file, fix.replay)
+	fmt.Printf("      只改这一个：编辑 %s 里的 bwrap.bind，再 %s\n", fix.file, fix.replay)
 }
 
 // printStateHints lists directories the program is likely to keep state in that
@@ -2167,7 +2171,7 @@ func printRuleTemplate(p inst.Paths, it *inst.Instance, key string, binds []inst
 	}
 	fmt.Printf("    ]\n")
 	fmt.Printf("\n  源:目标 ⇒ 私有副本，两个实例互不干扰；单写一条路径 ⇒ 与该目录共用，只把只读升回可写；\n")
-	fmt.Printf("  源:目标:ro ⇒ 只读挂载。\n")
+	fmt.Printf("  源:目标:ro ⇒ 只读挂载；源:目标:dev ⇒ 带设备访问（--dev-bind，给设备节点目录用）。\n")
 }
 
 // dedupStateDir rewrites this instance's state directory back to the {id}

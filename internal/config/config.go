@@ -12,7 +12,7 @@
 //
 //	CLI > profile.yml (snapshot) > rules.d/<app> > config.toml > built-in
 //
-// and array-shaped values (bwrap extra, tmpfs, binds) are concatenated low
+// and array-shaped values (bwrap args, tmpfs, binds) are concatenated low
 // priority first, so a later mount shadows an earlier one on the same
 // destination — bubblewrap already implements the conflict rule (设计 §3.5).
 package config
@@ -90,9 +90,11 @@ type Config struct {
 	Tools    Tools
 	USerns   USerns
 	Icon     IconStyle
-	// Bwrap is the global passthrough tail, appended to every instance's
-	// bwrap option region. One element is one token (设计 §3.2).
-	Bwrap []string
+	// Args is the global tail appended to every new instance's bwrap option
+	// list — after that instance's base, before its path mappings. One element
+	// is one token (设计 §3.2); twin appends it at `gen` time and never
+	// re-reads it at launch, so what runs is what the definition says.
+	Args []string
 }
 
 // Rule is the application-knowledge layer: what is true about a *program*,
@@ -107,7 +109,7 @@ type Rule struct {
 	Categories string
 	Tmpfs      []string
 	Binds      []inst.Bind
-	Bwrap      []string
+	Args       []string
 }
 
 // Builtin is the set of defaults compiled into twin. Every field is
@@ -178,7 +180,14 @@ func Load(p inst.Paths) (*Config, error) {
 
 	setStr(root.Tree("icon"), "theme", &c.Icon.Theme)
 
-	c.Bwrap = root.Tree("bwrap").StrList("extra")
+	// The old spelling is refused rather than read as "no global tokens": a file
+	// that says something and is silently ignored is the failure mode this whole
+	// package is arranged against (see also the instance.toml error in inst).
+	if root.Tree("bwrap").Has("extra") {
+		return nil, fmt.Errorf("%s: [bwrap] extra 现在叫 [bwrap] args（实例定义里那个键也一起改了名）。"+
+			"它照旧是追加到每个新实例 bwrap 选项列表尾部的 token", c.Path)
+	}
+	c.Args = root.Tree("bwrap").StrList("args")
 
 	if lvl, err := inst.ParseLevel(c.Defaults.Level); err != nil {
 		return nil, fmt.Errorf("%s: defaults.level = %q：%w", c.Path, c.Defaults.Level, err)
@@ -247,7 +256,7 @@ func FindRule(p inst.Paths, keys ...string) (*Rule, string, error) {
 // same name. The file wins field by field, so overriding one keyword list does
 // not silently drop the state paths that ship with the tool.
 //
-// Array-shaped fields (binds, tmpfs, bwrap extra) replace rather than append
+// Array-shaped fields (binds, tmpfs, bwrap args) replace rather than append
 // when the file sets them: a user who writes bind = [...] is describing the
 // whole set of paths they want, and half-inheriting would make the file a lie.
 func loadRule(p inst.Paths, key string) (*Rule, error) {
@@ -259,7 +268,7 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 		out.Categories = builtin.Categories
 		out.Tmpfs = builtin.Tmpfs
 		out.Binds = builtin.Binds
-		out.Bwrap = builtin.Bwrap
+		out.Args = builtin.Args
 		out.Builtin = true
 	}
 
@@ -312,7 +321,10 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 		}
 	}
 	if root.Tree("bwrap").Has("extra") {
-		out.Bwrap = root.Tree("bwrap").StrList("extra")
+		return nil, fmt.Errorf("%s: [bwrap] extra 现在叫 [bwrap] args（同一个键在实例定义里也改了名）", path)
+	}
+	if root.Tree("bwrap").Has("args") {
+		out.Args = root.Tree("bwrap").StrList("args")
 	}
 	if err := checkRulePaths(path, out); err != nil {
 		return nil, err
@@ -396,6 +408,9 @@ func Sample() string {
 level       = "alias"
 icon_size   = 256
 badge_style = "corner"        # corner | number | dot
+# 程序支持 Wayland 时，新实例的 bwrap.args 里写 --tmpfs /tmp（空的私有 /tmp）；
+# 关掉则写 --bind /tmp /tmp（宿主那个，可写）。两者都必须是**可写**的 —— 只读的
+# /tmp 会让程序在别处报错。**只在二进制特征扫描判错的机器上关掉它。**
 tmpfs_unless_x11 = true
 # 生成实例时是否把宿主的托盘图标覆盖表指向本实例的图标。
 # twin 只在真的跑在图形会话里时才写得进去（热重载，立刻生效）；
@@ -433,7 +448,9 @@ trampoline = "auto"
 theme = "hicolor"             # 源 Icon= 是主题名时的查找主题
 
 [bwrap]
-# 追加到**所有**实例 bwrap 选项区的尾部。一个元素 = 一个 token，原样拼接。
-extra = []
+# 追加到每个**新**实例 bwrap 选项列表的尾部：排在那一份的基座之后、路径映射之前，
+# 所以同目标的挂载由这里写的那个胜出。一个元素 = 一个 token，原样拼接、不做替换。
+# 写进 profile.yml 之后就不再回读这里了（改这份文件只影响以后新建的实例）。
+args = []
 `
 }
