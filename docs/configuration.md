@@ -335,7 +335,7 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 
 | 键 | 说明 |
 |---|---|
-| `override` | 要不要把宿主托盘覆盖表指向本实例。**总是写** —— "不覆盖"本身也是一个决定，缺这段会让它和"这个字段存在之前写的老文件"无法区分（缺段老文件按 `true`） |
+| `override` | 要不要让 twin 管这个实例的托盘图标。**总是写** —— "不覆盖"本身也是一个决定，缺这段会让它和"这个字段存在之前写的老文件"无法区分（缺段老文件按 `true`）。走哪条路（助手扩展读的 `~/.local/share/twin/tray.d/<id>.json`，还是回退到宿主 `custom-icons` 覆盖表）是**机器**的事（[`architecture.md`](architecture.md) §7.1），不由这个键决定 |
 
 ### `bind`
 
@@ -432,7 +432,7 @@ exec:
 #   源路径:目标路径:ro     ⇒ 只读挂载，程序看得见但改不动
 # 空着 = 数据目录与源程序共用；程序若有单实例锁（Electron / Qt / GTK 系常见），
 # 两个实例会互相干扰。这里只影响这一个实例；要让这个程序以后新建的实例也用同样
-# 的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init 生成草稿）。
+# 的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init <程序名> 生成草稿）。
 bind:
   - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
 ```

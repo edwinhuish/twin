@@ -563,14 +563,16 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	}
 
 	id := t.Ensure("identity")
-	id.SetComment("level", "none = 只写桌面项与图标、程序原样跑；alias = bwrap overlay 零拷贝改名（主力）；\n"+
-		"redirect = 改名，并多写一条把窗口 app_id 改回本实例的扩展规则。")
+	id.SetComment("level", "none = 只写桌面项与图标、程序原样跑（连 bwrap 都不过）；alias = bwrap overlay 零拷贝改名（主力）；\n"+
+		"redirect = 同 alias 改名，另加一条 L5 规则（~/.config/twin/rules.d/<id>.json）给 shell 扩展，\n"+
+		"由它把窗口改判回本实例 —— 给把 app_id 写死在代码里的程序用。")
 	id.Set("level", string(i.Level))
-	id.SetComment("wm_class", "写进桌面项的 StartupWMClass，默认 = id。只在会改名时才需要。")
+	id.SetComment("wm_class", "写进桌面项的 StartupWMClass，默认 = id，且只在 level 会改名时才写。\n"+
+		"别依赖它：Wayland 下认领窗口的是别名基名，这一行只对 X11/XWayland 有意义。")
 	if i.WMClass != "" {
 		id.Set("wm_class", i.WMClass)
 	}
-	id.SetComment("notify", "写进桌面项的 StartupNotify=。")
+	id.SetComment("notify", "写进桌面项的 StartupNotify=。默认 true，而且总是写出来（写不写本身就是一个决定）。")
 	id.Set("notify", i.Notify)
 
 	ic := t.Ensure("icon")
@@ -579,11 +581,12 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	if i.IconSource != "" {
 		ic.Set("source", i.IconSource)
 	}
-	ic.SetComment("badge", "图标上的角标文字。纯数字要加引号，否则会被读成数字。")
+	ic.SetComment("badge", "图标上的角标文字（style = dot 不用它）。纯数字要加引号，否则会被读成数字。")
 	if i.Badge != "" {
 		ic.Set("badge", i.Badge)
 	}
-	ic.SetComment("style", "角标画法：corner 右下角贴文字 / number 居中大数字 / dot 圆点。")
+	ic.SetComment("style", "角标画法：corner 右下角圆角方块 / number 右下角圆形 / dot 右下角小圆点（不带文字）。\n"+
+		"三种都贴齐图标的右边缘与下边缘 —— 图标自己是圆角也照贴，角标不让位。")
 	ic.Set("style", i.BadgeStyle)
 
 	ex := t.Ensure("exec")
@@ -636,8 +639,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// the (future) rules.d use, so merging stays "concatenate the arrays"
 	// rather than "invent a quoting rule" (设计 §3.2).
 	bw := t.Ensure("bwrap")
-	bw.SetComment("extra", "逐 token 原样透传给 bwrap；twin 不解析它们（不猜 arity）。\n"+
-		"拼在基座之后、程序之前，所以同目标挂载会由后写的那个胜出。")
+	bw.SetComment("extra", "逐 token 原样透传给 bwrap；twin 不解析它们（不猜每个选项的元数）。\n"+
+		"拼在基座之后、程序之前，所以同目标挂载会由后写的那个胜出。\n"+
+		"这里是合并后的最终列表，低优先级在前：config.toml → rules.d → gen 的 -- 透传区；手写进来的照旧保留。")
 	if len(i.Bwrap) == 0 {
 		bw.Set("extra", []string{})
 	} else {
@@ -648,8 +652,12 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// is a decision worth seeing in the file, and an absent section would make
 	// it indistinguishable from a file written before this option existed.
 	trayT := t.Ensure("tray")
-	trayT.SetComment("override", "要不要把宿主的托盘覆盖表指向本实例。false = 这台机器上不用 twin 管托盘\n"+
-		"（宿主的表是全局的，而有些程序的托盘 id twin 预测不了）。")
+	trayT.SetComment("override", "要不要让 twin 管这个实例的托盘图标。false = 不管：托盘还是程序自己的图标\n"+
+		"（有些程序的托盘 id twin 预测不了，只能交给它自己）；整机开关是 config.toml 的\n"+
+		"defaults.tray_override，两处任一关掉都写 false。\n"+
+		"走哪条路是这台机器的事、不在这里选：助手扩展被 shell 加载了 ⇒ 写它读的那份文件表\n"+
+		"（~/.local/share/twin/tray.d/<id>.json）；没加载（未装／未启用／被禁用列表挡住／\n"+
+		"读不到列表）⇒ 写宿主的 custom-icons 覆盖表兜底。")
 	trayT.Set("override", i.TrayOverride)
 
 	// Written unconditionally too, empty case included. "twin redirected
@@ -666,7 +674,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"两端也可以是同一个文件（单个配置文件）：形态照磁盘上已经存在的那一端，都没在时按目录。\n"+
 		"空着 = 数据目录与源程序共用；程序若有单实例锁（Electron / Qt / GTK 系常见），\n"+
 		"两个实例会互相干扰。这里只影响这一个实例；要让这个程序以后新建的实例也用同样\n"+
-		"的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init 生成草稿）。")
+		"的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init <程序名> 生成草稿）。")
 	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
 		binds = append(binds, b.String())

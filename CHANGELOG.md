@@ -94,6 +94,14 @@
   就是装完了（三步照旧打印，退出码 0）；末尾那段清单**整个删掉** —— 非 OK 项（含 `Manual` 的）
   一律就地打印在 `🔍 自检` 那一段里，退出码规则不变（`Manual` 且非 OK ⇒ 3）。
 
+- **实例定义里那几处跟不上现状的键说明改掉了**（措辞变更）：`tray.override` 还说"把宿主托盘覆盖表
+  指向本实例"，而托盘早就有两条路（助手扩展读的中立文件表优先，宿主表兜底 —— 走哪条是机器的事）；
+  `icon.style` 把 `number` 写成"居中大数字"，其实它是右下角的圆形，而且三种风格现在都贴齐图标的
+  右边缘与下边缘；`identity.level` 的 `redirect` 只说"多写一条扩展规则"，没说是哪份文件
+  （`~/.config/twin/rules.d/<id>.json` 的 L5 规则，给 shell 扩展改判窗口→应用的映射）；
+  `identity.wm_class` / `notify` 补上了"别依赖它（Wayland 认领窗口的是别名基名）"与"默认 true、
+  总是写出来"；`bwrap.extra` 的"不猜 arity"改成"不猜每个选项的元数"，并写明它是
+  `config.toml → rules.d → gen 的 -- 透传区` 合并后的最终列表。
 - **`twin gen` 的落点改到实例自己的目录，`install` 不再拷贝一份定义**（行为变更）：原先 `gen` 写在
   当前目录的 `./profile.yml`，`install` 读它、并在 `~/.local/share/twin/<id>/profile.yml` 写出一份
   存档快照。现在 `gen` 直接写 `~/.local/share/twin/<id>/profile.yml`（`Paths.Profile(id)`；id 由
