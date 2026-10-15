@@ -195,40 +195,40 @@ func isBindMode(s string) bool {
 	return false
 }
 
-// EnvVar is one `--setenv` pair, written on one line as "键:值".
+// EnvVar is one `--setenv` pair, written on one line as "键=值".
 //
 // It is a pair rather than a YAML mapping because the file's job is to say what
 // bwrap will be called with, and `--setenv KEY VALUE` is two arguments: writing
 // `键: 值` would put a second, differently-shaped spelling of the same thing in
-// the same file. The split is at the *first* colon, so a value may contain as
-// many as it likes (`PATH:/a:/b`, a URL) — the same rule `bind` uses, and for
-// the same reason.
+// the same file. The separator is `=`, the spelling the reader already types
+// everywhere (`docker -e`, systemd `Environment=`), and the split is at the
+// *first* one: the values twin carries are full of colons (`PATH=/a:/b`, a URL),
+// and an `=` showing up inside a value still survives — only the first separates.
 type EnvVar struct {
 	Key   string
 	Value string
 }
 
 // String renders the one-line form the definition carries.
-func (e EnvVar) String() string { return e.Key + ":" + e.Value }
+func (e EnvVar) String() string { return e.Key + "=" + e.Value }
 
-// ParseEnvVar reads the one-line form: "键:值". The value may be empty (a
+// ParseEnvVar reads the one-line form: "键=值". The value may be empty (a
 // program that treats "set but empty" differently from "unset" needs that),
-// which is why the colon is not optional.
+// which is why the `=` is not optional.
 func ParseEnvVar(spec string) (EnvVar, error) {
-	key, value, ok := strings.Cut(strings.TrimSpace(spec), ":")
+	key, value, ok := strings.Cut(strings.TrimSpace(spec), "=")
 	if !ok {
-		return EnvVar{}, fmt.Errorf("环境变量 %q 少了冒号：写成 `键:值`（值可以是空的，键不行）", spec)
+		return EnvVar{}, fmt.Errorf("环境变量 %q 少了等号：写成 `键=值`（值可以是空的，键不行）", spec)
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return EnvVar{}, fmt.Errorf("环境变量 %q 没有键名：写成 `键:值`", spec)
+		return EnvVar{}, fmt.Errorf("环境变量 %q 没有键名：写成 `键=值`", spec)
 	}
 	// A key with a space in it would reach bwrap as one argument that no
-	// program can look up; `=` is here because KEY=VALUE is the shell spelling
-	// and someone will write it — silently exporting nothing is worse than a
-	// refused line.
-	if strings.ContainsAny(key, " \t=") {
-		return EnvVar{}, fmt.Errorf("环境变量 %q 的键名里有空格或 =：键名得是一个词，写法是 `键:值`", spec)
+	// program can look up. `=` cannot get in here — it is the separator, and
+	// everything from the first one on went to the value.
+	if strings.ContainsAny(key, " \t") {
+		return EnvVar{}, fmt.Errorf("环境变量 %q 的键名里有空格：键名得是一个词，写法是 `键=值`", spec)
 	}
 	return EnvVar{Key: key, Value: value}, nil
 }
@@ -643,11 +643,11 @@ func (i *Instance) Check() error {
 	}
 	for n, e := range i.Env {
 		// Round-tripping the one-line form is the whole check: a key carrying a
-		// colon (or a space, or an =) cannot be told from the value when the
-		// pair is written back out, and a file that reads back as something else
-		// is the failure this project refuses to ship.
+		// space cannot be told from the value when the pair is written back
+		// out, and a file that reads back as something else is the failure this
+		// project refuses to ship.
 		if got, err := ParseEnvVar(e.String()); err != nil || got != e {
-			return fmt.Errorf("bwrap.env[%d] %q 不是「键:值」—— 键名不能带冒号、空格或 =（值里可以有冒号）", n, e)
+			return fmt.Errorf("bwrap.env[%d] %q 不是「键=值」—— 键名不能带空格（值里可以有 = 与冒号）", n, e)
 		}
 		if strings.ContainsAny(e.Value, "\x00\n") {
 			return fmt.Errorf("bwrap.env[%d] %q 的值里有换行或 NUL —— bwrap 的 --setenv 收不下", n, e)
@@ -882,8 +882,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	remount = append(remount, i.RemountRO...)
 	bw.Set("remountRO", remount)
 
-	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键:值`，后面的同名者胜；冒号只在\n"+
-		"第一个处断开，所以值里可以再有冒号（PATH:/a:/b）。`gen` 写的 TWIN_INSTANCE:<id> 在这一条里；\n"+
+	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键=值`，后面的同名者胜；等号只在\n"+
+		"第一个处断开，所以值里可以再有等号与冒号（PATH=/a:/b）。`gen` 写的 TWIN_INSTANCE=<id> 在这一条里；\n"+
 		"留空 = 一个都不注入。")
 	env := make([]string, 0, len(i.Env))
 	for _, e := range i.Env {
@@ -1071,14 +1071,14 @@ func Load(path string) (*Instance, error) {
 	// what bwrap is called with" should be the only place they live. They are
 	// refused by name rather than read as aliases — two keys emitting one
 	// argument is how a file starts disagreeing with itself, and the .env one
-	// also changed shape (list of `键:值`, not a mapping).
+	// also changed shape (list of `键=值`, not a mapping).
 	if root.At("isolation").Has("tmpfs") {
 		return nil, fmt.Errorf("%s: `isolation.tmpfs` 现在在 `bwrap` 节点里（bwrap.tmpfs）—— "+
 			"它就是 `--tmpfs`，和 bwrap.extras 一起决定这次调用；把它缩进到 `bwrap:` 下面即可", path)
 	}
 	if root.At("exec").Has("env") {
-		return nil, fmt.Errorf("%s: `exec.env` 现在是 `bwrap.env`，而且换成了列表：一条一个 `键:值`"+
-			"（冒号只在第一个处断开，所以值里可以再有冒号）。请把 `键: 值` 那几行改写进 `bwrap:` 下面", path)
+		return nil, fmt.Errorf("%s: `exec.env` 现在是 `bwrap.env`，而且换成了列表：一条一个 `键=值`"+
+			"（等号只在第一个处断开，所以值里可以再有等号与冒号）。请把 `键: 值` 那几行改写进 `bwrap:` 下面", path)
 	}
 	envSpecs, err := root.At("bwrap").StrListStrict("env")
 	if err != nil {

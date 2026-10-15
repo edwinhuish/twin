@@ -195,8 +195,8 @@ bwrap:                 # 这一个节点就是这次调用；键的顺序就是�
     - /:/:dev
     - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
   remountRO: []        # 把哪些路径收回只读（只能作用在自己就是一条挂载的路径上）
-  env:                 # 注入沙箱的环境变量，一条一个 `键:值`（基座那条 TWIN_INSTANCE 也在里面）
-    - TWIN_INSTANCE:wechat2
+  env:                 # 注入沙箱的环境变量，一条一个 `键=值`（基座那条 TWIN_INSTANCE 也在里面）
+    - TWIN_INSTANCE=wechat2
   extras:              # 没有自己节点的那些 token；基座里**没有自己节点**的那几条在这里
     - --bind           # 宿主那个 /tmp，可写（程序走 X11、不要私有 /tmp 时才有这一条）
     - /tmp

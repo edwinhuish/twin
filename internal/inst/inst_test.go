@@ -29,10 +29,14 @@ func base() *Instance {
 		Proc:       "/proc",
 		Tmpfs:      []string{"/tmp"},
 		RemountRO:  []string{"~/.ssh"},
-		// Two pairs, and the second one has a colon in its *value*: the file
-		// spelling has to survive that (`PATH:/a:/b` splits at the first colon
-		// and nowhere else).
-		Env: []EnvVar{{Key: "TWIN_FOO", Value: "bar"}, {Key: "PATH", Value: "/a:/b"}},
+		// The values carry the two things a separator must not touch: a colon
+		// (`PATH=/a:/b`) and another `=` (`OPTS=--a=b`) both have to come back
+		// as written — the split is at the first `=` and nowhere else.
+		Env: []EnvVar{
+			{Key: "TWIN_FOO", Value: "bar"},
+			{Key: "PATH", Value: "/a:/b"},
+			{Key: "OPTS", Value: "--a=b"},
+		},
 		// The old spelling of the root, kept in the fixture on purpose: an
 		// installed definition written before the root moved into `bind` still
 		// has to load and run (see inst.hasRootMount).
@@ -106,6 +110,9 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	}
 	if len(out.Tmpfs) != 1 || out.Tmpfs[0] != "/tmp" {
 		t.Errorf("tmpfs lost: %+v", out.Tmpfs)
+	}
+	if !reflect.DeepEqual(out.Env, in.Env) {
+		t.Errorf("bwrap.env lost: %+v", out.Env)
 	}
 	if strings.Join(out.Extras, " ") != strings.Join(in.Extras, " ") {
 		t.Errorf("bwrap extras lost: %q", out.Extras)
@@ -449,8 +456,8 @@ bwrap:
     - secrets
     - ~/.ssh
   env:
-    - DEMO_MODE:on
-    - PATH:/a:/b
+    - DEMO_MODE=on
+    - PATH=/a:/b
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -476,7 +483,7 @@ bwrap:
 	}
 	wantEnv := []EnvVar{{Key: "DEMO_MODE", Value: "on"}, {Key: "PATH", Value: "/a:/b"}}
 	if !reflect.DeepEqual(it.Env, wantEnv) {
-		t.Errorf("bwrap.env = %+v, want %+v（冒号只在第一个处断开）", it.Env, wantEnv)
+		t.Errorf("bwrap.env = %+v, want %+v（等号只在第一个处断开）", it.Env, wantEnv)
 	}
 	if len(it.Binds) != 3 {
 		t.Fatalf("binds = %v", it.Binds)
@@ -842,14 +849,16 @@ func TestParseBindRefusesAmbiguousShapes(t *testing.T) {
 	}
 }
 
-// 一行写法是盘上的完整契约，`键:值` 也一样：写出去要能原样读回来，读不回来就是改了
-// 用户写下的东西。这里同时钉住那个必然会被写出来的形状 —— 值里带冒号（PATH:/a:/b）。
+// 一行写法是盘上的完整契约，`键=值` 也一样：写出去要能原样读回来，读不回来就是改了
+// 用户写下的东西。这里同时钉住那两个必然会被写出来的形状 —— 值里带冒号（PATH=/a:/b）
+// 和值里再有一个等号（OPTS=--a=b）。
 func TestParseEnvVarRoundTrips(t *testing.T) {
 	for _, spec := range []string{
-		"TWIN_FOO:bar",
-		"PATH:/a:/b",
-		"LC_ALL:", // 空值：程序分得清"设了但为空"和"没设"
-		"URL:https://example.com:8443/x",
+		"TWIN_FOO=bar",
+		"PATH=/a:/b",
+		"LC_ALL=", // 空值：程序分得清"设了但为空"和"没设"
+		"URL=https://example.com:8443/x",
+		"OPTS=--a=b",
 	} {
 		got, err := ParseEnvVar(spec)
 		if err != nil {
@@ -862,13 +871,13 @@ func TestParseEnvVarRoundTrips(t *testing.T) {
 	}
 }
 
-// 键名是 bwrap 的一个参数，值可以是任何东西 —— 所以不能有冒号的只有冒号左边那一半。
+// 键名是 bwrap 的一个参数，值可以是任何东西 —— 所以不能有问题的只有等号左边那一半。
 func TestParseEnvVarRefusesUnusableKeys(t *testing.T) {
 	for _, spec := range []string{
-		"TWIN_FOO",     // 少了冒号：那是一个键，不是一个值
-		":bar",         // 少了键名
-		"TWIN FOO:bar", // 键名里的空格会变成一个谁也查不到的名字
-		"TWIN_FOO=bar", // shell 的写法；默认成"设了但没生效"比拒掉更糟
+		"TWIN_FOO",     // 少了等号：那是一个键，不是一个值
+		"=bar",         // 少了键名
+		"TWIN FOO=bar", // 键名里的空格会变成一个谁也查不到的名字
+		"TWIN_FOO:bar", // 冒号那一版的老写法：它现在是一个没有等号的字符串
 	} {
 		if got, err := ParseEnvVar(spec); err == nil {
 			t.Errorf("ParseEnvVar(%q) 应当报错，得到 %+v", spec, got)
