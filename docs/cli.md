@@ -26,11 +26,11 @@ twin inspect doctor    # 预览名叫 doctor 的程序
 > 怎么办"。取消隐式动词同时消灭了**保留字表**和**逃生口**两样特例，一个从未实现的
 > `completion` 死字也顺带清掉了。
 >
-> `install` 一个位置参数都不收（读哪一份配置由 `-p` 说），机器级的那一半走开关：`twin install
-> --ext`。这不是口味问题：实例 id 收 `[A-Za-z0-9._-]`，**任何裸词都是合法的实例 id**，所以宾语位上
-> 一个保留字必然与用户能取的名字同形 —— 写成 `twin install extension` 的话，那一句装的是扩展，而
-> `twin remove extension` 删的是一个实例：同一个词在两个动词下指相反的东西。机器级的那一半因此
-> 写成开关，而不是宾语。
+> `install` 的宾语是**实例**：`twin install <id>`（读那个实例自己的定义）或 `-p <文件>`。机器级的
+> 那一半走开关：`twin install --ext`。这不是口味问题：实例 id 收 `[A-Za-z0-9._-]`，**任何裸词都是
+> 合法的实例 id**，所以宾语位上一个保留字必然与用户能取的名字同形 —— 写成 `twin install extension`
+> 的话，那一句装的是扩展，而 `twin remove extension` 删的是一个实例：同一个词在两个动词下指相反的
+> 东西。机器级的那一半因此写成开关，而不是宾语。
 
 `<source>` 可以是：`.desktop` 文件的路径、桌面项 id（`wechat`），或程序名。
 查找顺序是 `~/.local/share/applications` → `/usr/local/share/applications` →
@@ -97,7 +97,7 @@ Keywords   微信;wechat;
   · /usr/bin/wechat 是指向 /opt/wechat/wechat 的链接 —— 别名要建在 /opt/wechat 里（$ORIGIN 与 /proc/self/exe 都看真实路径）
   · Wayland 原生 + 静态链接的 Qt：窗口 app_id 由 Qt 从可执行文件真实路径派生（已实测）
   · 同时含 Wayland 与 X11 平台插件：本会话有 WAYLAND_DISPLAY 时按 Wayland 走
-  · 应用规则 wechat：内置规则（3 条路径映射 ⇒ 快照里的 bind）
+  · 应用规则 wechat：内置规则（3 条路径映射 ⇒ 定义里的 bind）
 ```
 
 `显示名` / `说明` 打印的是**语言化**取值（`Name[<当前语言>]` 优先），因为 `wrap` 就是这么
@@ -121,29 +121,32 @@ Keywords   微信;wechat;
 
 | 命令 | 做什么 |
 |---|---|
-| `twin gen wechat` | 写一份配置（默认 `~/.local/share/twin/profile.yml`；id、显示名、路径映射全部推导出来写进去），然后说清文件落在哪、下一步敲什么 |
-| `$EDITOR ~/.local/share/twin/profile.yml` | 改 `bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
-| `twin install` | 读那份配置：写实例快照 → 落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 检查托盘扩展 ＋ 自检 |
+| `twin gen wechat` | 写一份配置（默认 `~/.local/share/twin/wechat2/profile.yml`；id、显示名、路径映射全部推导出来写进去），然后说清文件落在哪、下一步敲什么 |
+| `$EDITOR ~/.local/share/twin/wechat2/profile.yml` | 改 `bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
+| `twin install wechat2` | 读那份定义 → 落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 检查托盘扩展 ＋ 自检。`twin reinstall wechat2` 是同一个动作的另一个入口 |
 | `twin install --ext` | 装入 shell 侧的托盘扩展（机器级；`install` / `reinstall` 只检查它）。`twin reinstall --ext` 是同一个动作的另一个入口 |
 
-**配置为什么在 `~/.local/share/twin/` 下？** 它是这份 wrap 里唯一需要人读一遍的东西，所以落点必须
-从下一个 shell、下一台终端、明天都还找得到 —— 那只能是一条跟 `$HOME` 派生的路径，而"当前目录"
-只是你这次站的地方。想把几份配置并排放在一起（diff、提交进仓库、拷到另一台机器），用 `-o` 指过去
-就行。实例目录下的 `~/.local/share/twin/<id>/profile.yml` 是另一个东西 —— 同名，但那是 `install`
-写下的**存档**，寿命与含义都不同。
+**定义为什么在实例自己的目录里？** 两个理由。一是**找得回来**：它是这份 wrap 里唯一需要人读一遍的
+东西，落点必须从下一个 shell、下一台终端、明天都还找得到，而"当前目录"只是你这次站的地方。二是
+**一个 id 一份**：包第二个程序时不会撞上第一个的定义，也不会互相覆盖。要把配置放在别处（并排放几份、
+提交进仓库、拷到另一台机器），`gen -o <文件>` 指过去，之后用 `install -p <文件>` 读它 —— 那时
+实例目录里会另写一份**存档记录**，`reinstall <id>` 重放的是它。
 
-**输出文件已存在就拒绝**（退出码 1），除非 `--force`：那个文件正是你要改的东西，盖掉它比报个错
-难收拾得多。
+**输出文件已存在就拒绝**（退出码 1），除非 `--force`。撞上默认落点（那个实例的定义已经在了）时，
+报错直接给下一步：`twin install <id>` —— 那份文件不是"另一个输出文件"，它就是这个实例。
+
+**头注释跟着落点走**：写在实例目录里的那份指向 `twin install <id>`，`-o` 写到别处的那份指向
+`twin install -p <你给的那个路径>` —— 否则它会把你送去读实例目录里那份记录，而不是你手上这份。
 
 ```console
 $ twin gen wechat
-✅ 已写出配置 /home/you/.local/share/twin/profile.yml
-  目录 /home/you/.local/share/twin
+✅ 已写出配置 /home/you/.local/share/twin/wechat2/profile.yml
+  目录 /home/you/.local/share/twin/wechat2
   文件 profile.yml
 
 👉 下一步
-  1. 改 /home/you/.local/share/twin/profile.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
-  2. 安装：twin install
+  1. 改 /home/you/.local/share/twin/wechat2/profile.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
+  2. 安装：twin install wechat2
 ```
 
 落点拆成三行是有意的：完整路径给眼睛看一眼，目录给要 `cd` 过去的人，文件名给要把它递给另一个程序
@@ -158,8 +161,8 @@ $ twin gen wechat
 
 ```console
 $ twin gen foo
-✅ 已写出配置 /home/you/.local/share/twin/profile.yml
-  目录 /home/you/.local/share/twin
+✅ 已写出配置 /home/you/.local/share/twin/foo2/profile.yml
+  目录 /home/you/.local/share/twin/foo2
   文件 profile.yml
   ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind
 
@@ -172,13 +175,24 @@ $ twin gen foo
 
 ### `twin install`
 
-**读一份配置，把它变成实例。** 读不到那份配置就直接报错并让你去跑 `twin gen`，不会去猜别的路径。
+**读一份定义，把它变成实例。** 两种指名方式，二选一：
 
-它**不接受任何描述实例的选项**：包哪个程序、叫什么名字、隔离哪些目录，全都在那份文件里。一个 flag
+- `twin install <id>`：读那个实例自己的定义（`~/.local/share/twin/<id>/profile.yml`）—— `twin gen`
+  之后最自然的下一步，id 就印在 gen 的输出里；
+- `twin install -p <文件>`：读你指定的那一份（配置放在别处时用它）。这时实例目录里会另写一份存档记录。
+
+两者同时给、或两个都不给，都是用法错误（退出码 2）：同时给会让其中一个被静默忽略，都不给就只能
+猜要装哪个实例。读不到那份定义就直接报错并让你去跑 `twin gen`，不会去猜别的路径。
+
+它**不接受任何描述实例的选项**：包哪个程序、叫什么名字、隔离哪些目录，全都在那份定义里。一个 flag
 和一个文件可以互相矛盾，而其中只有一个是用户刚刚花了时间改的那份。
 
+**它不重写那份定义。** `install <id>` 与 `reinstall <id>` 读的是同一个文件，头注释里写着"改完跑
+`twin install <id>`"；写回去就是一次解析往返，`yamlz.Parse` 会丢掉你手写的每一条注释（见
+configuration.md §4）。只有 `-p` 指到别处时，实例目录里才写一份 `RoleSnapshot` 的存档记录。
+
 ```console
-$ twin install
+$ twin install wechat2
 ✅ 已安装 wechat2
   桌面项   /home/you/.local/share/applications/wechat2.desktop
   图标     /home/you/.local/share/appicons/wechat2.png
@@ -188,19 +202,19 @@ $ twin install
   托盘扩展 twin-tray@edwinhuish.github.io 已启用 —— 托盘图标由它接管
 
 📁 路径映射
-  3 条，来源：配置 /home/you/.local/share/twin/profile.yml
+  3 条，来源：配置 /home/you/.local/share/twin/wechat2/profile.yml
   私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
 
 👉 下一步
   1. 桌面项是后写的 —— 请**重新启动**这个实例，否则窗口还是旧的名字和图标。
   2. 确认身份与托盘：twin verify wechat2
-     改了实例快照要重放：twin reinstall wechat2
+     改了实例定义要重放：twin reinstall wechat2
 ```
 
 安装阶段的输出也刻意短：产物清单 ＋ `路径映射` ＋ 下一步。"要动手时才需要"的东西（规则模板全文、
 候选状态目录、改哪个文件、推导值、手工验证命令）用 `--explain` 展开。`--dry-run` 是**完整落盘**的
-预演 —— 桌面项正文、`profile.yml` 正文、bwrap 调用、托盘将写入的那一行全都在，而且由真实落盘用的
-**同一份代码**渲染。
+预演 —— 桌面项正文、定义正文（定义已在原处时不重写，预演会明确说出来）、bwrap 调用、托盘将写入的
+那一行全都在，而且由真实落盘用的**同一份代码**渲染。
 
 托盘那半段是个**二选一**，判据只有一个：用户扩展目录下的
 `twin-tray@edwinhuish.github.io/` 是否**在 shell 的启用列表里、且不在它的禁用列表里**（两个列表都读得到
@@ -211,7 +225,7 @@ $ twin install
 
 `twin install` / `twin reinstall` **只检查**那份扩展，**不写它** —— 那一件是机器级的，见本节末尾那条命令。
 理由不是"顺手多写个文件"：一份扩展服务所有实例、比实例活得久，挂到实例安装上就成了"包一个实例"的副作用，
-每次重放快照还会重做一遍。写入它是幂等的（逐字节比对后才写，因为 shell 只看 mtime），**启用它**却要等
+每次重放定义还会重做一遍。写入它是幂等的（逐字节比对后才写，因为 shell 只看 mtime），**启用它**却要等
 shell 下次扫扩展目录（注销重登一次）；那一步连同原因一起打印，并以退出码 3 收尾。装完扩展**不会**让已有
 实例自动搬家：它们在下一次 `install` / `reinstall` 时才改走扩展那条路（否则屏幕上那个"小一圈"的图标会
 像个新 bug）。机制见 [`architecture.md`](architecture.md) §7.1。
@@ -231,9 +245,10 @@ shell 下次扫扩展目录（注销重登一次）；那一步连同原因一�
 
 `twin verify` 是另一回事：把每一条都列出来正是它的职责，跳过项（本机没这个能力）也在里面。
 
-**实例目录里那份不是工作副本。** `install` 会按配置重新渲染它（存档角色，头注释指向
-`twin reinstall`），所以 `install` 与 `reinstall` 写出的字节一致；改完 `profile.yml` 再 `install`
-一次，实例就更新了。反过来，`reinstall` **只**读存档快照、不看配置 —— 它要的是确定性。
+**一份文件、两个入口。** `install <id>` 与 `reinstall <id>` 读的是同一个文件
+（`~/.local/share/twin/<id>/profile.yml`），所以改完它再跑哪一个都一样，而两者都不会去改动它。
+只有 `-p <文件>` 那条路（定义放在别处）会让 `install` 在实例目录里再写一份存档记录，供
+`reinstall <id>` 重放 —— 那份才是"上次到底装了什么"的存档。
 
 路径映射是这份产物里**唯一随程序而变、且猜错了不出声**的部分：隔离错一个目录，要到两个实例
 抢同一个锁文件时才暴露。两个命令各有各的交代方式：`gen` 把它写进配置的 `bind`（连同"空着意味着
@@ -252,7 +267,7 @@ shell 下次扫扩展目录（注销重登一次）；那一步连同原因一�
 类），私有 bwrap 副本就需要一份挂在它路径上的 AppArmor profile。`twin install` 会**自己装上**：
 
 ```console
-$ twin install
+$ twin install wechat2
 🧱 沙箱方案
   · config.toml 里 userns.trampoline = "off"：不走跳板，需要一份挂在私有副本上的 profile
 
@@ -282,12 +297,12 @@ $ twin install
 
 ```console
 📁 路径映射
-  3 条，来源：配置 /home/you/.local/share/twin/profile.yml
+  3 条，来源：配置 /home/you/.local/share/twin/wechat2/profile.yml
   私有  ~/.local/state/twin/wechat2/xwechat:~/.xwechat
   共用  ~/Documents/xwechat_files:~/Documents/xwechat_files   （原地升回可写，数据不搬家）
   私有  ~/.local/state/twin/wechat2/all_users:~/Documents/xwechat_files/all_users
   改：~/.config/twin/rules.d/wechat.toml —— 影响这个程序以后新建的实例（twin rules --init wechat 生成草稿）
-      只改这一个：编辑 /home/you/.local/share/twin/profile.yml 里的 bind，再 twin install
+      只改这一个：编辑 /home/you/.local/share/twin/wechat2/profile.yml 里的 bind，再 twin install wechat2
 
   📋 照抄下面这份（就是规则文件的全部内容）：
 
@@ -324,15 +339,15 @@ $ twin install
     ~/.local/state/foo                           目录存在
     要隔离就先生成一份规则草稿：twin rules --init foo
   改：~/.config/twin/rules.d/foo.toml —— 影响这个程序以后新建的实例（twin rules --init foo 生成草稿）
-      只改这一个：编辑 /home/you/.local/share/twin/profile.yml 里的 bind，再 twin install
+      只改这一个：编辑 /home/you/.local/share/twin/foo2/profile.yml 里的 bind，再 twin install foo2
 ```
 
 #### 机器级的那一份：`--ext`（`install` 与 `reinstall` 同形）
 
 托盘扩展**不是**一件实例产物：一份服务所有实例，而且比任何一个实例活得久。所以它**不由
-`twin install` 写入** —— 否则"包一个实例"这个动作会顺手改掉一个与它无关的东西，而且每重放一次快照
-就重做一遍。它归 `install` 的一个开关 —— 而 `reinstall` 也认这个开关，因为「装一份配置」与
-「重放它写下的快照」本来就是同一件事的两个入口（两者共用 `installAndCheck`）：机器级那一半若只在一边
+`twin install` 写入** —— 否则"包一个实例"这个动作会顺手改掉一个与它无关的东西，而且每重放一次
+就重做一遍。它归 `install` 的一个开关 —— 而 `reinstall` 也认这个开关，因为「装一份定义」与
+「把它再放一遍」本来就是同一件事的两个入口（两者共用 `installAndCheck`）：机器级那一半若只在一边
 够得着，那「有哪些命令」就取决于你走的是哪扇门，而不是取决于机器上缺什么。
 
 ```console
@@ -362,12 +377,12 @@ $ twin install --ext        # 或 twin reinstall --ext —— 同一段代码
 
 自检一个**已安装**实例的身份链路。**重新读硬盘**，不信内存里的期望。
 
-实例目录在、桌面项却不在（上一次安装死在写快照与写身份锚点之间）时，它不吃一遍连锁失败，而是把
-这一件事说清楚并给出收尾命令，退出码 `1`：
+实例目录在、桌面项却不在（`gen` 写完定义还没装，或上一次安装死在最后一步）时，它不吃一遍连锁失败，
+而是把这一件事说清楚并给出收尾命令，退出码 `1`：
 
 ```console
-❌ wechat3 的桌面项不在：上一次安装没走完（快照 /home/you/.local/share/twin/wechat3/profile.yml 在，桌面项 / 图标 / 启动器不全）
-  重来一次：twin reinstall wechat3
+❌ wechat3 的桌面项不在：这个实例还没落盘（定义 /home/you/.local/share/twin/wechat3/profile.yml 在，桌面项 / 图标 / 启动器不全），或者上一次安装没走完
+  落盘：twin install wechat3（等价的重放入口：twin reinstall wechat3）
 ```
 
 | 检查项 | 失败意味着 |
@@ -385,7 +400,7 @@ $ twin install --ext        # 或 twin reinstall --ext —— 同一段代码
 | 嵌套 user namespace | 副本／跳板链路不完整（**双向查**：该有的没有 ⇒ FAIL；不该有却有 ⇒ WARN） |
 
 `嵌套 user namespace` 那一项会解析**启动器文本**，确认跳板确实在启动器里 —— 因为跳板被卸载时，
-快照里的每条路径都还在，别的检查全都抓不到。
+定义里的每条路径都还在，别的检查全都抓不到。
 
 ### `twin list`
 
@@ -395,32 +410,33 @@ $ twin install --ext        # 或 twin reinstall --ext —— 同一段代码
 📋 实例
 id               level      别名     程序                     桌面项
 wechat2          alias      wechat2  wechat                   wechat2.desktop
-foo3             alias      foo3     foo                      foo3.desktop  ← 安装未完成
+foo3             alias      foo3     foo                      foo3.desktop  ← 还没落盘
 
-⚠️ 有 1 个桌面项缺失（上一次安装没走完）：twin reinstall <id>
+⚠️ 有 1 个没有桌面项（刚 gen 出来还没装，或上次安装没走完）：twin install <id>
 
 删除某一个：twin remove <id>（不带 --yes 会先列出来问你一次）
 ```
 
-`← 安装未完成` 不是"桌面项被谁删了"，而是**上一次 `install` 死在半路**：快照写下了，身份锚点没写全。
-`twin reinstall <id>` 就是收尾命令 —— 它按那份快照把整件事重放一遍。
+`← 还没落盘` 不是"桌面项被谁删了"，而是这个实例**还没装**（`gen` 写了定义就走了），或者上一次
+`install` 死在半路。两种情况都由 `twin install <id>` 收尾 —— 它按那份定义把整件事做一遍。
 
 ### `twin reinstall <id>`
 
-按**实例目录里那份快照**重新落盘。它是"这个实例已经装好了，现在要按存档重来一次"那条路。
+按**实例目录里那份定义**重新落盘。它与 `twin install <id>` 是同一件事的两个入口：同一个文件、同一段
+代码（`installAndCheck`），说得出区别的只有意图 —— "把这个实例重来一遍"。
 
-它不看 `profile.yml`：配置可能已经被拷走、提交进仓库、或者删掉了，而"上次到底装了什么"只剩存档这一
-份记录。要按新配置更新实例，改配置再 `twin install` —— 两者走**同一条安装路径**，所以不可能出现
-"install 会做、reinstall 不做"的事。
+它只认 `<id>`：那份定义可能已经被拷走、提交进仓库、或者 `-o` 时压根不在这个位置，而 `reinstall` 要的
+是确定性。要按新配置更新实例，改那份定义再跑它（或 `twin install <id>`）。
 
-**默认只读快照**，因为重放必须是确定性的：碰一下 `config.toml` 不该静默改写一排实例。`-h` 里那个
+**默认只读那份定义**，因为重放必须是确定性的：碰一下 `config.toml` 不该静默改写一排实例。`-h` 里那个
 开关是"再读一遍 `config.toml` / `rules.d`"的显式出口，而且它**只做加法与填空**（逐字段的行为见
-[`configuration.md`](configuration.md) 的优先级一节）。
+[`configuration.md`](configuration.md) 的优先级一节）。补上的值只用在这一趟落盘上：那份文件是你的，
+重放不会去改写它（`-h` 里也这么写着）。
 
-若今天的会话与快照里的决定矛盾（例如快照记着"走 Wayland"而当前只有 X11），会**警告**而不是默默重放。
+若今天的会话与定义里的决定矛盾（例如记着"走 Wayland"而当前只有 X11），会**警告**而不是默默重放。
 
 带 `--ext` 时它**不重放任何实例**，而是装那份机器级助手扩展 —— 与 `twin install --ext` 同一段代码，
-所以也不接受 `<id>`（它不属于任何实例）与 `--refresh`（那个开关读的是快照）。`--dry-run` 反过来只在
+所以也不接受 `<id>`（它不属于任何实例）与 `--refresh`（那个开关读的是定义）。`--dry-run` 反过来只在
 `--ext` 下有意义：重放是确定性的，写下的字节与上次那份 install 写的相同，没有可预演的东西。
 
 ### `twin remove <id>`
@@ -432,7 +448,7 @@ foo3             alias      foo3     foo                      foo3.desktop  ← 
   卡住，这和装 AppArmor profile 那一步是同一条规矩。
 - `--yes` 是不提问的那个开关（脚本里用它），私有数据要不要一起删是 `--purge` —— 两个开关的语义在
   `-h` 里。
-- 安装没走完的实例也照删 —— 快照本来就写在那儿，撤销它就是把那个目录清掉。
+- 还没装、或安装没走完的实例也照删 —— 那份定义（可能还有半套产物）就在那儿，撤销它就是把那个目录清掉。
 - 私有状态目录默认保留（那是唯一不可逆的部分），保留的那份下次同名重建会接着用。
 - 会顺带移除**两处**托盘声明：宿主表里该 `id` 的条目（表是全局的），以及扩展读的那份文件表
   （`~/.local/share/twin/tray.d/<id>.json`）。两条都是"一个即将不存在的程序"的声明 —— 留着会继续
@@ -498,7 +514,7 @@ $ twin reinstall -h    # 重放存档的那一个开关
 
 | 类别 | 描述什么 | 例子 |
 |---|---|---|
-| **描述实例** | 会进 `profile.yml`，进而进快照 | 显示名、角标、`--level`、`--tmpfs`、`--no-tray` |
+| **描述实例** | 会进 `profile.yml` | 显示名、角标、`--level`、`--tmpfs`、`--no-tray` |
 | **描述这次动作** | 只影响这一次调用 | 写到哪、要不要覆盖、`--dry-run`、`--explain` |
 
 只有 `gen` 拥有第一类。`install` 的选项表里一个实例选项都没有，所以"带着描述实例的选项去装一个已存在
@@ -565,8 +581,8 @@ $ twin reinstall -h    # 重放存档的那一个开关
 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 生成器 |
 | `~/.local/share/appicons/<id>.png` | 图标 | 生成器 |
 | `~/.local/share/twin/<id>/launch` | 薄启动器 | 生成器 |
-| `~/.local/share/twin/profile.yml`（或 `-o` 指的路径） | 工作副本：你编辑的那一份 | 生成器（`twin gen`），你改，再 `twin install` |
-| `~/.local/share/twin/<id>/profile.yml` | 实例存档快照 | 生成器（`twin install` 按配置渲染）；你改，再 `twin reinstall <id>` |
+| `~/.local/share/twin/<id>/profile.yml` | 实例定义：你编辑的那一份（`-o` 可以指到别处，那时用 `install -p <文件>` 读它） | 生成器（`twin gen`），你改，再 `twin install <id>` 或 `twin reinstall <id>` |
+| 同上，定义在别处时 | 存档记录：`install` 按你指定的那份配置写出，`reinstall <id>` 重放它 | 生成器（`twin install -p <文件>`） |
 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本（共享，一台机器一份） | 生成器（仅需要时） |
 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（共享） | 生成器（仅需要时） |
 | `~/.local/share/twin/tray.d/<id>.json` | 中立托盘文件表：扩展读它画本实例的图标（**首选路径**；扩展不可用时这份文件不写） | 生成器（`twin install` / `twin reinstall`），`twin remove` 删掉 |
@@ -602,26 +618,26 @@ $ twin reinstall -h    # 重放存档的那一个开关
 `twin <命令> -h` 负责。下面这几组是**要动文件**的用法，也就是 `-h` 演示不了的那部分。
 
 ```bash
-# 让两份实例彻底分家（连配置目录一起隔离）：映射写进配置，再安装
+# 让两份实例彻底分家（连配置目录一起隔离）：映射写进定义，再安装
 twin gen wechat --as wx-alt
-$EDITOR ~/.local/share/twin/profile.yml
+$EDITOR ~/.local/share/twin/wx-alt/profile.yml
 #   bind:
 #     - ~/.local/state/twin/wx-alt/config:~/.config/wechat
 #     - ~/.local/state/twin/wx-alt/xwechat:~/.xwechat
-twin install
+twin install wx-alt
 
 # 一个只想多开小号、其它全共享的浏览器
 twin gen google-chrome --as chrome-alt
-$EDITOR ~/.local/share/twin/profile.yml
+$EDITOR ~/.local/share/twin/chrome-alt/profile.yml
 #   bind:
 #     - ~/.local/state/twin/chrome-alt/profile:~/.config/google-chrome
-twin install
+twin install chrome-alt
 
 # 底层的额外隔离（透传）
 twin gen wechat -- --unshare-pid
-twin install
+twin install wechat2
 
-# 改完实例快照重放（install 与 reinstall 是同一条路）
+# 改完定义重放（install 与 reinstall 是同一条路，读的是同一个文件）
 $EDITOR ~/.local/share/twin/wechat2/profile.yml
 twin reinstall wechat2
 

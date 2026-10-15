@@ -8,8 +8,8 @@
 （两个账号、两套配置、两个任务栏图标）。
 
 ```console
-$ twin gen wechat       # 写出一份 profile.yml（~/.local/share/twin/）：独立窗口名、托盘图标、账号状态
-$ twin install          # 读它，落盘，然后自检这条身份链路的每一环
+$ twin gen wechat       # 写出一份 profile.yml（~/.local/share/twin/wechat2/）：独立窗口名、托盘图标、账号状态
+$ twin install wechat2  # 读它，落盘，然后自检这条身份链路的每一环
 ```
 
 最短可用命令就是上面这两行 —— id、显示名、说明、角标、关键词、状态路径全部从源程序的
@@ -53,18 +53,19 @@ twin doctor
 # 1. 只看不写：这个程序会被包成什么样
 twin inspect wechat
 
-# 2. 写配置：~/.local/share/twin/profile.yml；每个键的说明都写在文件里的注释里（命令结束时会报出行目录与文件名）
+# 2. 写定义：~/.local/share/twin/wechat2/profile.yml；每个键的说明都写在文件里的注释里
+#    （命令结束时会报出它的目录、文件名，以及下一步敲哪条命令）
 twin gen wechat
 
-# 3. 改配置（可选）：`bind` 那一节最容易猜错，每个键的说明都写在文件里的注释里
-$EDITOR ~/.local/share/twin/profile.yml
+# 3. 改定义（可选）：`bind` 那一节最容易猜错，每个键的说明都写在文件里的注释里
+$EDITOR ~/.local/share/twin/wechat2/profile.yml
 
 # 4. 安装 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
-twin install
+twin install wechat2
 twin verify wechat2
 ```
 
-一份配置可以放别处、可以有几份（多实例、多台机器共用）：
+一份定义可以放别处、可以有几份（多实例、多台机器共用）：
 
 ```bash
 twin gen wechat -o ~/wraps/wx-work.yml
@@ -73,9 +74,10 @@ twin install -p ~/wraps/wx-work.yml
 
 **为什么是两步**：一次 wrap 里唯一随程序而变、又猜错了不出声的，是"隔离哪些数据目录"。所以先把它
 落成一份能读能改的 `profile.yml`，再安装 —— 而不是先装好、再在一屏输出里让你事后发现映射是错的。
-默认落点是 `~/.local/share/twin/` 下的同一份文件，理由的另一半是**找得回来**：它是这份 wrap 里唯一
-需要人读一遍的东西，而"当前目录"只是你这次站的地方 —— 换个 shell 就找不到了。想并排放好几份
-（diff、提交进仓库、拷到另一台机器）就用 `-o`。
+默认落点是**实例自己的目录**（`~/.local/share/twin/<id>/profile.yml`），理由的另一半是**找得回来**：
+它是这份 wrap 里唯一需要人读一遍的东西，而"当前目录"只是你这次站的地方 —— 换个 shell 就找不到了。
+一个 id 一份落点也意味着包第二个程序不会撞上第一个的定义。想并排放好几份（diff、提交进仓库、拷到
+另一台机器）就用 `-o`，然后以 `-p` 读它。
 
 安装后你会发现多了这些东西：
 
@@ -83,7 +85,7 @@ twin install -p ~/wraps/wx-work.yml
 ~/.local/share/applications/wechat2.desktop     ← 身份锚点
 ~/.local/share/appicons/wechat2.png             ← 带角标的图标
 ~/.local/share/twin/wechat2/launch           ← 薄启动器（bash，exec bwrap）
-~/.local/share/twin/wechat2/profile.yml      ← 安装时的存档快照（install 按你手上那份 profile.yml 渲染它）
+~/.local/share/twin/wechat2/profile.yml      ← 实例定义（`gen` 写下的那份，`install` 读的就是它，不改写）
 ~/.local/state/twin/wechat2/                 ← 这个实例的私有数据目录
 ```
 
@@ -109,8 +111,8 @@ gnome-shell 49 已删 ⇒ 恒 16px，外面补不了）。扩展**没被加载**
 知识从哪来（内置规则 / `rules.d` / 这份配置）。不同程序的数据目录完全不同，而隔离错一个目录要等到
 两个实例抢同一个锁文件才暴露。**改它该编辑哪个文件**（`rules.d` 管这个程序**以后新建**的实例，
 手上这份配置管**这一个**）和"还有哪些目录值得映射"是 `--explain` 里的内容 —— 它们是"这条映射错了"
-之后才需要的东西，而默认输出的前提恰恰是它没错。改完配置重装一次：`twin install`（改的若是实例目录
-里那份快照，就 `twin reinstall <id>`，两者走同一条安装路径）。
+之后才需要的东西，而默认输出的前提恰恰是它没错。改完那份定义重装一次：`twin install <id>` ——
+`twin reinstall <id>` 读的是同一个文件、走的是同一条安装路径，敲哪个都行。
 
 **输出默认是精简的**：`twin gen` 只报文件路径与下一步，`twin install` 报产物清单 ＋ `路径映射` ＋
 下一步，都是一屏能看完的。自检只在**有问题**时才开口（那几条 `✅` 确认的正是这一次刚写下的文件），
@@ -133,13 +135,15 @@ twin gen wechat                  ← 前半段：只配置
       ├─ 2. 推导默认值   → id=wechat2  name=微信2  badge=2  keywords=微信;wechat;
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
       ├─ 4. 从内置规则 / rules.d 算出路径映射
-      └─ 5. 写出 profile.yml（~/.local/share/twin/，唯一一个文件），报出行目录与文件名、下一步敲什么
+      └─ 5. 写出 profile.yml 到实例自己的目录（~/.local/share/twin/<id>/，唯一一个文件），
+            报出目录与文件名、下一步敲什么
 
-twin install                     ← 后半段：按配置安装（reinstall 也走这条路）
+twin install <id>                ← 后半段：按那份定义安装（reinstall 也走这条路）
       │
       ├─ 6. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板。
       │                    两者都没有、而程序又要嵌套 ns 时：用 sudo 装一份 AppArmor profile
-      ├─ 7. 落盘 5~7 件产物（幂等），包括按配置渲染的存档快照 profile.yml
+      ├─ 7. 落盘 5~7 件产物（幂等）。那份定义**不重写**（改写会丢手写的注释）；只有定义
+      │                    放在别处（`-p`）时，才在实例目录里写一份存档记录
       ├─ 8. 托盘覆盖：助手扩展被 shell 加载了 ⇒ 写它读的文件表，并删掉宿主表里那一行；
       │                    没加载 ⇒ 写宿主托盘覆盖表兜底（两条都热生效）
       │                    ＋ 检查托盘扩展本身（缺了会提醒装它：twin install --ext，
@@ -233,12 +237,12 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 
 | 命令 | 作用 |
 |---|---|
-| `twin gen <source>` | **最常用**：写出一份配置（`profile.yml`，默认在 `~/.local/share/twin/`，`-o` 可换地方）；id / 名字 / 角标 / 状态路径全部推导 |
-| `twin install` | **最常用**：读那份配置，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。需要 AppArmor profile 时用 `sudo` 装；托盘覆盖走哪条路由它当场决定并打印；托盘扩展本身只**检查**，缺了会给出下面那条命令 |
+| `twin gen <source>` | **最常用**：写出一份定义（`profile.yml`，默认落在 `~/.local/share/twin/<id>/`，`-o` 可换地方）；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin install <id>` | **最常用**：读那个实例的定义，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。配置在别处就 `-p <文件>`。需要 AppArmor profile 时用 `sudo` 装；托盘覆盖走哪条路由它当场决定并打印；托盘扩展本身只**检查**，缺了会给出下面那条命令 |
 | `twin install --ext` | 装入 **shell 侧的托盘扩展**（机器级，一份服务所有实例，装一次即可；装完要注销重登一次才启用得上，之后各实例的托盘图标由它画，下次 install / reinstall 才改走那条路）。`twin reinstall --ext` 是同一个动作 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
 | `twin verify <id>` | 自检一个实例的身份链路 |
-| `twin reinstall <id>` | 按实例目录里那份存档快照重新落盘 |
+| `twin reinstall <id>` | 按实例目录里那份定义重新落盘（与 `twin install <id>` 是同一个动作） |
 | `twin remove <id>` | 删除产物：先列出要删什么、问过你才动手（脚本里用 `--yes`） |
 | `twin list` | 列出全部实例 |
 | `twin doctor` | 环境自检（先跑这个），输出末尾直接告诉你下一步敲什么 |
@@ -259,15 +263,15 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 三层，越具体越优先：
 
 ```
-~/.local/share/twin/profile.yml（或 -p 指的那份）   你正在编辑的那一份
+~/.local/share/twin/<id>/profile.yml     你正在编辑的那一份
   > ~/.config/twin/rules.d/<app>.toml      应用知识（支持 {id} 占位）
     > ~/.config/twin/config.toml           这台机器的环境
       > 编译进二进制里的内置默认
 ```
 
-`profile.yml` 是**这一个实例**的全部意图（`gen` 写它、`install` 读它）；`install` 会按它渲染出
-`~/.local/share/twin/<id>/profile.yml` —— 同名，但那是同一个实例的**存档快照**，`reinstall`
-重放的是它（两者只差头注释那句"改完敲哪个命令"）。
+`profile.yml` 是**这一个实例**的全部意图：`gen` 写它，`install <id>` 与 `reinstall <id>` 读它
+（两者读的是同一个文件，也都不会改写它）。定义放在别处（`-o` / `-p`）时，实例目录里那份才是
+`install` 写下的**存档记录**，`reinstall` 重放的是它。
 `config.toml` 不存在是正常的（用内置默认）。数组类字段（`tmpfs` / `bind` / `bwrap.extra`）
 按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。
 
@@ -351,7 +355,7 @@ reinstall` 一次，它才改走这条路。见
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | 身份模型、三级阶梯、管线、产物模板、权限与边界、GUI 之辨 |
 | [`docs/cli.md`](docs/cli.md) | 全部子命令**做什么**、退出码、文件表、拒绝清单；选项本身在 `twin <命令> -h` 里 |
-| [`docs/configuration.md`](docs/configuration.md) | 三层配置逐键参考、覆盖规则、快照 vs 环境 |
+| [`docs/configuration.md`](docs/configuration.md) | 三层配置逐键参考、覆盖规则、定义 vs 环境 |
 | [`docs/apparmor-userns.md`](docs/apparmor-userns.md) | 嵌套 user namespace：三个实测事实、三条路线、跳板机制 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症状 → 根因 → 修法，含全部实测踩坑 |
 | [`docs/development.md`](docs/development.md) | 包结构、构建与测试、开发环境的坑 |

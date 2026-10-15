@@ -77,7 +77,7 @@ TWIN_REAL_PROBE=1 go test ./internal/userns/ -run RealProbe -v
 
 ```bash
 mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
-cd /tmp/scratch-work                       # gen 的默认落点跟着 $HOME 走，这里只是找个干净的地方敲命令
+cd /tmp/scratch-work                       # gen 的默认落点是 $HOME 里的实例目录，这里只是找个干净的地方敲命令
 HOME=/tmp/scratch-home ./twin gen wechat --dry-run
 HOME=/tmp/scratch-home ./twin gen wechat
 HOME=/tmp/scratch-home ./twin install
@@ -95,7 +95,7 @@ HOME=/tmp/scratch-home ./twin verify wechat2
 3. **不制造静默失败**：失败时必须能被使用者看见（硬报错 / 退出码 3，而不是假装成功）。
 4. **回读是判据**：凡是写下去的东西都要读回来确认，不信内存里的期望。
 5. **`--dry-run` 用与真实落盘相同的代码渲染**，否则预览就是谎话。
-6. 产物路径从 `$HOME` 派生；写进快照的一律用 `~/` 相对形式。
+6. 产物路径从 `$HOME` 派生；写进实例定义的一律用 `~/` 相对形式。
 
 ## 6. 提交与合并请求
 

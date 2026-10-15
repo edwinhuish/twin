@@ -257,7 +257,7 @@ echo "退出码=$?"    # 0 = 挂载点这步没问题
 
 1. `cmd/twin/main.go` 的 `cmdNew`：加 flag，放进 `generate.Options`；
 2. `internal/generate/generate.go` 的 `Options` 与 `Plan`：决定它的优先级与默认值来源；
-3. 若是会进快照的字段，还要动 `internal/inst` 的 `toTree` / `Load` 并写往返测试。
+3. 若是会进 profile.yml 的字段，还要动 `internal/inst` 的 `toTree` / `Load` 并写往返测试。
 
 ⚠️ 记住 `parseFL`：位置参数可以出现在选项之间。`fs.Parse` 直接用会让文档里的
 `twin gen <source> --as <id>` 静默忽略 `--as`。
@@ -309,7 +309,7 @@ echo "退出码=$?"    # 0 = 挂载点这步没问题
 
 ```bash
 mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
-cd /tmp/scratch-work                       # gen 的默认落点跟着 $HOME 走，这里只是找个干净的地方敲命令
+cd /tmp/scratch-work                       # gen 的默认落点是 $HOME 里的实例目录，这里只是找个干净的地方敲命令
 HOME=/tmp/scratch-home twin gen wechat --dry-run
 HOME=/tmp/scratch-home twin gen wechat
 HOME=/tmp/scratch-home twin install

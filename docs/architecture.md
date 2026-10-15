@@ -75,7 +75,7 @@
 |---|---|---|
 | **T1** | 桌面项 ＋ 图标 ＋（`redirect` 时）L5 规则 | 零特权，`level=none` 时连 bwrap 都不需要 |
 | **T2** | T1 ＋ bwrap 只读基座（含 overlay 别名） | 能建非特权 user namespace |
-| **T3** | T2 ＋ 路径映射（`rules.d` / 实例快照）＋ tmpfs | 同上 |
+| **T3** | T2 ＋ 路径映射（`rules.d` / 实例定义）＋ tmpfs | 同上 |
 
 `twin` 默认给 T3；`level=none` 时退到 T1。
 
@@ -131,16 +131,17 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 
 ## 5. 产物与模板
 
-`twin install` 写下面这些。第 0 件（`~/.local/share/twin/profile.yml`）不是它写的 —— `twin gen`
-写在**机器级那层目录**里：它是这份 wrap 里唯一需要人读一遍的东西，而落点必须从下一个 shell 里还找得到
-（跟 `$HOME` 派生；想放别处用 `-o`）。
+`twin install` 写下面这些。第 4 件（`~/.local/share/twin/<id>/profile.yml`）不是它写的 ——
+`twin gen` 写的就是那一份，`install <id>` 读回同一份且**不重写它**（一次解析往返会丢掉手写的注释）；
+只有 `-p` 指到别处时，它才在这个位置写一份存档记录。落点在实例自己的目录里，因为它必须从下一个
+shell 里还找得到，而且**一个 id 一份**（想放别处用 `-o`，再用 `-p` 读）。
 
 | # | 路径 | 内容 | 何时写 |
 |---|---|---|---|
 | 1 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 总是 |
 | 2 | `~/.local/share/appicons/<id>.png` | 合成好的图标（256×256 默认） | 总是 |
 | 3 | `~/.local/share/twin/<id>/launch` | 薄启动器（bash，`exec` bwrap） | 总是 |
-| 4 | `~/.local/share/twin/<id>/profile.yml` | 实例定义（**存档快照**） | 总是 |
+| 4 | `~/.local/share/twin/<id>/profile.yml` | 实例定义（`gen` 写的就是你编辑的那一份；`-p` 指别处时这里放的是 install 写下的存档记录） | 定义：`twin gen`；存档记录：仅 `install -p <别处>` |
 | 5 | `~/.config/twin/rules.d/<id>.json` | L5 规则（扩展读） | 仅 `level=redirect` |
 | 6 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
 | 7 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
@@ -150,13 +151,15 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 
 ### 5.1 实例定义
 
-同一份 schema 落在两处，头注释各自指向读它的那条命令：
+同一份 schema 落在两处，头注释各自指向读它的那条命令（两个角色 = 同一个文件名的两种来路）：
 
 ```yaml
-# …profile.yml 的头 —— twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。
+# …profile.yml 的头 —— twin —— 实例定义。改完跑 `twin install wechat2` 按它落盘；
+# `twin reinstall wechat2` 重放的就是这一份。
+# （`-o` 写到别处时这句换成 `twin install -p <那份路径>`：`install <id>` 读的是实例目录里那份）
 
-# twin —— 实例定义（存档快照）。改完跑 `twin reinstall wechat2` 重放；
-# `twin install` 会用工作副本那份重新写出它。
+# twin —— 实例定义（存档记录）。`twin install` 按你指定的那份配置写出它；
+# 改完跑 `twin reinstall wechat2` 重放。
 id: wechat2
 
 desktop:
@@ -197,7 +200,8 @@ bind:
   - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
 ```
 
-两个文件都是**给人读、给人改的**：工作副本改完 `twin install`，存档快照改完 `twin reinstall <id>`。
+那些文件都是**给人读、给人改的**：常态只有一份（`gen` 写进实例目录、你改、再 `twin install <id>` 或
+`twin reinstall <id>`）；`install -p <别处>` 时实例目录里那份是存档记录，改它就直接 `twin reinstall <id>`。
 真实文件里**每个键上面都有一行说明**（`twin gen` / `twin install` 不在终端重复它们），上面这份骨架
 把注释省掉了。
 
@@ -207,7 +211,7 @@ bind:
   HOME 烤进去。
 - **`tray.override` 总是写**（即使值是 `true`）："不覆盖托盘"本身也是一个决定，缺这段会让它
   和"这个字段存在之前写的老文件"无法区分。缺段的老文件按 `true` 读。
-- **`nested_ns` 总是写**：它是**应用知识**（这个程序要不要自己建 ns），跟快照走；而"用哪个跳板、
+- **`nested_ns` 总是写**：它是**应用知识**（这个程序要不要自己建 ns），跟定义走；而"用哪个跳板、
   副本放哪"是**机器状态**，留在 `config.toml` 里，让下一台机器自己决定。
 
 ### 5.2 `launch`（薄启动器）
@@ -312,7 +316,7 @@ bwrap
 
 - 分隔符是 `--`：它**之后**的 token 原样进 `bwrap.extra`，拼在基座之后、程序之前。
 - 透传区**不享受**三件事（在别处都有的）：挂载点自动补齐（含形态判断）、`~/` 展开、语义校验。
-  ⇒ 数据路径请写进 `rules.d` 或实例快照的 `bind`，不要写进透传区。
+  ⇒ 数据路径请写进 `rules.d` 或实例定义里的 `bind`，不要写进透传区。
 - 三条硬边界（拒绝，不是警告）：
   - `--`（会截断 bwrap 自己的选项解析，后面全被当成程序名）；
   - `--argv0`（会破坏"窗口 app_id 与托盘 Id 同名"的不变量）；
@@ -436,7 +440,7 @@ custom-icons → 内容）⇒ 位图那条路稍后仍会用自己的显式宽�
   是同一个全局键**，于是"谁在写"永远说不清，而且仍然浪费在 read-modify-write 与按 SNI Id 严格匹配上
   —— 扩展既然在 shell 里，就没有理由绕道 dconf。
 - **装是文件写入，启用是会话动作；而且这件事是机器级的，所以它归 `twin install` 的一个开关。** 一份扩展服务所有
-  实例，挂到 `twin install` 上就成了"包一个实例"的副作用，重放快照时还会重做一遍 ⇒ 写入归
+  实例，挂到 `twin install` 上就成了"包一个实例"的副作用，重放定义时还会重做一遍 ⇒ 写入归
   `twin install --ext`，`twin install` / `twin reinstall` 只检查并警告。shell **只在启动时**扫一遍
   扩展目录，所以一个它没见过的 uuid **在下次登录前没有任何命令能启用它**。这是 shell 的事实，
   不是这里的缺陷 ⇒ `twin install --ext` 报"注销重登

@@ -229,19 +229,6 @@ func (p Paths) Profile(id string) string {
 	return filepath.Join(p.InstanceDir(id), ProfileName)
 }
 
-// WorkingCopy is the configuration `twin gen` writes and `twin install` reads
-// when neither -o nor -p names a file.
-//
-// It sits in the machine-level twin directory rather than in the directory the
-// user happens to be standing in, because it must still be findable from the
-// next shell, the next terminal and the next day — and a path derived from
-// $HOME is the only place that is true. It is deliberately a *file* next to the
-// per-instance directories: `List` skips every entry that is not a directory,
-// so no wrap report can mistake it for an instance.
-func (p Paths) WorkingCopy() string {
-	return filepath.Join(p.Home, ".local/share/twin", ProfileName)
-}
-
 // LegacyProfile is the pre-YAML snapshot name. Nothing reads it any more, but
 // finding one has to be reported rather than ignored: an instance whose file
 // silently stops being an instance is exactly the kind of failure twin exists
@@ -646,37 +633,58 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 
 // Role says which of the two jobs a rendered instance definition is doing.
 //
-// The same Instance is written to two places: the working copy `twin gen` hands
-// the user, and the archive `twin install` leaves next to the instance. They
-// hold the same keys, but they answer to different commands — and a header that
-// named the wrong one would send a reader to a command that quietly ignores the
-// file they are looking at, which is the failure mode this whole design is
-// arranged against.
+// The ordinary case is one file: `twin gen` writes it into the instance's own
+// directory, and `twin install` / `twin reinstall` both read that very file
+// back — so the header there has to name commands that read *it*, not a copy of
+// it. The archive role exists for the other arrangement: when install was
+// pointed at a definition living somewhere else (-p ~/wraps/x.yml), the
+// instance directory needs a record of what was installed, and that record is
+// what reinstall replays. Naming the wrong command in either header would send
+// a reader to something that quietly ignores the file they are looking at,
+// which is the failure mode this whole design is arranged against.
 type Role int
 
 const (
-	// RoleConfig is the working copy: `twin gen` writes it, `twin install` reads it.
+	// RoleConfig is the definition the user works in: `twin gen` writes it,
+	// `twin install` and `twin reinstall` read it.
 	RoleConfig Role = iota
-	// RoleSnapshot is the archive: install writes it and `twin reinstall` replays it.
+	// RoleSnapshot is the record install leaves in the instance directory when
+	// the definition it read lives elsewhere. `twin reinstall` replays it.
 	RoleSnapshot
 )
 
-// Render returns the document as the working copy.
+// Render returns the document as the instance definition, at the place its id
+// says it lives.
 func (i *Instance) Render() ([]byte, error) { return i.RenderAs(RoleConfig) }
 
 // RenderAs returns the document with the header for the given role.
-func (i *Instance) RenderAs(role Role) ([]byte, error) {
+func (i *Instance) RenderAs(role Role) ([]byte, error) { return i.render(role, "") }
+
+// RenderAt is Render for a definition that is *not* at the instance's own place
+// (`twin gen -o <文件>`). The header has to name `twin install -p <path>`, because
+// a bare `twin install <id>` reads a different file entirely — the record in the
+// instance directory — and a header pointing there would send the reader to a
+// document that is not the one in their editor. That is the one failure mode
+// this header exists to prevent.
+func (i *Instance) RenderAt(path string) ([]byte, error) { return i.render(RoleConfig, path) }
+
+func (i *Instance) render(role Role, elsewhere string) ([]byte, error) {
 	t, err := i.toTree()
 	if err != nil {
 		return nil, err
 	}
-	// Only the header differs between the two roles; the keys and their notes
-	// are rendered once, so a key cannot be documented one way in the file the
-	// user edits and another way in the file install archives.
-	head := "# twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。\n"
+	// Only the header differs between the roles; the keys and their notes are
+	// rendered once, so a key cannot be documented one way in the file the user
+	// edits and another way in the file install archives.
+	head := "# twin —— 实例定义。改完跑 `twin install " + i.ID + "` 按它落盘；\n" +
+		"# `twin reinstall " + i.ID + "` 重放的就是这一份。\n"
+	if elsewhere != "" {
+		head = "# twin —— 实例定义。改完跑 `twin install -p " + elsewhere + "` 按它落盘；\n" +
+			"# `twin reinstall " + i.ID + "` 重放的是实例目录里那份记录。\n"
+	}
 	if role == RoleSnapshot {
-		head = "# twin —— 实例定义（存档快照）。改完跑 `twin reinstall " + i.ID + "` 重放；\n" +
-			"# `twin install` 会用工作副本那份重新写出它。\n"
+		head = "# twin —— 实例定义（存档记录）。`twin install` 按你指定的那份配置写出它；\n" +
+			"# 改完跑 `twin reinstall " + i.ID + "` 重放。\n"
 	}
 	header := head +
 		"# 每个键的说明就写在它自己上面，终端不再重复。\n" +
@@ -784,7 +792,7 @@ func LoadProfile(p Paths, id string) (*Instance, error) {
 // version moved the snapshot to YAML, and the old parser is gone rather than
 // kept around as a second code path that could disagree with the new one.
 func legacyProfileError(p Paths, id string) error {
-	return fmt.Errorf("%s 还是旧的 TOML 快照（这个版本起快照叫 profile.yml，YAML 格式）："+
+	return fmt.Errorf("%s 还是旧的 TOML 快照（这个版本起它叫 profile.yml，YAML 格式）："+
 		"请把内容改写成 YAML 存到 %s（键名不变），或者 twin remove %s 之后重新 twin gen",
 		p.LegacyProfile(id), p.Profile(id), id)
 }

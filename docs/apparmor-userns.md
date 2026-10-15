@@ -236,7 +236,7 @@ sudo apparmor_parser -r /etc/apparmor.d/twin-bwrap
 |---|---|---|
 | `config.toml` | `[tools] bwrap_copy` | `"auto"`（默认）／`""` 不做副本（Electron 会起不来，会警告）／显式路径 |
 | `config.toml` | `[userns] trampoline` | `"auto"`（默认）／`"off"`（→ 路线 C）／显式路径（必须是 Electron） |
-| `profile.yml` | `isolation.nested_ns` | 这个程序要不要嵌套 ns。**总是写**：它是应用知识，跟快照走 |
+| `profile.yml` | `isolation.nested_ns` | 这个程序要不要嵌套 ns。**总是写**：它是应用知识，跟定义走 |
 
 `nested_ns` 与"用哪个跳板"分隔在两个文件里是刻意的：前者跟着**程序**，后者跟着**机器**。
 
@@ -261,7 +261,7 @@ OK   非特权 userns   内核在限制（...10-apparmor.conf 把 ...设成 1）
 | 启动器里有跳板，但那个文件已经不是 Electron 了 | WARN |
 | 齐全 | OK |
 
-它会解析**启动器文本**把跳板挖出来 —— 因为那才是真正会跑的东西。跳板被卸载时，快照里的每条
+它会解析**启动器文本**把跳板挖出来 —— 因为那才是真正会跑的东西。跳板被卸载时，定义里的每条
 路径都还在，别的检查全都抓不到。
 
 ## 10. 边界与已知局限

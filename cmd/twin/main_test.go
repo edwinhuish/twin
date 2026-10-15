@@ -214,7 +214,7 @@ func TestGenRefusesToClobberAWorkingCopy(t *testing.T) {
 // place — a flag package with no aliases makes this the kind of thing that
 // otherwise gets decided independently at each use.
 func TestOneSettingBeatsTheDefault(t *testing.T) {
-	def := inst.Paths{Home: "/home/someone"}.WorkingCopy()
+	def := inst.Paths{Home: "/home/someone"}.Profile("wechat2")
 	if got := firstNonEmpty("out.yml", "", def); got != "out.yml" {
 		t.Errorf("长选项应当胜过默认值：%q", got)
 	}
@@ -256,7 +256,7 @@ func TestPathMapsShortFormIsJustTheMap(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo"}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
-	fix := mapFix{file: p.WorkingCopy(), replay: installCommandFor(p, p.WorkingCopy())}
+	fix := mapFix{file: p.Profile("demo"), replay: installCommandFor(p, p.Profile("demo"), "demo")}
 
 	short := captureStdout(t, func() { printPathMaps(p, it, insp, "", fix, false) })
 	for _, noise := range []string{"照抄下面这份", "twin rules --init", "改：", "💡"} {
@@ -312,6 +312,42 @@ func TestProblemsAreQuietWhenNothingIsWrong(t *testing.T) {
 	}
 }
 
+// 定义落在哪儿，头注释就得指向哪条命令：默认那份由 `twin install <id>` 读，写在别处的那份
+// 只有 `-p` 读得到 —— 而 `twin install <id>` 会去读实例目录里那份记录，把读者送回一个不是他
+// 手上这份的文件。写盘与 --dry-run 预演都走这一个函数，所以预演不会显示另一个头。
+func TestRenderDefinitionNamesTheCommandThatReadsIt(t *testing.T) {
+	p := inst.Paths{Home: "/home/someone"}
+	it := &inst.Instance{ID: "wechat2"}
+
+	here, err := renderDefinition(p, it, p.Profile("wechat2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(here), "twin install wechat2") {
+		t.Errorf("实例目录里那份应当指向 `twin install wechat2`：\n%s", here)
+	}
+
+	elsewhere, err := renderDefinition(p, it, "/home/someone/wraps/x.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(elsewhere), "twin install -p /home/someone/wraps/x.yml") {
+		t.Errorf("写在别处的那份应当指向 -p 那条命令：\n%s", elsewhere)
+	}
+}
+
+// 下一步命令在定义就在实例目录里时说 `twin install <id>`：它短，而且跟着实例走；
+// `-p <路径>` 只说到一个文件，文件一挪就失效 —— 所以默认那一份不该用它。
+func TestInstallCommandNamesTheInstanceWhenItCan(t *testing.T) {
+	p := inst.Paths{Home: "/home/someone"}
+	if got := installCommandFor(p, p.Profile("wechat2"), "wechat2"); got != "twin install wechat2" {
+		t.Errorf("实例目录里那份定义应当用 <id> 形式：%q", got)
+	}
+	if got := installCommandFor(p, "/home/someone/wraps/x.yml", "wechat2"); got != "twin install -p /home/someone/wraps/x.yml" {
+		t.Errorf("放在别处的配置只能指名路径：%q", got)
+	}
+}
+
 // `twin gen` says where the configuration landed — the directory and the file
 // name as well as the full path — and what to type next; nothing else. The path
 // maps are the longest block in the report and the file being written explains
@@ -321,7 +357,7 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo", Binds: []inst.Bind{{Source: "~/a", Target: "~/b"}}}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
-	work := p.WorkingCopy()
+	work := p.Profile("demo")
 
 	short := captureStdout(t, func() {
 		printGenResult(p, it, insp, work, false, false, nil)
@@ -335,7 +371,7 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	// The two halves of the path are what the reader acts on (`cd` to it, or
 	// name the file to another command), and the full path alone makes both of
 	// them cut the string by hand.
-	for _, want := range []string{"目录 /nonexistent-twin-home/.local/share/twin", "文件 " + inst.ProfileName} {
+	for _, want := range []string{"目录 /nonexistent-twin-home/.local/share/twin/demo", "文件 " + inst.ProfileName} {
 		if !strings.Contains(short, want) {
 			t.Errorf("gen 应当报出 %q：\n%s", want, short)
 		}
@@ -548,26 +584,53 @@ func TestInstallExtRefusesTheInstanceFlags(t *testing.T) {
 	}
 }
 
-// A positional argument is refused whatever it says — `install` has none, and
-// that is what keeps the object position free of reserved words. Both mistakes
-// arrive here: an unknown name (`twin install wechat` reads like "install the
-// instance called wechat") and the word it used to take, so the message has to
-// name both the switch and -p.
-func TestInstallRefusesAPositionalAndNamesBothWays(t *testing.T) {
-	for _, word := range []string{"wechat", "extension"} {
+// `install` 接一个 <id> 或一份 -p，两条路都通；说不清的三种都不通 —— 同时给会让其中一个
+// 被静默忽略（正是这个工具存在的理由的反面），一个都不给就只能猜要装哪个实例（twin 从不猜），
+// 而 --ext 是机器级那一半，带 <id> 等于带一个会被丢掉的参数。
+func TestInstallTakesAnIDOrAPathButNotBoth(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"wechat2", "-p", "/tmp/x.yml"}, "-p"},
+		{[]string{"wechat2", "wechat3"}, "只接一个"},
+		{[]string{}, "缺少要装的实例"},
+		{[]string{"--ext", "wechat2"}, "不接受 <id>"},
+	}
+	for _, c := range cases {
+		fakeGSettings(t, "[]")
 		p := inst.Paths{Home: t.TempDir()}
 		var code int
 		var msg string
-		captureStdout(t, func() { msg = captureStderr(t, func() { code = cmdInstall(p, []string{word}) }) })
+		captureStdout(t, func() { msg = captureStderr(t, func() { code = cmdInstall(p, c.args) }) })
 		if code != exitUsage {
-			t.Fatalf("%q: 退出码应为 %d，得到 %d（%s）", word, exitUsage, code, msg)
+			t.Errorf("%v: 退出码应为 %d，得到 %d（%s）", c.args, exitUsage, code, msg)
+			continue
 		}
-		if !strings.Contains(msg, "--ext") {
-			t.Errorf("%q: 报错要给出现在那个开关：%s", word, msg)
+		if !strings.Contains(msg, c.want) {
+			t.Errorf("%v: 报错应当说明 %q：%s", c.args, c.want, msg)
 		}
-		if !strings.Contains(msg, "-p") {
-			t.Errorf("%q: 报错也要说明实例走 -p：%s", word, msg)
-		}
+	}
+}
+
+// 一个实例目录里就是它的定义，`install <id>` 读的就是那一份 —— 这是"gen 写完 install
+// 就能装"的那条路，也是"两个 id 各有各的定义、不会互相覆盖"的落点。
+func TestInstallWithAnIDReadsThatInstancesDefinition(t *testing.T) {
+	fakeGSettings(t, "[]")
+	p := inst.Paths{Home: t.TempDir()}
+	path := p.Profile("wechat2")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("id: wechat2\nexec:\n  target: /bin/true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadConfigFile(p.Profile("wechat2"))
+	if err != nil {
+		t.Fatalf("实例目录里那份定义应当能读：%v", err)
+	}
+	if got.ID != "wechat2" {
+		t.Errorf("读到的 id = %q", got.ID)
 	}
 }
 

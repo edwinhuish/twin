@@ -85,7 +85,7 @@ func LintBwrap(tokens []string) []string {
 		sort.Strings(seenBind)
 		warns = append(warns, strings.Join(seenBind, " ")+
 			" 出现在透传区：两侧目录 twin 不会预建，目录目标会因只读的 / 而失败"+
-			"（文件目标反而会成功，所以别被假象骗了）—— 数据路径建议写进 rules.d 或实例快照的 bind")
+			"（文件目标反而会成功，所以别被假象骗了）—— 数据路径建议写进 rules.d 或那份实例定义的 bind")
 	}
 	return warns
 }

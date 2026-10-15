@@ -7,21 +7,21 @@
 |---|---|---|---|
 | 环境 | `~/.config/twin/config.toml` | **这台机器** | 换机器、换桌面会话 |
 | 应用知识 | `~/.config/twin/rules.d/<app>.toml` | **某个程序** | 你了解了一个新程序的习惯 |
-| 实例 | `~/.local/share/twin/profile.yml`（`gen` 写、`install` 读；`-o` 可换地方） | **这一个实例** | 你想改这一个实例 |
-| 存档 | `~/.local/share/twin/<id>/profile.yml` | 同一个实例的安装记录（`reinstall` 读） | 想按存档重来一次时 |
+| 实例 | `~/.local/share/twin/<id>/profile.yml`（`gen` 写；`install <id>` / `reinstall <id>` 读） | **这一个实例** | 你想改这一个实例 |
+| 存档 | 同一个路径，但只在定义放在别处时才有：`install -p <文件>` 写下的记录（`reinstall` 读） | 同一个实例的安装记录 | 想按存档重来一次时 |
 | 内置 | （编译进二进制） | 出厂默认 | 永不 |
 
-前两层是"知识"，后两层是"意图"。后两层是**同一个名字、同一套键**的两份文件：你手上那份在
-`~/.local/share/twin/` 下（`gen` 写、`install` 读），`install` 按它渲染出来的**存档**在实例目录
-（`reinstall` 读）。区别
-只剩头注释里那句"改完敲哪个命令" —— 文件名不再承担这个区分，所以那句必须写准。
+前两层是"知识"，后两层是"意图"。**意图只有一份文件**：`twin gen` 写的 `profile.yml` 就住在实例
+目录里，`twin install <id>` 与 `twin reinstall <id>` 读的都是它。头注释里那句"改完敲哪个命令"指的
+就是它。唯一会出现第二份的时候，是定义被你放到别处（`-o` / `-p`）—— 那时实例目录里那份才是
+`install` 写下的**存档记录**，`reinstall` 重放的是它。
 
 ---
 
 ## 1. 优先级
 
 ```
-profile.yml      （你正在编辑的那一份：gen 写、install 读）
+profile.yml      （你正在编辑的那一份：gen 写，install / reinstall 读）
   > rules.d/<app>.toml （应用知识）
     > config.toml      （环境）
       > 内置默认
@@ -43,20 +43,24 @@ profile.yml      （你正在编辑的那一份：gen 写、install 读）
 | 动作 | 参与的层 |
 |---|---|
 | `gen`（推导） | CLI > rules.d > config.toml > 内置 |
-| `install`（按配置装） | profile.yml > rules.d > config.toml > 内置 |
-| `reinstall`（重放存档） | profile.yml > 内置（**不读** config / rules） |
+| `install`（按定义装） | profile.yml > rules.d > config.toml > 内置 |
+| `reinstall`（重放同一份定义） | profile.yml > 内置（**不读** config / rules） |
 | `reinstall --refresh` | 上面 ＋ config.toml / rules.d（**只补空字段、只追加缺的 token**） |
 
 这是刻意的：**`reinstall` 必须是确定性的**。如果它默认依赖 `config.toml`，那么改动一个全局默认
 就会"顺手"改掉一排已有实例 —— 那正是最不该发生的静默变更。（`install` 读环境是另一回事：它读的
 是**你刚刚交出来的那份配置**，没有第二份意图能和它冲突。）
 
-`--refresh` 只做**加法与填空**，绝不改写快照里已有的值：快照里**为空**的
+`--refresh` 只做**加法与填空**，绝不改写那份定义里已有的值：**为空**的
 `desktop.keywords` / `desktop.categories` 才补（rules.d → 源桌面项），`bwrap.extra` 把 config ＋
 rules 的 token 追加进来（已存在的跳过，所以是幂等的），其余字段（id / name / level / tmpfs / binds）
 一律不动 —— 它们一定已被写满，"空"与"用户就是要空"分不开。逐字段的行为写在 `twin reinstall -h` 里。
 
-⇒ 一句话：`reinstall` 让**派生文件与快照一致**，而不是让快照跟随环境。
+补上的值**只用在这一次落盘上**：那份定义是你的文件，`install` / `reinstall` 都不改写它（改写会丢掉
+手写的注释），所以想让它们留下来，就照 `--refresh` 打印的那几行自己改进文件里。命令的输出里也这么
+写着 —— 否则"补了又没了"就是一次没人看得见的静默回退。
+
+⇒ 一句话：`reinstall` 让**派生文件与那份定义一致**，而不是让定义跟随环境。
 
 ---
 
@@ -217,13 +221,16 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 
 ---
 
-## 4. 实例定义（`profile.yml`：工作副本与存档）
+## 4. 实例定义（`profile.yml`）
 
-**一份 schema，两处落点，同一个名字。** `twin gen` 把它写进 `~/.local/share/twin/profile.yml`
-（工作副本，`twin install` 读它；要放别处用 `-o`）；`twin install` 把**同一份键**渲染进
-`~/.local/share/twin/<id>/profile.yml`
-（存档快照，`twin reinstall` 读它）。名字相同是故意的：读者只要记住一个词，而"现在是哪一份"由
-头注释回答 —— 一个文件不该对着读者指一条会静默忽略它的命令。
+**一个实例一份，落在实例自己的目录里。** `twin gen` 写的就是
+`~/.local/share/twin/<id>/profile.yml`（要放别处用 `-o`，之后用 `install -p <文件>` 读），而
+`twin install <id>` 与 `twin reinstall <id>` 读的是同一份、也都不会改写它 —— 改写就是一次解析往返，
+你手写的注释会没（`yamlz.Parse` 丢掉注释，那份文件的注释**只由 `gen` 挂上**）。要更新实例就改它、
+再跑一次，或直接重跑 `twin gen` 重新生成。
+
+第二份只在定义放别处时出现：`install -p <文件>` 会把**同一份键**渲染进实例目录（存档记录，
+`twin reinstall <id>` 读它）—— 那时实例目录里那份的头注释指向 `reinstall`，你手上那份指向 `install`。
 
 文件是 YAML：下面每个小节是一个键，表里的键名要拼成点号路径 —— `identity.level`
 指的就是 `identity:` 缩进块里的 `level:`。缩进只能用空格。
@@ -311,15 +318,15 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 
 ---
 
-## 5. 什么进快照，什么每次重算
+## 5. 什么进定义，什么每次重算
 
 这是整个配置设计里唯一需要判断力的一条：
 
-| 类别 | 例子 | 进快照？ | 理由 |
+| 类别 | 例子 | 进 `profile.yml`？ | 理由 |
 |---|---|---|---|
 | **意图** | id、名字、level、bind 列表、tmpfs 列表 | ✅ | 用户对这个实例明确表达过的东西 |
 | **推导结果** | 由 id 推出的 badge、由源 Name 推出的中文名 | ✅ | 落成全量值，文件自解释，不留 `null` |
-| **环境** | bwrap 路径、python 路径、图标尺寸（由本机 DPI 决定） | ❌ | 换机器/换会话就变，写进快照必然过期 |
+| **环境** | bwrap 路径、python 路径、图标尺寸（由本机 DPI 决定） | ❌ | 换机器/换会话就变，写进文件必然过期 |
 | **源的现状** | `Categories` / `Keywords` / `Icon=`（实例里留空表示"继承"时） | ❌ | 源桌面项可能被系统更新覆盖 ⇒ `install` / `reinstall` 时重读 |
 | **应用知识** | 该程序是否需要嵌套 ns | ✅ | 它跟着程序走，不跟着机器走 |
 | **机器状态** | 用哪个跳板、副本放哪 | ❌ | 留在 `config.toml`，让下一台机器自己决定 |
@@ -345,24 +352,31 @@ twin rules
 twin rules --init myapp
 $EDITOR ~/.config/twin/rules.d/myapp.toml
 
-# 改一个实例（两条路，改哪份文件就用哪个命令）
-$EDITOR ~/.local/share/twin/profile.yml && twin install
+# 改一个实例（install 与 reinstall 读的是同一份定义，敲哪个都行）
+$EDITOR ~/.local/share/twin/wechat2/profile.yml && twin install wechat2
 $EDITOR ~/.local/share/twin/wechat2/profile.yml && twin reinstall wechat2
 ```
 
 ### 它是给人读的
 
-header 就写着这一点 —— 而且**两处落点各有各的那一句**：
+header 就写着这一点 —— 而且**每种来路各有各的那一句**：
 
 ```yaml
-# --- profile.yml（工作副本，twin gen 写出）---
-# twin —— 实例定义（工作副本）。改完跑 `twin install` 按它落盘。
+# --- profile.yml（twin gen 写出，落在实例目录里）---
+# twin —— 实例定义。改完跑 `twin install wechat2` 按它落盘；
+# `twin reinstall wechat2` 重放的就是这一份。
 # 每个键的说明就写在它自己上面，终端不再重复。
 # 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
 
-# --- profile.yml（存档快照，twin install 写出）---
-# twin —— 实例定义（存档快照）。改完跑 `twin reinstall wechat2` 重放；
-# `twin install` 会用工作副本那份重新写出它。
+# --- profile.yml（twin gen -o <文件> 写出，落在你指定的地方）---
+# twin —— 实例定义。改完跑 `twin install -p ~/wraps/wx.yml` 按它落盘；
+# `twin reinstall wechat2` 重放的是实例目录里那份记录。
+# 每个键的说明就写在它自己上面，终端不再重复。
+# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
+
+# --- profile.yml（twin install -p <别处> 写出的存档记录）---
+# twin —— 实例定义（存档记录）。`twin install` 按你指定的那份配置写出它；
+# 改完跑 `twin reinstall wechat2` 重放。
 # 每个键的说明就写在它自己上面，终端不再重复。
 # 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
 

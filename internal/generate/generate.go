@@ -211,7 +211,7 @@ func Inspect(p inst.Paths, source string) (*Inspection, error) {
 		insp.Notes = append(insp.Notes,
 			"没有该程序的状态路径知识：本实例只做身份包裹。若它有单实例锁或共享配置，"+
 				"在 "+p.RulesDir()+"/"+key+".toml 里写一条 bind（twin rules --init "+key+" 生成草稿），"+
-				"或只给这一个实例改快照里的 bind")
+				"或只给这一个实例改那份定义里的 bind")
 	}
 	return insp, nil
 }
@@ -547,10 +547,28 @@ func seqOf(s string) string {
 // Materialize writes the artefacts. It is idempotent: running it twice only
 // overwrites twin's own output, never the source program.
 //
+// definitionIsHere reports whether the file the caller read the instance from
+// is already that instance's own definition (~/.local/share/twin/<id>/profile.yml).
+//
+// It is what decides whether an install writes a definition at all. Writing it
+// would be a round trip through the parser, which drops every comment the user
+// added and re-orders what they wrote, and nothing short of re-running
+// `twin gen` would bring them back. The archive role exists for the other
+// arrangement: install was pointed at a file elsewhere (-p ~/wraps/x.yml), and
+// the instance directory still needs the record `twin reinstall` replays.
+func definitionIsHere(p inst.Paths, id, definition string) bool {
+	return definition == p.Profile(id)
+}
+
 // iconSize is passed in rather than read from the instance because it is
 // environment: it must not be frozen into the snapshot (设计 §3.6). A
 // non-positive value falls back to the built-in default.
-func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbox.Plan, iconSize int) (*Result, error) {
+//
+// definition is the file the caller just read the instance from. When that file
+// already *is* the instance definition (the ordinary case: `twin gen` wrote it
+// into the instance directory), it is left alone — see step 3 below.
+func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbox.Plan,
+	iconSize int, definition string) (*Result, error) {
 	if iconSize <= 0 {
 		iconSize = it.IconSizeOrDefault()
 	}
@@ -600,15 +618,16 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 		return nil, err
 	}
 
-	// 3. the instance definition. It is rendered as the archive role, not the
-	// working-copy one: `twin reinstall` reads this file, and its header has to
-	// say so.
-	cfg, err := it.RenderAs(inst.RoleSnapshot)
-	if err != nil {
-		return nil, err
-	}
-	if err := sysx.WriteFileAtomic(p.Profile(it.ID), cfg, 0o644); err != nil {
-		return nil, err
+	// 3. the instance definition — but only when the file we were handed is not
+	//    already the one that lives here (see definitionIsHere).
+	if !definitionIsHere(p, it.ID, definition) {
+		cfg, err := it.RenderAs(inst.RoleSnapshot)
+		if err != nil {
+			return nil, err
+		}
+		if err := sysx.WriteFileAtomic(p.Profile(it.ID), cfg, 0o644); err != nil {
+			return nil, err
+		}
 	}
 
 	// 4. the icon.
@@ -835,8 +854,11 @@ func CheckCollision(p inst.Paths, id string, force bool) error {
 		}
 	}
 	if sysx.Exists(p.Profile(id)) {
-		return fmt.Errorf("%s 已存在、桌面项却不在：上一次安装没走完（快照写下了，身份还没落盘）—— "+
-			"补完用 twin reinstall %s；要重新来过就先 twin remove %s",
+		// The definition's presence is not a half-finished install by itself:
+		// `twin gen` writes it and stops there, and that is the ordinary way an
+		// id ends up occupied (this branch is reached through an explicit --as).
+		return fmt.Errorf("%s 已被占用（这个 id 的定义在，桌面项不在）：落盘用 twin install %s；"+
+			"要重新来过就先 twin remove %s，或换一个 --as",
 			p.Profile(id), id, id)
 	}
 	return nil
@@ -844,10 +866,10 @@ func CheckCollision(p inst.Paths, id string, force bool) error {
 
 // CheckInstall guards the installing half.
 //
-// The snapshot is already ours by construction, so the only thing that can be
-// occupied is the desktop entry: ours from an earlier publish (republishing is
+// The definition is already ours by construction, so the only thing that can be
+// occupied is the desktop entry: ours from an earlier install (reinstalling is
 // the point) or somebody else's. Ownership is read back out of the file rather
-// than assumed from the snapshot's existence — the desktop entry is the
+// than assumed from the definition's existence — the desktop entry is the
 // identity anchor, and guessing wrong here silently shadows another program.
 func CheckInstall(p inst.Paths, id string, force bool) error {
 	if force {
@@ -990,7 +1012,7 @@ func SessionWarning(it *inst.Instance) string {
 	if len(it.Tmpfs) == 0 || os.Getenv("WAYLAND_DISPLAY") != "" {
 		return ""
 	}
-	return "快照里有 --tmpfs " + strings.Join(it.Tmpfs, " ") +
+	return "定义里有 --tmpfs " + strings.Join(it.Tmpfs, " ") +
 		"，但当前会话没有 WAYLAND_DISPLAY：程序若退到 X11 就连不上 X（/tmp/.X11-unix/X0 已被屏蔽）"
 }
 

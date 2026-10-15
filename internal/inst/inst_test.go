@@ -306,21 +306,17 @@ func TestCheckAcceptsOrdinaryPassthrough(t *testing.T) {
 	}
 }
 
-// The default working copy has to be findable from the next shell, which the
-// directory the user happens to be standing in is not. It also has to stay a
-// file: List reads that directory and would otherwise try to load it as an
-// instance (see TestListSkipsDirectoriesThatAreNotInstances).
-func TestWorkingCopyFollowsHomeAndIsNotAnInstance(t *testing.T) {
+// 实例定义就住在实例自己的目录里（`twin gen` 写到那儿、`twin install` 读那一份），
+// 所以它必须跟着 $HOME 走 —— 当前目录只是当时站的地方，换个 shell 就找不回来了。
+// 这也是"一份定义、一个 id"的落点：两个 id 的定义天然不会互相覆盖。
+func TestProfileIsTheDefinitionInsideTheInstanceDirectory(t *testing.T) {
 	p := Paths{Home: "/home/someone"}
-	want := "/home/someone/.local/share/twin/" + ProfileName
-	if got := p.WorkingCopy(); got != want {
-		t.Errorf("WorkingCopy = %q, want %q", got, want)
+	want := "/home/someone/.local/share/twin/x/" + ProfileName
+	if got := p.Profile("x"); got != want {
+		t.Errorf("Profile = %q, want %q", got, want)
 	}
-	if dir := filepath.Dir(p.WorkingCopy()); dir != filepath.Dir(p.BinDir()) {
-		t.Errorf("工作副本与实例目录应当同级，得到 %q", dir)
-	}
-	if filepath.Base(p.WorkingCopy()) != ProfileName {
-		t.Errorf("工作副本与存档快照必须同名：%q", filepath.Base(p.WorkingCopy()))
+	if p.Profile("x") == p.Profile("y") {
+		t.Error("两个实例不能共用一份定义")
 	}
 }
 

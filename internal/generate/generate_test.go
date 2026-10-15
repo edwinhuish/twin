@@ -19,6 +19,28 @@ func clearLocale(t *testing.T, lang string) {
 	t.Setenv("LANG", lang)
 }
 
+// 定义就在实例目录里的时候，install 不重写它：那一次往返会让手写的注释与排版消失，
+// 而"gen 写一份、install 读同一份"正是要保住它们。定义在别处时才写一份存档记录，
+// 因为 `twin reinstall` 要有东西可重放。
+func TestADefinitionInItsOwnDirectoryIsNotRewritten(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	if !definitionIsHere(p, "wechat2", p.Profile("wechat2")) {
+		t.Error("实例目录里那份定义就是它自己，install 应当原样留着")
+	}
+	if definitionIsHere(p, "wechat2", "/home/u/wraps/x.yml") {
+		t.Error("-p 指的别处那份不是实例目录里那份，应当写出存档记录")
+	}
+	// 另一个实例的定义也不能当成这一个：认的是路径，不是文件名。
+	if definitionIsHere(p, "wechat2", p.Profile("wechat3")) {
+		t.Error("同名不同 id 的两份定义不能相认")
+	}
+	// 没给 -p、也没给 <id> 时路径是空的：那不是"就在这儿"，否则 install 会
+	// 以为定义已经写好，于是什么都不写。
+	if definitionIsHere(p, "wechat2", "") {
+		t.Error("空路径不能当成定义已在原处")
+	}
+}
+
 // The install half may overwrite its own desktop entry (that is what a
 // republish is) but never somebody else's. Ownership is read back out of the
 // file, not inferred from the snapshot that happens to exist next to it.

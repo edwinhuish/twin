@@ -69,7 +69,7 @@ go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o t
 
 ```bash
 mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
-cd /tmp/scratch-work                      # gen 默认写到 $HOME/.local/share/twin/profile.yml
+cd /tmp/scratch-work                      # gen 默认写到 $HOME/.local/share/twin/<id>/profile.yml
 HOME=/tmp/scratch-home /path/to/twin gen wechat --dry-run
 HOME=/tmp/scratch-home /path/to/twin gen wechat
 HOME=/tmp/scratch-home /path/to/twin install --dry-run
@@ -85,7 +85,7 @@ profile 并以退出码 3 结束，那正是要验的兜底行为）；别在别
 cmd/twin/            CLI 入口：动词分派、flag 解析、全部终端输出
 internal/
   tomlz/               TOML 子集的编解码（自写，非通用库；config.toml 与 rules.d 用它）
-  yamlz/               YAML 子集的编解码（自写，非通用库；工作副本与存档两份 profile.yml 用它）
+  yamlz/               YAML 子集的编解码（自写，非通用库；实例定义与存档记录两份 profile.yml 用它）
   inst/                实例 schema（真源）＋ Paths（全部产物路径）＋ 语义校验
   desk/                .desktop 读写（含 Name[xx] / Comment[xx] / Keywords[xx]）
   config/              环境层（config.toml）＋ 应用知识层（rules.d）＋ 内置规则
@@ -148,9 +148,9 @@ style → {}    ← 只有标准库
    把整份 "Usage of gen:" 或 `usage` 常量倒在笔误下面，会把真正有用的那一行顶出屏幕。
 7. **产物路径一律从 `$HOME` 派生**，且写进实例定义的一律用 `~/` 相对形式
    （`RelStateDir`）—— 那份文件要能搬到另一台机器重放。启动器里则统一折叠成 `$HOME/...`，
-   绝不把生成时刻的 HOME 烤进去。`gen` 的默认落点（`Paths.WorkingCopy()`）同样如此：这份配置
-   要在下一个 shell、明天、别人的 bug 报告里都还找得到，而"当前目录"只是这次站的地方 ——
-   想写到别处就显式 `-o`。
+   绝不把生成时刻的 HOME 烤进去。`gen` 的默认落点（`Paths.Profile(id)`）同样如此，而且
+   **一个 id 一份**：这份配置要在下一个 shell、明天、别人的 bug 报告里都还找得到，而"当前目录"
+   只是这次站的地方，两份 wrap 挤同一个文件名还会互相覆盖 —— 想写到别处就显式 `-o`。
 8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
    stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
    （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
@@ -167,14 +167,17 @@ style → {}    ← 只有标准库
 10. **一条命令只做一件事，安装是显式的。** `twin gen` **只写一份配置**，`twin install` 才落盘。
     理由见 §5"加一个 `gen` 选项"：一次 wrap 里唯一随程序而变、又猜错了不出声的东西是
     路径映射，它该先落成一份能读能改的文件。
-11. **存档快照只被 `reinstall` 重放。** `install` 按工作副本重新渲染它，`reinstall` 按它重放。
-    两条路都不从 CLI 重新推导 —— 所以"带着描述实例的选项去装一个已存在的实例"这件事**不存在**了：
-    `install` 根本没有那些选项（见 §5"加一个 `gen` 选项"）。
+11. **实例定义只有一份，`install` 不重写它。** 默认情况下 `gen` 写的就是
+    `~/.local/share/twin/<id>/profile.yml`，`install <id>` 与 `reinstall <id>` 读的是同一份，
+    `Materialize` 见到"定义已在此处"就跳过写入（`definitionIsHere`）—— 写回一次就是一次解析往返，
+    用户手写的注释与排版会没。只有 `-p` 指到别处时，实例目录里才另写一份存档记录
+    （`RoleSnapshot`）供 `reinstall` 重放。两条路都不从 CLI 重新推导 —— 所以"带着描述实例的选项
+    去装一个已存在的实例"这件事**不存在**了：`install` 根本没有那些选项（见 §5"加一个 `gen` 选项"）。
 12. **`gofmt` 是硬门**，`-l` 必须为空。
 13. **选项表只住在 `twin <命令> -h` 里。** flag 的说明字符串就是这张表的正文，所以**默认值、
     可接受取值、被拒绝的取值**都要写在那一行里 —— 文档里再抄一份，得到的是两处会各表一套，
     而默认值属于"猜错了一个字都不会有人告诉你"的那类信息。PrintDefaults 打不出来的用法
-    （`--` 透传区、"这个动词不接受位置参数"）进 `cmd/twin/main.go` 的 `helpFooter`，也不进文档。
+    （`--` 透传区、`install <id> | -p` 的二选一）进 `cmd/twin/main.go` 的 `helpFooter`，也不进文档。
     文档只写**为什么**：这个命令是干什么的、这条边界对应哪次实测。
 14. **挂载点两端同形，形态看磁盘。** bwrap 的根是只读的（`--ro-bind / /`），它建不了挂载点；
     而一条映射的两端必须是同一种东西（文件挂到目录上 bwrap 直接拒绝），`mkdir -p` 打在文件上
@@ -207,7 +210,7 @@ style → {}    ← 只有标准库
 1. `cmd/twin/main.go` 的 `cmdGen`：加 flag，放进 `generate.Options`；
    **flag 那一行的说明就是这份选项表的正文**（默认值、可接受取值都写在里面，见 §4.13）——
    如果它的用法 PrintDefaults 表达不了（例如它给 `--` 透传区加了一条规则），进 `helpFooter`；
-2. **决定它属于哪一类**：描述**实例**（会进 profile.yml，进而进快照）还是描述**这次动作**
+2. **决定它属于哪一类**：描述**实例**（会进 profile.yml）还是描述**这次动作**
    （`-o` / `--force` / `--dry-run` / `--explain`）。只有 `gen` 拥有前者 ——
    `install` 的 flag 表里一个实例选项都没有，所以"带着描述实例的选项去装一个已存在的实例"
    这件事**无法表达**：那不是一条运行时判断，而是动词拆分本身（见 §4.11）；
@@ -217,21 +220,21 @@ style → {}    ← 只有标准库
    会拦下漏写的）。
 
 ### 两段式（`twin gen` / `twin install`）
-- 前半段（`twin gen`）只有一个写点：`it.Render()` ＋ `writeConfigFile`，写的是**工作副本**
-  （`inst.RoleConfig`），默认落在 `~/.local/share/twin/profile.yml`（`Paths.WorkingCopy()`，跟
-  `$HOME` 派生，见 §4.7）；`-o` 可以写到任何地方。它拒绝覆盖已存在的文件，除非 `--force`：
-  这份文件正是接下来要被人读、被人改的那一份。
-- 后半段（`twin install`）读那份配置、按 `inst.RoleSnapshot` 重新渲染一份写进
-  `~/.local/share/twin/<id>/profile.yml`，再由 `Materialize` 落盘。两半的字节**本来就该不同**：
-  header 要说明这份文件是"被 `reinstall` 重放的存档"还是"被 `install` 读的工作副本"，
-  这就是 `Role` 这层存在的全部理由。
+- 前半段（`twin gen`）只有一个写点：`it.Render()` ＋ `writeConfigFile`，写的是**实例定义**
+  （`inst.RoleConfig`），默认落在 `~/.local/share/twin/<id>/profile.yml`（`Paths.Profile(id)`，
+  跟 `$HOME` 派生、一个 id 一份，见 §4.7）；`-o` 可以写到任何地方。id 是 `Plan` 推出来的，
+  所以默认落点只能在 `planInstance` 之后算。它拒绝覆盖已存在的文件，除非 `--force`：撞上默认
+  落点时说的是"这份已经是那个实例的定义 —— 直接 `twin install <id>`"，而不是泛泛的"换个 -o"。
+- 后半段（`twin install <id>`）读**同一份文件**落盘，`Materialize` 不重写它（§4.11）。`-p` 指到
+  别处时，实例目录里才另写一份 `RoleSnapshot` 的存档记录，供 `reinstall` 重放；`Role` 这层就是
+  为这个例外存在的，两个 header 各自指向读它的那条命令。
 - 配置里的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
-  **丢掉**注释 —— 手改进来的说明不会被下一次 `gen` 带偏，也所以往返必须是逐字节稳定的。
-- 前后两半不靠重新推导 id 相认，而靠**显式指名的那份文件**（`install -p <文件>`，默认就是 `gen`
-  写下的那份工作副本）：一次 `gen` 只写一份配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到
-  `wechat3`。
-- `install` 不接受位置参数（`len(pos) > 0` 直接报错）：要装哪份配置用 `-p` 说，要包哪个程序是
-  `gen` 那一步说过的。留一条重新推导的路，就是给"同一个问题两处答案"留机会。
+  **丢掉**注释 —— 这也是 install 不能重写定义的原因：写回一次，手写的注释就没了。
+- 前后两半不靠重新推导 id 相认，而靠 `<id>`（或 `-p` 显式指的那份文件）：一次 `gen` 只写一份
+  配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到 `wechat3`。
+- `install` 接 `<id>` 或 `-p <文件>`，`len(pos) > 1`、两者都给、以及一个都不给都直接报错：
+  同时给会让其中一个被静默忽略，都不给就只能猜要装哪个实例。要包哪个程序永远是 `gen` 那一步
+  说过的。留一条重新推导的路，就是给"同一个问题两处答案"留机会。
 - 安装半段只有一条路（`installAndCheck`），`twin install` 与 `twin reinstall` 共用；给它们写
   第二份实现就是给"install 会做、reinstall 不做"留机会。
 

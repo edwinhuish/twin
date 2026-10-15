@@ -275,7 +275,7 @@ func checkNestedNS(i *inst.Instance, p inst.Paths, add func(string, Status, stri
 	copyPath := p.BwrapCopy()
 	if !sysx.Exists(copyPath) {
 		add("嵌套 user namespace", StatusWarn,
-			"快照标了 isolation.nested_ns，但私有副本 "+copyPath+" 不存在 —— 这个实例很可能起不来",
+			"定义里标了 isolation.nested_ns，但私有副本 "+copyPath+" 不存在 —— 这个实例很可能起不来",
 			fmt.Sprintf("twin reinstall %s", i.ID))
 		return
 	}
