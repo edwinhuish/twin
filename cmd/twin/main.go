@@ -807,7 +807,9 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	// Under --explain the map section carries this sentence itself — but only
 	// for a program with no rule at all, so a rule that maps nothing still
 	// needs the line here (saying it twice is how a reader learns to skip it).
-	if len(it.Binds) == 0 && (!explain || insp.Rule != nil) {
+	// Counted without the root mount: every definition has that one, and it
+	// isolates nothing.
+	if len(dataMaps(it)) == 0 && (!explain || insp.Rule != nil) {
 		fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 没有隔离任何数据目录：这个程序若有单实例锁"+
 			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bwrap.bind"))
 	}
@@ -2052,9 +2054,10 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	origin string, fix mapFix, verbose bool) {
 	key := ruleKeyFor(insp)
 	rulePath := filepath.Join(p.RulesDir(), key+".toml")
+	maps := dataMaps(it)
 
 	fmt.Printf("\n%s\n", title("📁 路径映射"))
-	if len(it.Binds) == 0 {
+	if len(maps) == 0 {
 		// "twin redirected nothing" is a fact worth stating: it is the normal
 		// case for an unknown program, and the reason two instances of it may
 		// start interfering with each other. It is also the one consequence the
@@ -2066,11 +2069,11 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		}
 	} else {
 		if origin == "" {
-			fmt.Printf("  %d 条\n", len(it.Binds))
+			fmt.Printf("  %d 条\n", len(maps))
 		} else {
-			fmt.Printf("  %d 条，来源：%s\n", len(it.Binds), origin)
+			fmt.Printf("  %d 条，来源：%s\n", len(maps), origin)
 		}
-		for _, b := range it.Binds {
+		for _, b := range maps {
 			// Printed in the file's own spelling, so the line can be pasted into
 			// profile.yml or rules.d without a translation step in between.
 			switch {
@@ -2088,8 +2091,30 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	if verbose {
 		printStateHints(p, insp, it, key)
 		printMapFix(it, key, rulePath, fix)
-		printRuleTemplate(p, it, key, it.Binds)
+		printRuleTemplate(p, it, key, maps)
 	}
+}
+
+// dataMaps is the instance's list of data mappings: `bind` without the root
+// mount.
+//
+// The root is written into that node because that is where mounts are written,
+// but it is not one of the directories this program's data lives in — and this
+// report counts them, prints them, and hands them over for pasting into
+// rules.d. Left in, `/:/:dev` would be twin's own base line wearing the user's
+// data layout as a disguise. It also has to go before uncoverHints, which
+// compares candidate paths against a mapping's *target*: the root's target is
+// `/`, every path on the machine sits under that, and the "state directories you
+// may want to isolate" section would go quiet for good.
+func dataMaps(it *inst.Instance) []inst.Bind {
+	out := make([]inst.Bind, 0, len(it.Binds))
+	for _, b := range it.Binds {
+		if b.IsRootMount() {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // printMapFix names the two files that can hold this program's knowledge. It is
@@ -2115,7 +2140,7 @@ func printMapFix(it *inst.Instance, key, rulePath string, fix mapFix) {
 // `twin rules --init` is for.
 func printStateHints(p inst.Paths, insp *generate.Inspection, it *inst.Instance, key string) {
 	const maxHints = 6
-	hints := uncoverHints(generate.SuggestStateDirs(p, insp), it.Binds)
+	hints := uncoverHints(generate.SuggestStateDirs(p, insp), dataMaps(it))
 	if len(hints) == 0 {
 		return
 	}

@@ -466,9 +466,10 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// bwrap.args, low priority first (设计 §3.5 rule two): the base twin writes
 	// for this instance, then the global default, then the rule, then the
 	// command line's `--` region. Later tokens shadow earlier mounts on the same
-	// destination, so no conflict-resolution code is owed — and the base is
+	// destination, so no conflict-resolution code is owed — and the root is
 	// first for exactly that reason: everything that has to be able to overrule
-	// it (a path mapping, the alias overlay) is emitted after this whole list.
+	// it (a path mapping, the alias overlay) is emitted after it, wherever it
+	// sits in the file (see inst.Bind.IsRootMount).
 	//
 	// The base goes into the file rather than staying in the sandbox builder.
 	// Which root a program gets is the decision that varies most per program
@@ -479,16 +480,19 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	//
 	// Each piece of it lands in the node that names its kind: `--tmpfs /dev/shm`
 	// inside a token list and `tmpfs: [/dev/shm]` are the same mount, but only
-	// one of the two tells the reader what kind of mount it is (设计 §2.1). `args`
-	// keeps what has no node of its own — the root, the host's /tmp beside it,
-	// and --die-with-parent. Base-first inside every node too, so the layers
-	// above can still overrule the base.
+	// one of the two tells the reader what kind of mount it is — and the root
+	// mount is written as `/:/:dev`, a mapping in the node for mappings (设计
+	// §2.1). `args` keeps what has no node of its own: the host's /tmp and
+	// --die-with-parent. Base-first inside every node too, so the layers above
+	// can still overrule the base.
 	if level.Renames() {
 		base := sandbox.BaseFor(id, privateTmp)
+		it.Binds = append(base.Binds, it.Binds...)
 		it.Args = append(it.Args, base.Args...)
 		it.Proc = base.Proc
 		it.Tmpfs = append(base.Tmpfs, it.Tmpfs...)
 		it.Env = append(base.Env, it.Env...)
+		note("bwrap.bind", base.Binds[0].String(), "gen 写的沙箱基座：根挂载（排在最前，写在第几行都一样）")
 		note("bwrap.args", strings.Join(base.Args, " "), "gen 写的沙箱基座：没有自己节点的那些")
 		note("bwrap.proc", base.Proc, "gen 写的沙箱基座")
 		note("bwrap.tmpfs", strings.Join(base.Tmpfs, " "), "gen 写的沙箱基座")

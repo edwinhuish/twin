@@ -863,3 +863,29 @@ func TestCheckRefusesReadOnlyDeviceBind(t *testing.T) {
 		t.Errorf(":ro + :dev 应当报错，得到 %+v", i.Binds[0])
 	}
 }
+
+// The root mount's read-only spelling is three parts. Two of them is the shape a
+// typo takes, and it is worth refusing rather than running: `/:/ro` reads as
+// "mount the host root at /ro", which leaves the sandbox with no root at all —
+// the program then cannot find itself, and nothing on the way says why.
+func TestCheckRefusesRootMountedSomewhereElse(t *testing.T) {
+	i := &Instance{ID: "x", Level: LevelNone, Target: "/bin/true",
+		Binds: []Bind{{Source: "/", Target: "/ro"}}}
+	if err := i.Check(); err == nil {
+		t.Errorf("把根挂到别处应当报错，得到 %+v", i.Binds[0])
+	}
+	// Both real spellings pass, and both are the root: `/:/:ro` is the same
+	// mount point, tightened.
+	for _, b := range []Bind{
+		{Source: "/", Target: "/", Dev: true},
+		{Source: "/", Target: "/", ReadOnly: true},
+	} {
+		if !b.IsRootMount() {
+			t.Errorf("%s 就是根挂载", b)
+		}
+		i.Binds = []Bind{b}
+		if err := i.Check(); err != nil {
+			t.Errorf("%s 应当通过 Check：%v", b, err)
+		}
+	}
+}

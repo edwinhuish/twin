@@ -186,8 +186,10 @@ func passthroughInstance(extra ...string) *inst.Instance {
 		Target:     "/opt/wechat/wechat",
 		Alias:      "wechat2",
 		// A real instance carries a base, split across the nodes that name each
-		// mount's kind: twin adds none of it at launch, so an instance without
-		// it is one bwrap would start with nothing mounted.
+		// mount's kind — the root mount included. twin adds none of it at launch,
+		// so an instance without it is one bwrap would start with nothing
+		// mounted.
+		Binds: append([]inst.Bind(nil), b.Binds...),
 		Args:  append(b.Args, extra...),
 		Proc:  b.Proc,
 		Tmpfs: b.Tmpfs,
@@ -196,8 +198,9 @@ func passthroughInstance(extra ...string) *inst.Instance {
 }
 
 // The base twin writes into the definition, each piece in the node that names
-// its kind — and only what has no such node (the root bind, --die-with-parent)
-// is left in the option list.
+// its kind — the root mount included, as `/:/:dev` (which *is* `--dev-bind / /`).
+// What is left in the option list is only what has no node: the host's /tmp and
+// --die-with-parent.
 //
 // Both branches of the /tmp decision have to leave /tmp *writable*, because a
 // read-only /tmp is what a read-only root quietly produced — Chromium reports it
@@ -206,56 +209,69 @@ func passthroughInstance(extra ...string) *inst.Instance {
 // has to be visible in the file, so both spellings are asserted here rather than
 // left to a launch-time decision.
 func TestBaseIsWrittenByNode(t *testing.T) {
-	private := BaseFor("wechat2", true)
-	if got := strings.Join(private.Args, " "); got != "--dev-bind / / --die-with-parent" {
-		t.Errorf("args = %q：私有 /tmp 那一支没有自己节点的只剩这两条", got)
-	}
-	if private.Proc != "/proc" {
-		t.Errorf("proc = %q", private.Proc)
-	}
-	if len(private.Tmpfs) != 1 || private.Tmpfs[0] != "/dev/shm" {
-		t.Errorf("tmpfs = %v，want [/dev/shm]：私有 /tmp 那条是调用方自己列表里的一条", private.Tmpfs)
-	}
-	if len(private.Env) != 1 || private.Env[0].Key != "TWIN_INSTANCE" || private.Env[0].Value != "wechat2" {
-		t.Errorf("env = %+v", private.Env)
-	}
-
-	// The host's /tmp stays in the option list, beside the root: it is a fact
-	// about the root, not one of this program's data mappings — writing it into
-	// `bwrap.bind` would make `twin install` report it as one and offer to copy
-	// it into the program's rules.d.
-	host := BaseFor("wechat2", false)
-	want := "--dev-bind / / --bind /tmp /tmp --die-with-parent"
-	if got := strings.Join(host.Args, " "); got != want {
-		t.Errorf("args = %q, want %q", got, want)
-	}
-	if len(host.Tmpfs) != 1 || host.Tmpfs[0] != "/dev/shm" {
-		t.Errorf("tmpfs = %v，两个分支都要有 /dev/shm", host.Tmpfs)
+	// The host's /tmp stays in the option list rather than becoming a mapping:
+	// `/tmp:/tmp` is not the root, so it would be reported as one of the
+	// program's data directories and offered for copying into its rules.d.
+	root := inst.Bind{Source: "/", Target: "/", Dev: true}
+	for _, c := range []struct {
+		name       string
+		privateTmp bool
+		wantArgs   string
+	}{
+		{"私有 /tmp", true, "--die-with-parent"},
+		{"宿主 /tmp", false, "--bind /tmp /tmp --die-with-parent"},
+	} {
+		b := BaseFor("wechat2", c.privateTmp)
+		if got := strings.Join(b.Args, " "); got != c.wantArgs {
+			t.Errorf("%s：args = %q，want %q", c.name, got, c.wantArgs)
+		}
+		if len(b.Binds) != 1 || b.Binds[0] != root {
+			t.Errorf("%s：bind = %v，want 只有一条根挂载 %s", c.name, b.Binds, root)
+		}
+		if b.Proc != "/proc" {
+			t.Errorf("%s：proc = %q", c.name, b.Proc)
+		}
+		if len(b.Tmpfs) != 1 || b.Tmpfs[0] != "/dev/shm" {
+			t.Errorf("%s：tmpfs = %v，want [/dev/shm]（私有 /tmp 那条是调用方自己列表里的一条）", c.name, b.Tmpfs)
+		}
+		if len(b.Env) != 1 || b.Env[0].Key != "TWIN_INSTANCE" || b.Env[0].Value != "wechat2" {
+			t.Errorf("%s：env = %+v", c.name, b.Env)
+		}
 	}
 }
 
-// The option list is the definition's, emitted first and verbatim. It has to
-// come *before* the mappings: `--dev-bind / /` binds the host root, and putting
-// it after them would shadow every one of them.
-func TestBuildEmitsTheDefinitionsArgsFirst(t *testing.T) {
+// The root goes down before everything, and the definition's option list comes
+// right after it — whatever the file's own order is.
+//
+// That order is the whole reason Build hoists the root instead of just emitting
+// `bind` where it sits: bubblewrap applies mounts in order and the later one
+// wins, so a root bound *after* the alias overlay puts the host's directory back
+// over the copy the program is supposed to run from — hiding the alias path, and
+// with it the program.
+func TestBuildPutsTheRootBeforeEverything(t *testing.T) {
 	i := passthroughInstance("--unshare-pid", "--setenv", "TWIN_FOO", "bar")
-	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
+	// The root is *not* first in the file here: where it sits in the definition
+	// says nothing about the command line it becomes.
+	i.Binds = append([]inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}, i.Binds...)
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := plan.Groups[0]
-	if strings.Join(first, " ") != strings.Join(i.Args, " ") {
-		t.Fatalf("第一组应当就是定义里那份选项列表，得到 %q，want %q", first, i.Args)
+	if got := strings.Join(plan.Groups[0], " "); got != "--dev-bind / /" {
+		t.Fatalf("第一组应当是根挂载，得到 %q", got)
 	}
-	// Everything twin derives comes after it, so a mapping can overrule a base
-	// mount the way bwrap promises (the later mount wins).
-	for _, g := range plan.Groups[1:] {
+	if got := strings.Join(plan.Groups[1], " "); got != strings.Join(i.Args, " ") {
+		t.Fatalf("第二组应当就是定义里那份选项列表，得到 %q，want %q", got, i.Args)
+	}
+	// Everything twin derives comes after them, so a mapping can overrule a base
+	// mount the way bwrap promises (the later mount wins) — and the root is not
+	// repeated down there.
+	for _, g := range plan.Groups[2:] {
 		if len(g) == 0 {
 			continue
 		}
 		if g[0] == "--dev-bind" {
-			t.Fatalf("派生出来的参数排在了选项列表里面：%q", g)
+			t.Fatalf("根挂载又被发了一遍，或者派生参数排在了它前面：%q", g)
 		}
 	}
 	// The argv must carry the separator twin owns.
@@ -407,7 +423,7 @@ func TestBuildRedirectRenamesLikeAlias(t *testing.T) {
 
 func TestRenderLauncherCarriesTheOptionListAndSeparator(t *testing.T) {
 	i := passthroughInstance("--unshare-pid")
-	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
+	i.Binds = append(i.Binds, inst.Bind{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"})
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)

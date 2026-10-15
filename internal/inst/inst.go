@@ -92,10 +92,11 @@ type Bind struct {
 	ReadOnly bool
 	// Dev renders `--dev-bind`, which bubblewrap describes as "bind mount the
 	// host path SRC on DEST, allowing device access". It is here because the
-	// root a program runs under stopped being twin's constant: a definition
-	// that tightens the base to `--ro-bind / /` needs a way to say which
-	// bindings are meant to hand over devices, and that is a distinction only
-	// the mapping's own line can carry.
+	// root a program runs under stopped being twin's constant: the root mount
+	// itself is `/:/:dev` (that *is* `--dev-bind / /`), and a definition that
+	// tightens it to `--ro-bind / /` needs a way to say which bindings are meant
+	// to hand over devices — a distinction only the mapping's own line can
+	// carry.
 	//
 	// It is a way to say it, not a workaround for something `--bind` cannot
 	// do: measured on bubblewrap 0.11, both spellings come out of `ls -l` as a
@@ -105,6 +106,19 @@ type Bind struct {
 	// pair rather than silently dropping one of the two.
 	Dev bool
 }
+
+// IsRootMount reports whether this entry is the base's root mount: the whole
+// host root bound onto itself — `/:/:dev`, what `twin gen` writes, or `/:/:ro`
+// when a definition tightens it.
+//
+// It is recognised by shape rather than by a flag of its own, and three places
+// depend on that: Build emits it *before* every other mount (it is the surface
+// the rest is laid on — bound after the alias overlay it puts the host's
+// directory back over the copy the program is supposed to run from), the
+// reports that read `bind` as "the program's data directories" leave it out
+// (the root is not one of them), and the launcher's mount points skip it (both
+// of its ends are `/`, which is already there).
+func (b Bind) IsRootMount() bool { return b.Source == "/" && b.Target == "/" }
 
 // String renders the one-line form the config files carry.
 func (b Bind) String() string {
@@ -281,26 +295,32 @@ type Instance struct {
 	Env []EnvVar
 
 	Unshare []string
-	// Args is the bubblewrap option list, verbatim. It is emitted first, in the
-	// order written, and twin adds nothing ahead of it — the sandbox base lives
-	// in this list, put there by `twin gen` and readable in the file, because
-	// which root a program needs is a property of that program. It used to be
-	// hard-coded here as `--ro-bind / /`: a program that has to touch devices
-	// then had no way to ask for `--dev-bind / /`, and asking for it through the
-	// old passthrough region put it *after* every mapping, where binding the
-	// root again shadows all of them.
+	// Args is the bubblewrap option list, verbatim, in the order written. twin
+	// adds nothing ahead of it — the sandbox base lives in the file, put there
+	// by `twin gen` and readable, because which root a program needs is a
+	// property of that program. It used to be hard-coded here as `--ro-bind / /`:
+	// a program that has to touch devices then had no way to ask for
+	// `--dev-bind / /`, and asking for it through the old passthrough region put
+	// it *after* every mapping, where binding the root again shadows all of them.
 	//
-	// Only what has no node of its own is left in it: the root bind, the host's
-	// /tmp when that is the branch, and --die-with-parent. Everything else the
-	// base carries is written into the key that names its kind (Proc / Tmpfs /
-	// Env), where a reader can see what a mount *is* without knowing bubblewrap's
-	// options.
+	// What is left in it is what has no node of its own: the host's /tmp when
+	// that is the branch, and --die-with-parent. Everything else the base carries
+	// is written into the key that names its kind (Binds / Proc / Tmpfs / Env),
+	// where a reader can see what a mount *is* without knowing bubblewrap's
+	// options. It is still emitted ahead of every shaped mount; the one thing
+	// that goes before it is the root, which is a mapping itself now (see
+	// Bind.IsRootMount).
 	//
 	// twin never parses or rewrites these tokens (设计 §2.1): the arity of a
 	// bwrap option is bwrap's business, and re-deriving it here would be a table
 	// that rots on every bwrap release.
 	Args []string
 
+	// Binds is `--bind` / `--ro-bind` / `--dev-bind`, in the order written. The
+	// first entry `twin gen` writes is the root mount (`/:/:dev`); Build emits it
+	// before every other mount wherever it sits in the file, and the reports that
+	// read this list as "the program's data directories" leave it out — see
+	// Bind.IsRootMount.
 	Binds []Bind
 }
 
@@ -538,6 +558,20 @@ func (i *Instance) AliasPath() string {
 	return filepath.Join(i.TargetDir(), i.EffectiveAlias())
 }
 
+// hasRootMount reports whether anything in the file asks for a root. The `bind`
+// side is exact — `/:/` is the root by shape — while the `args` side can only
+// be a proxy, because twin knows no bwrap option's arity and must not start
+// parsing them. Every definition `gen` writes keeps its root in `bind`, so what
+// this really guards is a file that lost its base altogether.
+func (i *Instance) hasRootMount() bool {
+	for _, b := range i.Binds {
+		if b.IsRootMount() {
+			return true
+		}
+	}
+	return len(i.Args) > 0
+}
+
 // Check performs the semantic validation the generator relies on. Every
 // failure here maps to a symptom we have actually seen fail silently.
 func (i *Instance) Check() error {
@@ -583,6 +617,17 @@ func (i *Instance) Check() error {
 			return fmt.Errorf("bwrap.bind[%d] %q: :ro 与 :dev 不能同时用 —— bwrap 没有只读的设备映射"+
 				"（--dev-bind 天生可写）", n, b)
 		}
+		// The host root mounted *somewhere else* is the shape a mistyped root
+		// mount takes: the read-only root is `/:/:ro`, three parts, but `/:/ro`
+		// is two — and Docker's rule only reads a part as a mode when it *is* one
+		// of ro/rw/dev, so the second one is a path. The two differ in the one
+		// way that matters: the typo leaves the sandbox with no root at all, and
+		// the program then cannot find itself (`/` is where it lives).
+		if b.Source == "/" && b.Target != "/" {
+			return fmt.Errorf("bwrap.bind[%d] %q：把整个宿主根挂到 %s 上多半是笔误 —— 只读的根写成 "+
+				"/:/:ro（三段：源、目标、模式），写成 /:/ro（两段）会被读成这个映射，沙箱里就没有根了",
+				n, b, b.Target)
+		}
 	}
 	// The shaped mounts. An empty value means "not asked for" and emits nothing,
 	// so only a *present but empty* path is an error — that one reaches bwrap as
@@ -604,14 +649,21 @@ func (i *Instance) Check() error {
 			return fmt.Errorf("bwrap.env[%d] %q 的值里有换行或 NUL —— bwrap 的 --setenv 收不下", n, e)
 		}
 	}
-	// An empty list is not "a sandbox with defaults" any more: twin no longer
-	// keeps any base of its own, so this file is the only thing that could have
-	// put a root in there. bwrap without one starts the program in a namespace
-	// where nothing is mounted, which reads at the far end as "the program
-	// cannot find itself" — a failure with no trace of twin in it.
-	if i.Level.Renames() && len(i.Args) == 0 {
-		return fmt.Errorf("bwrap.args 是空的：bwrap 至少要有一个根挂载（--dev-bind / / 或 --ro-bind / /），" +
-			"twin 不再自己补一个 —— 请用 `twin gen` 重新生成，或照它的注释手写一份")
+	// There is no "sandbox with defaults" any more: twin keeps no base of its
+	// own, so this file is the only thing that could have put a root in there.
+	// bwrap without one starts the program in a namespace where nothing is
+	// mounted, which reads at the far end as "the program cannot find itself" —
+	// a failure with no trace of twin in it.
+	//
+	// The root can be said in two places, so both are read: the base writes it
+	// into `bind` as `/:/:dev` (a mount belongs in the node for mounts), while a
+	// hand-written or older definition keeps `--dev-bind / /` in `args`. Empty
+	// `args` on its own is therefore fine now — that is exactly what a
+	// definition whose root is in `bind` looks like.
+	if i.Level.Renames() && !i.hasRootMount() {
+		return fmt.Errorf("这份定义没有根挂载：bwrap.bind 里没有 /:/:dev，bwrap.args 也是空的 —— " +
+			"bwrap 至少要有一个根挂载（/:/:dev 或 --dev-bind / /），twin 不再自己补一个；" +
+			"请用 `twin gen` 重新生成，或照它的注释手写一份")
 	}
 	for n, tok := range i.Args {
 		if err := CheckBwrapToken(tok); err != nil {
@@ -760,41 +812,39 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// use, so merging stays "concatenate the arrays" rather than "invent a
 	// quoting rule" (设计 §3.2).
 	//
-	// The base is part of the file. What is left of it in this list are the two
-	// options that name no kind of mount and so have no key of their own — the
-	// root bind and --die-with-parent; the rest of it is written under `proc` /
-	// `tmpfs` / `bind` / `env` below, where a reader can tell a throwaway tmpfs
-	// from a mapping without knowing bubblewrap's options. twin used to keep the
-	// whole base in Go and let this list only *append*, which made the one
-	// decision that actually varies per program — which root the program sees —
-	// the one decision the file could not express.
+	// The base is part of the file. What is left of it in this list is what names
+	// no kind of mount and so has no key of its own — the host's /tmp and
+	// --die-with-parent; the rest of it is written under `bind` / `proc` /
+	// `tmpfs` / `env` below, where a reader can tell a throwaway tmpfs from a
+	// mapping without knowing bubblewrap's options. twin used to keep the whole
+	// base in Go and let this list only *append*, which made the one decision
+	// that actually varies per program — which root the program sees — the one
+	// decision the file could not express.
 	bw := t.Ensure("bwrap")
 	bw.SetComment("args", "交给 bwrap 的完整选项列表，逐 token 原样排列；twin 不解析它们（不猜每个选项的元数）。\n"+
-		"它排在所有路径映射与程序之前：同目标挂载由后写的那个胜出，所以想覆盖自己的那些映射，就把它们写在这个列表里更靠后的位置。\n"+
-		"`twin gen` 写进来的基座只剩下面这几条 —— 基座其余的挂载各在下面与自己同类的键里：\n"+
-		"  --dev-bind / /   整个宿主根挂进来（含设备）—— 换来的是设备可用，代价是它不再是只读的；\n"+
-		"                   改成 --ro-bind / / 的话，设备与 /run/user 都要自己补回来\n"+
-		"                   （--dev-bind /dev /dev、--bind /run/user /run/user），否则 Wayland socket 与会话总线全断；\n"+
-		"                   那时也要给 /tmp 补一条 --bind /tmp /tmp，只读的 /tmp 会让程序在别处报错\n"+
+		"它的位置：根挂载（下面 bind 里那条 /:/:dev）之后、其余所有挂载之前 —— 根是底座，必须在它下面；\n"+
+		"而同目标挂载由后写的那个胜出，所以想覆盖它或别的映射，就写进这份列表靠后的位置。\n"+
+		"`twin gen` 写进来的基座只剩下面这几条 —— 根挂载在 bind 里，其余各在下面与自己同类的键里：\n"+
 		"  --bind /tmp /tmp 宿主那个 /tmp（可写）—— 程序走 X11、不要私有 /tmp 时才有这一条；\n"+
 		"                   要私有的那种写法在 bwrap.tmpfs 里。它是「哪个根配哪个 /tmp」的一部分，\n"+
 		"                   不是这个程序的数据映射，所以不写成 bwrap.bind 里的一行\n"+
 		"  --die-with-parent\n"+
 		"这里是合并后的最终列表，低优先级在前：上面这份基座 → config.toml → rules.d → gen 的 -- 透传区；\n"+
-		"手写进来的照旧保留。会改名的 level 之下空列表会被拒绝：bwrap 至少要有一个根挂载。")
+		"手写进来的照旧保留。空列表本身没问题（根挂载在 bind 里）；两种写法里都没有根挂载的定义会被拒绝。")
 	if len(i.Args) == 0 {
 		bw.Set("args", []string{})
 	} else {
 		bw.Set("args", i.Args)
 	}
 
-	// The shaped mounts, in the order Build emits them: args first, then these,
-	// then `bind` between them, then remountRO (which has to come after whatever
-	// it tightens). The file reads top-to-bottom like the command line it turns
-	// into, which is the only reason these have keys of their own at all: each
-	// one names a *kind* of mount that a flat token list cannot name — and that
-	// is where the base's own mounts are written too, so the file says what each
-	// of them is (see sandbox.BaseFor).
+	// The shaped mounts, in the order Build emits them: the root (out of `bind`,
+	// hoisted), then `args`, then these, then the rest of `bind`, then remountRO
+	// (which has to come after whatever it tightens). The file reads
+	// top-to-bottom like the command line it turns into, which is the only
+	// reason these have keys of their own at all: each one names a *kind* of
+	// mount that a flat token list cannot name — and that is where the base's own
+	// mounts are written too, so the file says what each of them is (see
+	// sandbox.BaseFor).
 	//
 	// All four are written even when empty, so that a reader discovers them
 	// where they belong; an empty one emits no argument, which is what "not
@@ -829,17 +879,21 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// keys that have to agree about one command line belong next to each other
 	// in the file, not in two halves of it.
 	bw.SetComment("bind", "隔离哪个数据目录。整段替换内置规则（不是追加）。\n"+
+		"`gen` 写的第一条是根挂载 /:/:dev —— 它就是 --dev-bind / /，把整个宿主根挂进来\n"+
+		"（设备可用、根可写）。它永远排在所有挂载之前，写在第几行都无所谓：排在 overlay\n"+
+		"别名之后会把程序的真名还回来。收紧成只读就是把它改成 /:/:ro。\n"+
+		"它是底座，不是这个程序的数据目录 —— 所以它不算在「路径映射」那几行里。\n"+
 		"写法同 Docker Compose 的卷：源:目标[:ro|:dev]，源是数据实际所在，目标是程序看到它的位置。\n"+
 		"路径可以绝对、可以 ~/ 开头，也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。\n"+
 		"（同层那个 args 例外：那里逐字照搬，twin 不认、也解析不了里面的路径。）\n"+
 		"  源路径:目标路径        ⇒ 私有副本，两个实例互不干扰\n"+
-		"  只写一条路径           ⇒ 该路径挂回自己（数据不搬家）；基座是可写的 --dev-bind / / 时\n"+
-		"                            它不改变什么，把根换成 --ro-bind / / 之后它才是「把只读升回可写」\n"+
+		"  只写一条路径           ⇒ 该路径挂回自己（数据不搬家）；根挂载是可写的 /:/:dev 时\n"+
+		"                            它不改变什么，把根换成 /:/:ro 之后它才是「把只读升回可写」\n"+
 		"  源路径:目标路径:ro     ⇒ 只读挂载，程序看得见但改不动\n"+
 		"  源路径:目标路径:dev    ⇒ 带上设备访问（--dev-bind），给设备节点用。\n"+
 		"                            bwrap 没有只读的设备映射，所以 dev 不能与 ro 同用；\n"+
-		"                            基座 --dev-bind / / 已让整个宿主带设备可用，这一条是\n"+
-		"                            给把根收紧成 --ro-bind / / 的定义留着表达这件事用的\n"+
+		"                            根挂载 /:/:dev 已让整个宿主带设备可用，这一条是\n"+
+		"                            给把根收紧成 /:/:ro 的定义留着表达这件事用的\n"+
 		"两端也可以是同一个文件（单个配置文件）：形态照磁盘上已经存在的那一端，都没在时按目录。\n"+
 		"空着 = 数据目录与源程序共用；程序若有单实例锁（Electron / Qt / GTK 系常见），\n"+
 		"两个实例会互相干扰。这里只影响这一个实例；要让这个程序以后新建的实例也用同样\n"+

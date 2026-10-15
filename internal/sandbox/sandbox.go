@@ -158,17 +158,17 @@ func (p *Plan) String() string {
 //
 // It lives in Go only because it has to be written *once*, into the file where
 // the user can read and change it; Build never adds it (see Build below). What
-// has a node of its own goes to that node: `proc: /proc` and `tmpfs: [/dev/shm]`
-// are the same two mounts as before, but the file now says which *kind* each one
-// is without the reader having to know bubblewrap's options (设计 §2.1). Args
-// keeps what has no node — the root bind, which has to come first (it is the
-// mount everything else is laid on top of, and binding it *after* the alias
-// overlay would put the program's real name back), --die-with-parent, and the
-// host's /tmp when that is the branch (see BaseFor).
+// has a node of its own goes to that node: the root becomes the first `bind`
+// entry (`/:/:dev` — a mount belongs with the mounts) and `proc: /proc` /
+// `tmpfs: [/dev/shm]` are the same mounts as before, but the file now says which
+// *kind* each one is without the reader having to know bubblewrap's options
+// (设计 §2.1). Args keeps what has no node: --die-with-parent, and the host's
+// /tmp when that is the branch (see BaseFor).
 type Base struct {
 	Args  []string
 	Proc  string
 	Tmpfs []string
+	Binds []inst.Bind
 	Env   []inst.EnvVar
 }
 
@@ -179,39 +179,59 @@ type Base struct {
 // (twin is not a security boundary) and what the old hard-coded `--ro-bind / /`
 // made impossible to ask for — the only way to say it was the passthrough
 // region, which lands *after* every mapping, where binding the root again
-// shadows all of them.
+// shadows all of them. It is written as the first `bind` entry instead of a pair
+// of tokens in `args`, and Build is what keeps it in front of every other mount
+// wherever the file lists it (see Bind.IsRootMount).
 //
 // privateTmp says which branch the /tmp decision takes, and twin only has to
 // write one of them: a private /tmp is a tmpfs entry, and it is already in the
 // caller's own `tmpfs` list (that is what makes this true) — so what is owed
 // here is the *other* branch, the host's /tmp bound onto itself. That line stays
-// in Args, beside the root, rather than becoming a `bind` entry: `twin install`
-// reports `bind` as the directories this program's data is isolated in and
-// offers to copy the list into rules.d for the program, and a /tmp line there
-// would be twin's own decision wearing the user's data layout as a disguise
-// (实测：把它写成 bind 条目之后，那份规则草稿就会建议照抄一条 /tmp:/tmp)。
+// in Args rather than becoming a `bind` entry of its own: `/tmp:/tmp` in `bind`
+// is not the root, so it would be reported as one of the program's data
+// directories and offered for copying into the program's rules.d — twin's own
+// line wearing the user's data layout as a disguise (实测：写成 bind 条目之后，
+// 那份规则草稿就会建议照抄一条 /tmp:/tmp）。
 //
 // Either branch leaves /tmp *writable*: the mount itself is a no-op under the
 // writable root of today's base, and it is the only thing keeping /tmp writable
-// if a definition tightens that root to `--ro-bind / /`. Writable is the point —
-// a read-only /tmp is what a read-only root quietly produces, and it makes
+// if a definition tightens that root to `/:/:ro`. Writable is the point — a
+// read-only /tmp is what a read-only root quietly produces, and it makes
 // programs fail somewhere unrelated (Chromium: "Failed to create socket
 // directory"). The caller chooses from whether the program can fall back to
 // X11, because a tmpfs /tmp takes /tmp/.X11-unix/X0 with it.
 func BaseFor(id string, privateTmp bool) Base {
 	b := Base{
-		Args: []string{"--dev-bind", "/", "/"},
-		Proc: "/proc",
+		// The root mount, in the node for mounts.
+		Binds: []inst.Bind{{Source: "/", Target: "/", Dev: true}},
+		Proc:  "/proc",
 		// An empty private shared memory: /dev/shm on the host is shared with
 		// every other process, which is not what an instance's own name means.
 		Tmpfs: []string{"/dev/shm"},
 		Env:   []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: id}},
 	}
 	if !privateTmp {
-		b.Args = append(b.Args, "--bind", "/tmp", "/tmp")
+		b.Args = []string{"--bind", "/tmp", "/tmp"}
 	}
 	b.Args = append(b.Args, "--die-with-parent")
 	return b
+}
+
+// bindGroup renders one mapping as the bubblewrap option that carries it.
+//
+// The mode is the whole reason the flag is not a constant. Read-only is for
+// handing a program somebody else's directory, `:dev` for a directory of device
+// nodes (which only `--dev-bind` lets through — the root mount is one of them),
+// and plain writable is what the private-copy isolation is for.
+func bindGroup(p inst.Paths, b inst.Bind) []string {
+	flag := "--bind"
+	switch {
+	case b.ReadOnly:
+		flag = "--ro-bind"
+	case b.Dev:
+		flag = "--dev-bind"
+	}
+	return []string{flag, p.Expand(b.Source), p.Expand(b.Target)}
 }
 
 // Build assembles the sandbox plan for an instance.
@@ -251,20 +271,35 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	}
 	plan.Bwrap = bwrap
 
-	// The file's own option list, verbatim and first. One group rather than one
-	// option per line: twin does not know any bwrap option's arity (设计 §2.1),
-	// so it cannot tell an option from its value and must not invent line
-	// breaks.
+	// The root, before everything — including the file's own option list. It is
+	// written into `bind` like any other mount (see BaseFor), so where it sits in
+	// the file says nothing; what it needs is to go down first, and that is not a
+	// preference: bubblewrap applies mounts in order and the later one wins, so a
+	// root bound *after* the alias overlay puts the host's directory back over
+	// the copy the program is supposed to run from — hiding the alias path, and
+	// with it the program. It is also the surface everything below is laid on:
+	// the arg list, the shaped mounts, the data mappings, and remountRO taking
+	// single paths back out of it.
+	for _, b := range i.Binds {
+		if b.IsRootMount() {
+			plan.Groups = append(plan.Groups, bindGroup(p, b))
+		}
+	}
+
+	// The file's own option list, verbatim, ahead of every shaped mount. One
+	// group rather than one option per line: twin does not know any bwrap
+	// option's arity (设计 §2.1), so it cannot tell an option from its value and
+	// must not invent line breaks.
 	//
-	// Nothing is emitted ahead of it. The base — and with it the answer to
-	// "which root does this program get?" — used to be built right here, which
-	// made that the one decision the definition could not express: a program
-	// needing `--dev-bind / /` had no way to ask, and asking through the
-	// passthrough region put the new root binding *after* every mapping, where
-	// it shadows all of them. Now the answer is in the file, and everything
-	// below is a mount that may in turn shadow it (bubblewrap: the later mount
-	// wins). What is left in this list is exactly what has no node of its own:
-	// the root bind and --die-with-parent (see BaseFor).
+	// Nothing but the root is emitted ahead of it. The base — and with it the
+	// answer to "which root does this program get?" — used to be built right
+	// here, which made that the one decision the definition could not express: a
+	// program needing `--dev-bind / /` had no way to ask, and asking through the
+	// passthrough region put the new root binding *after* every mapping, where it
+	// shadows all of them. Now the answer is in the file, and everything below is
+	// a mount that may in turn shadow it (bubblewrap: the later mount wins). What
+	// is left in this list is exactly what has no node of its own: the host's
+	// /tmp when that is the branch, and --die-with-parent (see BaseFor).
 	if len(i.Args) > 0 {
 		plan.Groups = append(plan.Groups, append([]string(nil), i.Args...))
 	}
@@ -296,26 +331,19 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	}
 
 	for _, b := range i.Binds {
-		// The mode is the whole reason the flag is not a constant. Read-only is
-		// for handing a program somebody else's directory, `:dev` for a
-		// directory of device nodes (which only `--dev-bind` lets through), and
-		// plain writable is what the private-copy isolation is for.
-		flag := "--bind"
-		switch {
-		case b.ReadOnly:
-			flag = "--ro-bind"
-		case b.Dev:
-			flag = "--dev-bind"
+		// The root went down before everything (above); the rest is emitted here,
+		// in the order the file lists it.
+		if b.IsRootMount() {
+			continue
 		}
-		plan.Groups = append(plan.Groups,
-			[]string{flag, p.Expand(b.Source), p.Expand(b.Target)})
+		plan.Groups = append(plan.Groups, bindGroup(p, b))
 	}
 
 	// Last of the mounts, and the order is the whole point: `--remount-ro` has
-	// to come after every mount it could be tightening — the base in `args` and
-	// the mappings above — or the writable mount would be laid down on top of it
-	// again. This is what lets a definition bind a writable root and still take
-	// single paths back.
+	// to come after every mount it could be tightening — the root, whatever the
+	// file's `args` carry, and the mappings above — or the writable mount would
+	// be laid down on top of it again. This is what lets a definition bind a
+	// writable root and still take single paths back.
 	//
 	// It only bites where the destination is a mount of its own (a `bind`
 	// target, an overlay, the root itself). Anywhere else there is nothing to
@@ -329,8 +357,8 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	// The variables, in the order the file lists them (later `--setenv` wins on
 	// a duplicate, exactly as bwrap does it). TWIN_INSTANCE is in this list:
 	// `gen` writes it there, so a reader can see — and delete — what twin sets.
-	// --die-with-parent is left out, having no node: it stays in the
-	// definition's option list, where the root is (see BaseFor).
+	// --die-with-parent is left out, having no node of its own: it stays in the
+	// definition's option list (see BaseFor).
 	for _, e := range i.Env {
 		plan.Groups = append(plan.Groups, []string{"--setenv", e.Key, e.Value})
 	}
@@ -371,16 +399,17 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	}
 
 	// Every mount point, both ends of every mapping, has to exist on the host
-	// before bwrap runs: the root it gets is `--ro-bind / /`, so it cannot
-	// create them itself (`Can't mkdir parents …: Read-only file system`).
+	// before bwrap runs, and in the shape the mapping has: bwrap refuses to put a
+	// file on a directory (`Can't create file at <目录>: Is a directory`) and
+	// makes what it is missing itself as a directory — not what a mapping whose
+	// end is a config file asked for. They are created even under a writable
+	// root, which is today's base: the shape is the reason, not the permission.
 	//
-	// The shape, though, is a fact about the disk at *launch* time, so it is
-	// decided in the script rather than while rendering: `mkdir -p` on a file
-	// exits non-zero ("Already exists"), which under `set -e` kills the
-	// launcher before exec — and a mapping whose ends are files (a config file
-	// rather than a config directory) needs the mount point created as an empty
-	// file. install's half of the same rule is mountKind/EnsureMountPoints
-	// below; the two must change together.
+	// The shape is a fact about the disk at *launch* time, so it is decided in
+	// the script rather than while rendering: `mkdir -p` on a file exits non-zero
+	// ("Already exists"), which under `set -e` kills the launcher before exec.
+	// install's half of the same rule is mountKind/EnsureMountPoints below; the
+	// two must change together.
 	//
 	// Each call carries its own failure line: a shell function's non-zero exit
 	// does not reach an ERR trap (bash needs `set -E` for that, and the trap
@@ -392,6 +421,12 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 		mountDir, shHome(p.Home, p.StateDir(i.ID)),
 		Sh("建立状态目录失败："+p.RelStateDir(i.ID)))
 	for _, bind := range i.Binds {
+		// The root mount has nothing to create: both of its ends are `/`, which
+		// is already there. A `mount_pair / /` line in every launcher would only
+		// be a line that cannot fail.
+		if bind.IsRootMount() {
+			continue
+		}
 		// `:ro` travels as the third argument: the **source** of a read-only
 		// mapping is somebody else's path, and manufacturing one would turn
 		// "you gave the wrong path" into an empty mount that looks like success.
@@ -524,6 +559,12 @@ func mountKind(p inst.Paths, b inst.Bind) string {
 // into an empty read-only mount that looks like it worked.
 func EnsureMountPoints(i *inst.Instance, p inst.Paths) error {
 	for _, b := range i.Binds {
+		// The root's two ends are `/` — nothing to create, and `EnsureDir("/")`
+		// here would be a call whose only possible outcome is "already there"
+		// (the launcher skips it too, see RenderLauncher).
+		if b.IsRootMount() {
+			continue
+		}
 		if b.ReadOnly {
 			continue
 		}

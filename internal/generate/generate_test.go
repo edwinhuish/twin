@@ -572,9 +572,13 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	if got := derivationFor(der, "bwrap.tmpfs"); got == "" {
 		t.Error("规则提供的 tmpfs 必须出现在推导来源里")
 	}
-	// {id} / <id> are substituted with the concrete instance id.
-	if it.Binds[0].Source != "~/.local/state/twin/wechat2/xwechat" {
-		t.Errorf("bind source = %q", it.Binds[0].Source)
+	// The base's root mount is written first in this node, then the rule's own
+	// mappings — {id} / <id> substituted with the concrete instance id.
+	if !it.Binds[0].IsRootMount() {
+		t.Errorf("bwrap.bind[0] = %q，应当是基座那条根挂载", it.Binds[0])
+	}
+	if it.Binds[1].Source != "~/.local/state/twin/wechat2/xwechat" {
+		t.Errorf("bind source = %q", it.Binds[1].Source)
 	}
 }
 
@@ -663,15 +667,23 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tok := range []string{"--proc", "--tmpfs", "--setenv"} {
+	for _, tok := range []string{"--proc", "--tmpfs", "--setenv", "--dev-bind"} {
 		if containsToken(it.Args, tok) {
 			t.Errorf("bwrap.args 里还留着 %s，它有自己那个节点：%v", tok, it.Args)
 		}
 	}
-	// The root bind stays here, and stays first: it is the mount every mapping
-	// below it is laid on top of, the alias overlay included.
-	if len(it.Args) == 0 || it.Args[0] != "--dev-bind" {
-		t.Errorf("根挂载必须留在 args 里、排在最前：%v", it.Args)
+	// The root is a mount, so it is written in the node for mounts — as the
+	// first entry there, because the layers above (the rule's mappings) are
+	// appended after it.
+	if len(it.Binds) != 1 || !it.Binds[0].IsRootMount() {
+		t.Errorf("bwrap.bind = %v，want 只有基座那条根挂载", it.Binds)
+	}
+	// This fixture has no Wayland trait and no rule, so the host's /tmp is the
+	// branch — and that one stays in the option list: `/tmp:/tmp` is not the
+	// root, so `bind` would report it as one of the program's data directories
+	// and offer it for copying into the program's rules.d.
+	if !strings.Contains(strings.Join(it.Args, " "), "--bind /tmp /tmp") {
+		t.Errorf("宿主 /tmp 那一支要写在 args 里：%v", it.Args)
 	}
 	if it.Proc != "/proc" {
 		t.Errorf("bwrap.proc = %q, want /proc", it.Proc)
@@ -679,22 +691,12 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	if got := strings.Join(it.Tmpfs, " "); got != "/dev/shm" {
 		t.Errorf("bwrap.tmpfs = %q, want /dev/shm", got)
 	}
-	// This fixture has no Wayland trait and no rule, so the host's /tmp is the
-	// branch — and that one stays in the option list beside the root: `bind` is
-	// where the *program's* data mappings go, and twin's own line there would be
-	// reported as one and offered for copying into the program's rules.d.
-	if !strings.Contains(strings.Join(it.Args, " "), "--bind /tmp /tmp") {
-		t.Errorf("宿主 /tmp 那一支要写在 args 里：%v", it.Args)
-	}
-	if len(it.Binds) != 0 {
-		t.Errorf("bwrap.bind = %v，基座不往这个节点里写东西", it.Binds)
-	}
 	if len(it.Env) != 1 || it.Env[0].Key != "TWIN_INSTANCE" || it.Env[0].Value != "wechat2" {
 		t.Errorf("bwrap.env = %+v", it.Env)
 	}
 	// Every node the base filled has to name its source: this is the part the
 	// user did not write.
-	for _, key := range []string{"bwrap.args", "bwrap.proc", "bwrap.tmpfs", "bwrap.env"} {
+	for _, key := range []string{"bwrap.bind", "bwrap.args", "bwrap.proc", "bwrap.tmpfs", "bwrap.env"} {
 		if !hasDerivation(der, key) {
 			t.Errorf("%s 的推导来源没记下来", key)
 		}
@@ -714,8 +716,9 @@ func TestPlanNoneLevelTakesNoTmpDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(it.Args) != 0 || len(it.Tmpfs) != 0 || it.Proc != "" || len(it.Env) != 0 {
-		t.Errorf("level none 没有基座：args=%v tmpfs=%v proc=%q env=%v", it.Args, it.Tmpfs, it.Proc, it.Env)
+	if len(it.Args) != 0 || len(it.Tmpfs) != 0 || it.Proc != "" || len(it.Env) != 0 || len(it.Binds) != 0 {
+		t.Errorf("level none 没有基座：bind=%v args=%v tmpfs=%v proc=%q env=%v",
+			it.Binds, it.Args, it.Tmpfs, it.Proc, it.Env)
 	}
 }
 
