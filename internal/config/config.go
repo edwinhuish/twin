@@ -409,7 +409,7 @@ bwrap  = ""
 # 私有副本。系统 /usr/bin/bwrap 的 AppArmor profile 会给它的每个后代叠上
 # unpriv_bwrap（内含 audit deny capability），于是 Chromium / Electron 在沙箱里
 # 建不出嵌套 user namespace，只能 FATAL。副本放在没人挂 profile 的路径上就绕开
-# 了这一点 —— 代价是需要一个"跳板"（见下面的 [userns]）。
+# 了这一点 —— 代价是它得有一份自己的 profile 或一个"跳板"（见下面的 [userns]）。
 #   ""     = 不做副本，直接用上面的 bwrap（Electron 类会起不来）
 #   "auto" = 需要时复制到 ~/.local/share/twin/bin/bwrap
 #   路径   = 用你指定的那一份
@@ -417,14 +417,16 @@ bwrap_copy = "auto"
 python = "python3"            # 仅用于 SVG 光栅化与 GLib 桌面项自检
 
 [userns]
-# 跳板：kernel.apparmor_restrict_unprivileged_userns=1 时，只有 profile 里写了
-# userns 许可的程序才能建非特权 user namespace。twin 会找一个已安装的、带
-# "路径附着 + flags=(unconfined) + userns" profile 的程序（通常是某个 Electron
-# 应用），先 exec 它拿到标签，再由它 spawn 上面的 bwrap 副本。这正是换一台机器
-# 只要重跑一次 twin 就能用的原因 —— 跳板由它当场重新挑。
-#   "auto" = 自动探测（推荐）
-#   "off"  = 不探测；需要时 twin install 用 sudo 给你装一份挂在副本上的 profile
-#   路径   = 指定跳板
+# kernel.apparmor_restrict_unprivileged_userns=1 时，只有 profile 里写了 userns
+# 许可的程序才能建非特权 user namespace。twin 的首选是让 twin install 自己给私有
+# 副本装一份 profile（/etc/apparmor.d/twin-bwrap）：不依赖这台机器上恰好装了什么，
+# 代价只有一次密码，而装过之后重装、重启都不会再问。找不到自己的 profile 时才退回
+# "跳板" —— 找一个已安装的、带「路径附着 + flags=(unconfined) + userns」profile 的
+# 程序（通常是某个 Electron 应用），先 exec 它拿到标签，再由它 spawn 上面的 bwrap
+# 副本；借标签不需要任何权限，代价是依赖那个程序一直在。
+#   "auto" = 自己装，装不了才退回跳板（推荐）
+#   "off"  = 不走跳板；需要时 twin install 用 sudo 给你装一份挂在副本上的 profile
+#   路径   = 指定跳板（你点了名的那个优先于自己装）
 trampoline = "auto"
 
 [icon]

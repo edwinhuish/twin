@@ -215,23 +215,27 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 - `/usr/bin/bwrap` 的 AppArmor profile 会给它的**每个后代**叠上 `unpriv_bwrap`，而那份
   profile 带 `audit deny capability` ⇒ 后代 capability 全丢 ⇒ 嵌套 `unshare()` 恒 `EPERM`。
 
-`twin` 有两条出路，都自动选，优先第二条：
+`twin` 有两条出路，首选第一条，第二条是兜底：
 
-1. **私有 bwrap 副本 ＋ 跳板**：复制一份 bwrap 到没有 profile 的路径上（逃开限制二），运行时先
-   `exec` 一个自带 `flags=(unconfined) { userns, }` profile 的 Electron 程序（通常是 VS Code），
-   让内核在 exec 时**替换**掉 AppArmor 标签，再由它 spawn 副本 —— 副本及其后代就都带着那个许可了。
-   **机器上装了任何 Electron 应用就能用**，换一台机器重跑一次 `twin` 就重新发现一次，不绑死任何
-   特定程序。
-2. **一份挂在副本路径上的 AppArmor profile**：不依赖机器上恰好装了什么。`twin install` 自己装它
-   —— 写 `/etc/apparmor.d/twin-bwrap`、`apparmor_parser -r`，两条命令都经 `sudo`，所以会**要求你
-   输入密码**；不想给就按 Ctrl-C。没有 `sudo`、或标准输入不是终端（脚本里跑）时，它退回打印
-   profile 全文并以**退出码 3** 结束（身份是成立的，只差这一条 profile）。
+1. **一份挂在副本路径上的 AppArmor profile（首选）**：不依赖机器上恰好装了什么。`twin install`
+   自己装它 —— 写 `/etc/apparmor.d/twin-bwrap`、`apparmor_parser -r`，两条命令都经 `sudo`，所以会
+   **要求你输入一次密码**；不想给就按 Ctrl-C，这一趟会跳过这一步。装过一次就一直有效（AppArmor
+   每次开机重读 `/etc/apparmor.d`），之后重装、重启都不会再问第二次。
+2. **私有 bwrap 副本 ＋ 跳板（兜底）**：装上 profile 那一步走不成时 —— 没有 `sudo`、标准输入不是
+   终端（脚本里跑）、或者那一次没装成 —— 才复制一份 bwrap 到没有 profile 的路径上（逃开限制二），
+   运行时先 `exec` 一个自带 `flags=(unconfined) { userns, }` profile 的 Electron 程序（通常是
+   VS Code），让内核在 exec 时**替换**掉 AppArmor 标签，再由它 spawn 副本 —— 副本及其后代就都带着
+   那个许可了。借标签**不需要任何权限**，代价是依赖那个程序一直在；换一台机器重跑一次 `twin` 就
+   重新发现一次，不绑死任何特定程序。
+
+两条都不行时，`twin` 照常落全套产物、打印 profile 全文并以**退出码 3** 结束（身份是成立的，只差
+这一条 profile）。
 
 装好之后 `install` 会**回读**：`apparmor_parser` 返回 0 只说明内核收下了，还要在
 `/sys/kernel/security/apparmor/profiles` 里真的看到 `twin-bwrap` 才算数 —— 看不到就说看不到，
 不把查不到当成查过了。
 
-完整机制、三条退化路线与取证记录：[`docs/apparmor-userns.md`](docs/apparmor-userns.md)。
+完整机制、五条路线与取证记录：[`docs/apparmor-userns.md`](docs/apparmor-userns.md)。
 
 ## 命令一览
 
@@ -356,7 +360,7 @@ reinstall` 一次，它才改走这条路。见
 | [`docs/architecture.md`](docs/architecture.md) | 身份模型、三级阶梯、管线、产物模板、权限与边界、GUI 之辨 |
 | [`docs/cli.md`](docs/cli.md) | 全部子命令**做什么**、退出码、文件表、拒绝清单；选项本身在 `twin <命令> -h` 里 |
 | [`docs/configuration.md`](docs/configuration.md) | 三层配置逐键参考、覆盖规则、定义 vs 环境 |
-| [`docs/apparmor-userns.md`](docs/apparmor-userns.md) | 嵌套 user namespace：三个实测事实、三条路线、跳板机制 |
+| [`docs/apparmor-userns.md`](docs/apparmor-userns.md) | 嵌套 user namespace：三个实测事实、五条路线、profile 与跳板机制 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 症状 → 根因 → 修法，含全部实测踩坑 |
 | [`docs/development.md`](docs/development.md) | 包结构、构建与测试、开发环境的坑 |
 | [`AGENTS.md`](AGENTS.md) | 给 AI 协作者的项目约定：质量门、包结构、硬性规则、常见任务 |

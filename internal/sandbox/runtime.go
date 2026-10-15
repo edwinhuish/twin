@@ -27,13 +27,15 @@ type Runtime struct {
 	Trampoline    string
 	TrampolineEnv []string
 	Bootstrap     string
-	// NeedsProfile is set when the copy cannot create a user namespace, no
-	// profile attached to it is installed, and no trampoline exists to borrow
-	// a label from. `twin install` answers it by installing the profile
-	// through sudo; when that is not possible either (no sudo, or no terminal
-	// for the password prompt), the caller prints userns.ProfileHint and exits
-	// 3 — the code that already means "identity is in place, one human step
-	// remains".
+	// NeedsProfile is set when the copy cannot create a user namespace and
+	// this run is still aiming at the profile twin installs itself: the
+	// machine restricts unprivileged user namespaces, so the copy needs the
+	// permission that profile grants. `twin install` answers it through sudo;
+	// where no password can be asked for (no sudo on PATH, no terminal on
+	// stdin), or where the attempt failed, the caller resolves again with the
+	// profile route switched off and a trampoline takes over. Only when that
+	// is gone too does the caller print userns.ProfileHint and exit 3 — the
+	// code that already means "identity is in place, one human step remains".
 	NeedsProfile bool
 	// Notes explain the choice, for the derivation log.
 	Notes []string
@@ -56,10 +58,21 @@ type Runtime struct {
 //
 //	副本也建不了 ns
 //	    内核在限制非特权 userns 时（Ubuntu 26.04 默认开），无 profile 的副本
-//	    同样建不了。此时唯一的零注册出路是"跳板"：先 exec 一个自带
-//	    `flags=(unconfined) { userns, }` profile 的 Electron 程序，让内核把标签
-//	    换掉，再由它 spawn 副本。找不到跳板就如实报 NeedsProfile。
-func Resolve(p inst.Paths, cfg *config.Config, needNestedNS bool) Runtime {
+//	    同样建不了。首选是让 `twin install` 自己给副本装一份 profile：它不依赖
+//	    这台机器上恰好装了什么，代价只有一次密码，而 AppArmor 开机重读
+//	    /etc/apparmor.d ⇒ 装过之后重装、重启都不再问。找不到自己的 profile 时
+//	    才借跳板 —— 先 exec 一个自带 `flags=(unconfined) { userns, }` profile 的
+//	    Electron 程序，让内核把标签换掉，再由它 spawn 副本：借标签不要任何权限，
+//	    但依赖别人家的程序一直在。两条都不行就如实报 NeedsProfile。
+//
+// tryProfile is what separates the resolve before that install step from the one
+// after it: the first says true ("aim at our own profile"), the second says
+// false ("that step is behind us — what can actually go into the launcher
+// now"). With false a machine that still has no profile lands on the trampoline,
+// which is exactly what makes the trampoline a fallback instead of the default.
+// `--dry-run` never installs anything, so it resolves once with true and
+// previews the route a real run would take.
+func Resolve(p inst.Paths, cfg *config.Config, needNestedNS, tryProfile bool) Runtime {
 	rt := Runtime{}
 	system := cfg.Tools.Bwrap // "" = Build 再去 PATH 里找
 
@@ -97,8 +110,10 @@ func Resolve(p inst.Paths, cfg *config.Config, needNestedNS bool) Runtime {
 	// A profile attached to the copy grants it the permission directly, which
 	// is both simpler and steadier than a trampoline: no second process, no
 	// bootstrap script, and nothing that depends on which Electron app happens
-	// to be installed today. It is preferred over the trampoline for exactly
-	// that reason — and `twin install` can now put it there itself.
+	// to be installed today. That is the route this machine prefers, and
+	// `twin install` puts such a profile there itself — one password, and it
+	// stays put across reboots because AppArmor's init reads the whole
+	// directory again on every boot.
 	if covered, how := userns.ProfileCovers(rt.Copy); covered {
 		rt.Notes = append(rt.Notes, how+"：私有副本可以直接建 user namespace，不需要跳板")
 		return rt
@@ -110,13 +125,25 @@ func Resolve(p inst.Paths, cfg *config.Config, needNestedNS bool) Runtime {
 		rt.Notes = append(rt.Notes,
 			"config.toml 里 userns.trampoline = \"off\"：不走跳板，需要一份挂在私有副本上的 profile")
 	case "", "auto":
+		if tryProfile {
+			rt.NeedsProfile = true
+			rt.Notes = append(rt.Notes,
+				"内核在限制非特权 user namespace（"+why+"）：twin install 会用 sudo 装一份挂在私有副本上的 profile"+
+					" —— 只问这一次密码，装好之后重装、重启都不再问")
+			return rt
+		}
 		if t, ok := userns.Pick(userns.Discover(userns.DefaultDir)); ok {
+			// Borrowing a label is the fallback, never the first choice: it
+			// costs no privilege, but it lasts only as long as that Electron
+			// app stays installed.
+			rt.Notes = append(rt.Notes, "没装 profile：退回借一个已安装 Electron 的标签")
 			rt.useElectronTrampoline(p, t.Path, t.Describe())
 			return rt
 		}
 		rt.NeedsProfile = true
 		rt.Notes = append(rt.Notes,
-			"没找到可用跳板："+userns.DefaultDir+" 下没有「既像 Electron、profile 又带 userns 许可」的已安装程序")
+			"没装 profile，"+userns.DefaultDir+" 下也没有可借标签的程序："+
+				"「既像 Electron、profile 又带 userns 许可」的已安装程序一个都没有")
 	default:
 		tp := cfg.USerns.Trampoline
 		if !sysx.IsExecutableFile(tp) {

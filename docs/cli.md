@@ -57,7 +57,7 @@ twin inspect doctor    # 预览名叫 doctor 的程序
 | `bubblewrap` | 在不在 PATH、版本号 |
 | `bwrap` 能建命名空间 | **真的跑一次**（"装了"和"能用"是两回事） |
 | `overlay` 零拷贝改名 | 跑一次 overlay ＋ 别名，且检查别名**没有泄漏到宿主** |
-| `非特权 userns` | 内核是否限制；受限时**有没有跳板可用**（判据是后者，不是前者） |
+| `非特权 userns` | 内核是否限制；受限时**这台机器上有没有一条走得通的路**（自己装 profile ／ 借 Electron 跳板），判据是后者，不是前者 |
 | `GLib` 桌面项自检可用 | 用一对"好/坏"探针桌面项交叉验证检查器本身可信 |
 | `SVG/其他格式光栅化` | `python3-gi` GdkPixbuf / `rsvg-convert` / ImageMagick |
 | `托盘宿主` | 有没有 appindicator 宿主；覆盖表读不读得到 |
@@ -262,30 +262,47 @@ shell 下次扫扩展目录（注销重登一次）；那一步连同原因一�
 
 ```console
 $ twin install wechat2
-🧱 沙箱方案
-  · config.toml 里 userns.trampoline = "off"：不走跳板，需要一份挂在私有副本上的 profile
-
   🔐 需要 root 装一份 AppArmor profile
       将写 /etc/apparmor.d/twin-bwrap（twin-bwrap 挂到 bwrap 副本上）。sudo 会要求输入密码 ——
-      不想给就 Ctrl-C，下面会打印同样的命令。
+      不想给就 Ctrl-C，这一步跟着跳过，下面那一段会说明这次改走哪条路。
 
 [sudo] password for you:
   ✅ /etc/apparmor.d/twin-bwrap 已写出并用 apparmor_parser 加载，内核的已加载列表里也能读到 twin-bwrap
+
+🧱 沙箱方案
+  · /etc/apparmor.d/twin-bwrap 里的 profile twin-bwrap 挂在 /home/you/.local/share/twin/bin/bwrap 上：
+    私有副本可以直接建 user namespace，不需要跳板
+```
+
+问不到密码时它不碰 `sudo`，而是重新选一次路：
+
+```console
+$ twin install wechat2            # 标准输入不是终端
+  本机需要 AppArmor profile（要 root），但标准输入不是终端，没法让你输密码：跳过自动安装
+🧱 沙箱方案
+  · 没装 profile：退回借一个已安装 Electron 的标签
+  · 跳板 /usr/share/code/code（profile vscode，Electron）
 ```
 
 三条纪律：
 
-- **只在终端上问密码。** 标准输入不是终端（脚本、管道、CI）时不碰 sudo，退回打印 profile 全文并以
-  退出码 3 结束 —— 那是这个工具从第一天起就有的诚实行为，不是失败。
+- **只在终端上问密码。** 标准输入不是终端（脚本、管道、CI）时不碰 sudo：这一步跳过，然后按"这台
+  机器上还没有 profile"重新选路 —— 有 Electron 跳板就借它的标签（**不需要任何权限**），一个都没有
+  才退回打印 profile 全文并以退出码 3 结束。那是这个工具从第一天起就有的诚实行为，不是失败。
 - **干的事就是打印出来的那两条命令**：写 `/etc/apparmor.d/twin-bwrap`、`apparmor_parser -r`。没有
   别的系统改动，没有 AppArmor 之外的配置，也没有常驻进程。
 - **回读才算数。** `apparmor_parser` 返回 0 只说明内核收下了；twin 还会读
   `/sys/kernel/security/apparmor/profiles` 确认 `twin-bwrap` 真在列表里。那台机器不让非 root 读这份
   列表时，它明说"只确认到退出码"，而不是把查不到当成查过了。
 
-`--dry-run` 只报告这一步、绝不碰 `/etc`。装完之后 `sandbox.Resolve` 会认出这份 profile（判据是
-`/etc/apparmor.d/twin-bwrap` 里的附着路径），于是**不再需要跳板**，`reinstall` 也不会再问一次密码。
-`twin reinstall <id>` 同样会走这一步：一台机器需要它，就无论在装还是在重放时需要它。
+**这一步是首选路线，跳板是它的兜底。** 受限机器上 `install` 先瞄自己的 profile：装成了，
+`sandbox.Resolve` 会认出它（判据是 `/etc/apparmor.d/twin-bwrap` 里的附着路径）⇒ 启动器里写的就是
+私有副本，**不再需要跳板**，重装、重启都不会再问一次密码；装不成（没 `sudo`、没终端、或那一次没
+成）才重新解析一遍、退回跳板，并由 `🧱 沙箱方案` 那一段说清走的是哪条。两条都不行才打印 profile
+全文。`twin reinstall <id>` 走的是同一条路：一台机器需要这一步，就无论在装还是在重放时需要它。
+
+`--dry-run` 只报告这一步、绝不碰 `/etc`：它停在"首选路线"那个答案上，因为那才是真装时会走的路
+（预演要演的是成功的样子，而不是自己给自己预言一次失败）。
 
 `--explain` 把这一节再摊开一点，并附上一份照抄即可的规则模板：
 
@@ -392,7 +409,7 @@ $ twin install --ext        # 或 twin reinstall --ext —— 同一段代码
 | 托盘图标 | **按 install 用过的同一个判据**只查那条路：扩展被加载 ⇒ 查它读的那份文件表（条目在不在、指得对不对、宿主表里那一行删没删）；没加载 ⇒ 查宿主表。两个方向都报，因为"多了一条"和"少了一条"同样是两个来源在抢一个托盘项 |
 | 托盘扩展 | 装了没 / 启用了没 / 有没有被 shell 的禁用列表挡住（这三条决定上一条查的是哪半边；修法永远是 `twin install --ext` —— 它不属于某一个实例） |
 | L5 规则文件 | `level=redirect` 时缺文件或 JSON 非法 |
-| 嵌套 user namespace | 副本／跳板链路不完整（**双向查**：该有的没有 ⇒ FAIL；不该有却有 ⇒ WARN） |
+| 嵌套 user namespace | 副本不在 ⇒ WARN；启动器里的跳板不见了 ⇒ FAIL、不再是 Electron ⇒ WARN。**启动器里没有跳板不是问题** —— 那是"自己装 profile"这条路的正常样子，副本上那份 profile 会被当作凭据写出来 |
 
 `嵌套 user namespace` 那一项会解析**启动器文本**，确认跳板确实在启动器里 —— 因为跳板被卸载时，
 定义里的每条路径都还在，别的检查全都抓不到。
@@ -555,7 +572,7 @@ $ twin reinstall -h    # 重放存档的那一个开关
 | `0` | 成功。**包括事实性跳过**：`--no-tray` / 整机 `tray_override = false` / 这台机器根本没有托盘宿主（`tray_override = false` 时托盘扩展也一并跳过） |
 | `1` | 失败，或自检里有 ❌ |
 | `2` | 用法错误（未知子命令、未知选项、非法 `--level`、`--` 之后不是 bwrap 选项、`-o` 与 `--output` 同时给出、`HOME` 未设置…） |
-| `3` | **身份已经成立，但还差一步必须由人执行。** 目前两个来源：<br>① 托盘覆盖走宿主表那条路而表写不进去（无会话总线 —— 安装脚本、无图形会话；走托盘扩展那条路时不需要它，扩展读的是一份文件）<br>② 内核限制 `userns` 而机器上既没有跳板、`install` 也没法装 profile（没有 `sudo`，或标准输入不是终端、问不了密码）⇒ profile 全文已经打印给你<br>托盘扩展**不在**这里：它是可选增强，装好而 shell 还没扫到、或者干脆没装，都只是 ⚠️（`install` / `reinstall` 的 `🔍 自检`、`verify`、`doctor` 各报一行），退出码仍是 `0` —— 兜底那条路照旧画图标 |
+| `3` | **身份已经成立，但还差一步必须由人执行。** 目前两个来源：<br>① 托盘覆盖走宿主表那条路而表写不进去（无会话总线 —— 安装脚本、无图形会话；走托盘扩展那条路时不需要它，扩展读的是一份文件）<br>② 内核限制 `userns`，而 twin 既没能给副本装成那份 profile（没 `sudo`、没终端问密码、或那一次没成）、也没有可借标签的 Electron 跳板 ⇒ profile 全文已经打印给你<br>托盘扩展**不在**这里：它是可选增强，装好而 shell 还没扫到、或者干脆没装，都只是 ⚠️（`install` / `reinstall` 的 `🔍 自检`、`verify`、`doctor` 各报一行），退出码仍是 `0` —— 兜底那条路照旧画图标 |
 
 用法错误**只打印那一行错误**，不复述整份帮助：帮助的出口是 `twin --help`，某个命令的选项表是
 `twin <命令> -h`（退出码 `0`，那是提问不是犯错）。把一份 `usage` 倒在一处笔误下面，只会把真正

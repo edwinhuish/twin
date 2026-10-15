@@ -145,7 +145,7 @@ shell 里还找得到，而且**一个 id 一份**（想放别处用 `-o`，再�
 | 5 | `~/.config/twin/rules.d/<id>.json` | L5 规则（扩展读） | 仅 `level=redirect` |
 | 6 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
 | 7 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
-| 8 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本 | 同上 |
+| 8 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（借别人的 AppArmor 标签那条路用） | 仅当这一趟走的是跳板 —— 走"自己装的 profile"时不需要它 |
 | 9 | `~/.local/share/twin/tray.d/<id>.json` | 托盘文件表（扩展读它画图标，§7.1 的**首选路径**） | 每次 install；扩展不可用时**不写**（那份是兜底） |
 | 10 | `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘扩展（`metadata.json` ＋ `extension.js`：读上面那份表画图标 ＋ 同步图标框尺寸） | **不是** `twin install`：`twin install --ext`（机器级，一份服务所有实例） |
 
@@ -214,8 +214,8 @@ bind:
   逐 token 照搬。
 - **`tray.override` 总是写**（即使值是 `true`）："不覆盖托盘"本身也是一个决定，缺这段会让它
   和"这个字段存在之前写的老文件"无法区分。缺段的老文件按 `true` 读。
-- **`nested_ns` 总是写**：它是**应用知识**（这个程序要不要自己建 ns），跟定义走；而"用哪个跳板、
-  副本放哪"是**机器状态**，留在 `config.toml` 里，让下一台机器自己决定。
+- **`nested_ns` 总是写**：它是**应用知识**（这个程序要不要自己建 ns），跟定义走；而"要不要给副本
+  装一份 profile、用哪个跳板、副本放哪"是**机器状态**，留在 `config.toml` 里，让下一台机器自己决定。
 
 ### 5.2 `launch`（薄启动器）
 
@@ -483,12 +483,15 @@ custom-icons → 内容）⇒ 位图那条路稍后仍会用自己的显式宽�
 |---|---|
 | T1（含 L5 规则） | ❌ 零特权，只写用户目录 |
 | T2 / T3 | ⚠️ 需要能建非特权 `userns` |
-| T2 / T3 **且程序自带嵌套沙箱**（Electron / Chromium） | ❌ **仍然零特权** —— 走"私有副本 ＋ 跳板" |
+| T2 / T3 **且程序自带嵌套沙箱**（Electron / Chromium） | ⚠️ **安装时**要一次 `sudo`，给私有副本装一份 AppArmor profile；**运行期仍然零特权** |
 
-细节、三个实测事实与三条退化路线：[`apparmor-userns.md`](apparmor-userns.md)。
+细节、三个实测事实与五条路线：[`apparmor-userns.md`](apparmor-userns.md)。
 
-`twin` **从不写 `/etc/`**。走投无路时它打印一份 profile 文本并以退出码 3 结束 ——
-写 `/etc` 是一个 `wrap` 不该有的副作用，而使用者离同样的结果只差一次复制粘贴。
+`twin` 只在 `twin install` / `twin reinstall` 里写 `/etc/apparmor.d/twin-bwrap`，只经 `sudo`、只跑那两条
+命令（`install` ＋ `apparmor_parser -r`）；问不到密码（没有 `sudo`、标准输入不是终端）或者那一次没成
+时，它一个字都不往里写，改为退回"私有副本 ＋ 跳板"，两条都不行才打印 profile 全文并以退出码 3 结束
+—— 写 `/etc` 从来不是 `wrap` 的副作用，它是一次显式的根动作，而使用者离同样的结果只差一次复制粘贴。
+运行期全用户态，没有 root 守护进程。
 
 ## 9. 边界：包裹层永远做不到的事
 

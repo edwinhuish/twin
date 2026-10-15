@@ -34,7 +34,8 @@ import (
 // one step needs a human" apart from "this is broken". Two things land there:
 // the tray icon table, which can only be written through the session bus that
 // an installer or a headless run does not have, and an AppArmor profile that
-// only root can install when no trampoline exists on the machine.
+// nobody could install for the user — no sudo or no terminal to answer a
+// password prompt, and no trampoline to borrow a label from either.
 const (
 	exitOK    = 0
 	exitFail  = 1
@@ -968,12 +969,21 @@ func (r installRun) apply(it *inst.Instance, path string, cfg *config.Config) in
 	// else is in the file.
 	insp := snapshotInspection(r.p, it)
 
-	rt := sandbox.Resolve(r.p, cfg, it.NestedNS)
-	printRuntime(rt)
+	// Two resolves around one step, and the order between them is the point:
+	// the first asks what this machine would *like* to do — install a profile
+	// of twin's own — and the second asks what can actually go into the
+	// launcher now that that step is behind us. Where it did not happen (no
+	// password could be asked for, or the attempt failed), the second one lands
+	// on a trampoline; and because the first route is what a real run aims at,
+	// `--dry-run` deliberately stops at the first answer.
+	rt := sandbox.Resolve(r.p, cfg, it.NestedNS, true)
 	if code := ensureProfile(r.p, rt, r.dry); code != exitOK {
 		return code
 	}
-	rt = sandbox.Resolve(r.p, cfg, it.NestedNS)
+	if !r.dry {
+		rt = sandbox.Resolve(r.p, cfg, it.NestedNS, false)
+	}
+	printRuntime(rt)
 
 	plan, err := sandbox.Build(it, r.p, rt)
 	if err != nil {
@@ -999,13 +1009,14 @@ func (r installRun) apply(it *inst.Instance, path string, cfg *config.Config) in
 
 // ensureProfile is the one step of an install that has to run as root.
 //
-// It only fires on a machine that restricts unprivileged user namespaces (so
-// the private bubblewrap copy cannot build one on its own) *and* has nothing to
-// borrow an AppArmor label from. twin then installs the profile itself instead
-// of handing the user a copy-paste job — but only where a password can actually
-// be asked for, which means a terminal on stdin. Anything else (a script, a
-// pipe, a hook) gets the printed commands and exit code 3, which is what this
-// step used to do in every case.
+// It only fires on a machine that restricts unprivileged user namespaces: the
+// private bubblewrap copy cannot build one on its own there, so twin installs
+// the profile that grants it, instead of depending on some Electron app being
+// installed today. A password is the entire cost, and it can only be asked for
+// where there is something to ask with — sudo on PATH and a terminal on stdin.
+// Where either is missing (a script, a pipe, a hook) this step says so and
+// installs nothing; the caller then resolves again, and that is where the
+// trampoline becomes the route.
 //
 // Both entry points call it, not just `twin install`: a machine that needs this
 // needs it equally when a snapshot is replayed, and leaving `reinstall` to print
@@ -1020,28 +1031,35 @@ func ensureProfile(p inst.Paths, rt sandbox.Runtime, dry bool) int {
 			"真正安装时会用 sudo 要求你输入密码"))
 		return exitOK
 	}
-	sudo := sysx.Which("sudo")
+	// The two reasons a prompt cannot happen are named, not lumped together:
+	// they send the reader to different places (put sudo on PATH, versus come
+	// back from a terminal).
+	var whyNot string
 	switch {
-	case sudo == "":
-		fmt.Printf("  %s\n", outStyle.Yellow("本机需要 AppArmor profile，但 PATH 上没有 sudo：跳过自动安装"))
+	case sysx.Which("sudo") == "":
+		whyNot = "PATH 上没有 sudo"
 	case !style.IsTerminal(os.Stdin):
-		fmt.Printf("  %s\n", outStyle.Yellow("本机需要 AppArmor profile（要 root），"+
-			"但标准输入不是终端、没法让你输密码：跳过自动安装"))
-	default:
-		// What is about to be written to /etc is named before sudo asks for a
-		// password, not after: handing root to a line the user cannot see is
-		// the one thing this prompt must never do.
-		fmt.Printf("  %s\n", title("🔐 需要 root 装一份 AppArmor profile"))
-		fmt.Printf("     将写 %s（%s 挂到 bwrap 副本上）。sudo 会要求输入密码 —— "+
-			"不想给就 Ctrl-C，下面会打印同样的命令。\n\n", userns.ProfileFile, userns.ProfileName)
-		note, err := userns.InstallProfile(rt.Bwrap, p.BinDir())
-		if err != nil {
-			warn(err.Error())
-			fmt.Printf("  %s\n", outStyle.Yellow("自动安装没成功，退回手工那一步"))
-			return exitOK
-		}
-		fmt.Printf("  %s %s\n", outStyle.Green(style.Glyph(style.LevelOK)), note)
+		whyNot = "标准输入不是终端，没法让你输密码"
 	}
+	if whyNot != "" {
+		fmt.Printf("  %s\n", outStyle.Yellow("本机需要 AppArmor profile（要 root），但"+
+			whyNot+"：跳过自动安装"))
+		return exitOK
+	}
+	// What is about to be written to /etc is named before sudo asks for a
+	// password, not after: handing root to a line the user cannot see is
+	// the one thing this prompt must never do.
+	fmt.Printf("  %s\n", title("🔐 需要 root 装一份 AppArmor profile"))
+	fmt.Printf("     将写 %s（%s 挂到 bwrap 副本上）。sudo 会要求输入密码 —— "+
+		"不想给就 Ctrl-C，这一步跟着跳过，下面那一段会说明这次改走哪条路。\n\n",
+		userns.ProfileFile, userns.ProfileName)
+	note, err := userns.InstallProfile(rt.Bwrap, p.BinDir())
+	if err != nil {
+		warn(err.Error())
+		fmt.Printf("  %s\n", outStyle.Yellow("自动安装没成功：下面按「这台机器上还没有 profile」重新选路"))
+		return exitOK
+	}
+	fmt.Printf("  %s %s\n", outStyle.Green(style.Glyph(style.LevelOK)), note)
 	return exitOK
 }
 
@@ -1331,12 +1349,14 @@ func cmdReinstall(p inst.Paths, args []string) int {
 		warn(w + "（这是定义里的决定，不是这次的问题）")
 	}
 
-	rt := runtimeFor(p, it.NestedNS)
-	printRuntime(rt)
+	// Same two resolves as `twin install` (see installRun.apply): aim at our
+	// own profile first, then write the launcher for whatever route is left.
+	rt := runtimeFor(p, it.NestedNS, true)
 	if code := ensureProfile(p, rt, false); code != exitOK {
 		return code
 	}
-	rt = runtimeFor(p, it.NestedNS)
+	rt = runtimeFor(p, it.NestedNS, false)
+	printRuntime(rt)
 
 	plan, err := sandbox.Build(it, p, rt)
 	if err != nil {
@@ -1601,36 +1621,39 @@ func snapshotInspection(p inst.Paths, it *inst.Instance) *generate.Inspection {
 // where a missing or malformed config.toml must not stop a replay: replaying a
 // snapshot reads the snapshot, and the config is optional garnish. `--refresh`
 // is the path where a malformed file is reported instead.
-func runtimeFor(p inst.Paths, needNestedNS bool) sandbox.Runtime {
+//
+// tryProfile travels straight into sandbox.Resolve: it says whether installing
+// our own AppArmor profile is still on the table for this resolution.
+func runtimeFor(p inst.Paths, needNestedNS, tryProfile bool) sandbox.Runtime {
 	cfg, err := config.Load(p)
 	if err != nil {
 		return sandbox.Runtime{}
 	}
-	return sandbox.Resolve(p, cfg, needNestedNS)
+	return sandbox.Resolve(p, cfg, needNestedNS, tryProfile)
 }
 
-// printProfileHint is what is left when `twin install` cannot do the one step
-// that needs root: the machine restricts unprivileged user namespaces, no
-// Electron binary is installed to borrow an AppArmor label from, and no
-// password could be asked for (no sudo on PATH, or stdin is not a terminal).
+// printProfileHint is what is left when neither route is available: no password
+// could be asked for (no sudo on PATH, or stdin is not a terminal), or the
+// attempt itself failed — and no Electron binary is installed to borrow an
+// AppArmor label from either.
 //
-// `twin install` runs these two commands itself through sudo whenever it can.
-// Printing them is the honest fallback, not the plan: the commands are exactly
-// what was attempted, so the user can run them and get the same result.
+// `twin install` runs the two commands below itself through sudo whenever it
+// can, and falls back to a trampoline when it cannot. Printing them is the last
+// resort, not the plan: the commands are exactly what was attempted, so the
+// user can run them and get the same result.
 func printProfileHint(copyPath string) {
 	fmt.Printf("\n%s\n", title("✋ 还差一步：证书这关要走一次 root"))
 	fmt.Printf("  这个程序运行时要自己建一个嵌套 user namespace，而内核只放行\n")
 	fmt.Printf("  「profile 里写了 userns 许可」的程序（%s）。\n", userns.SysctlSource)
 	fmt.Printf("  私有 bwrap 副本故意不带 profile，所以它自己建不了。\n\n")
 	fmt.Printf("  两条路，任选其一：\n")
-	fmt.Printf("    1) 装一个 Electron 应用（VS Code 就够了），再跑一次 `twin reinstall <id>`；\n")
-	fmt.Printf("       它会自动发现新跳板，什么都不用配置。\n")
-	fmt.Printf("    2) 在有终端的环境里再跑一次 twin install（或 twin reinstall <id>）——\n")
-	fmt.Printf("       它会用 sudo 替你装好这份 profile；或者手工把它存成 %s 并加载：\n\n", userns.ProfileFile)
+	fmt.Printf("    1) 在有终端的环境里再跑一次 twin install（或 twin reinstall <id>）——\n")
+	fmt.Printf("       它会用 sudo 替你装好下面这份 profile；也可以手工把它存成 %s 并加载：\n\n", userns.ProfileFile)
 	for _, line := range strings.Split(strings.TrimRight(userns.ProfileHint(copyPath), "\n"), "\n") {
 		fmt.Printf("       %s\n", line)
 	}
-	fmt.Println()
+	fmt.Printf("\n    2) 装一个 Electron 应用（VS Code 就够了）当跳板，再跑一次 twin reinstall <id>；\n")
+	fmt.Printf("       下一次安装会自己挑中它 —— 借标签不需要任何权限。\n\n")
 }
 
 // printRuntime says how this machine will launch the sandbox, but only when

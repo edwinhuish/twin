@@ -147,9 +147,13 @@ func Run(p inst.Paths) *Report {
 		// The machine's user-namespace situation. The restriction itself is
 		// not the verdict — what matters is whether there is a way around it,
 		// because that is the difference between "Chromium and Electron wrap
-		// fine" and "they cannot start at all". There are two ways: a profile
-		// attached to the private copy (durable, and what `twin install`
-		// installs itself), or a trampoline borrowed from an Electron app.
+		// fine" and "they cannot start at all". There are two ways, and the
+		// order between them is the whole design: first the profile `twin
+		// install` puts on the private copy itself (one password, nothing
+		// outside this machine's own state), and only when nobody can be asked
+		// for that password, a trampoline borrowed from an Electron app —
+		// which needs no privilege but lasts exactly as long as that app stays
+		// installed.
 		restricted, why := userns.Restricted()
 		if !restricted {
 			detail := "内核未限制非特权 user namespace"
@@ -167,28 +171,39 @@ func Run(p inst.Paths) *Report {
 				}
 			}
 			covered, how := userns.ProfileCovers(p.BwrapCopy())
+			pick, hasTrampoline := userns.Pick(cands)
 			switch {
 			case covered:
 				add("非特权 userns", KindOK,
 					fmt.Sprintf("内核在限制（%s），但 %s —— 私有 bwrap 副本可以直接建 user namespace",
 						why, how), "")
-			case electron > 0:
-				pick, _ := userns.Pick(cands)
+			case sysx.Which("sudo") != "":
+				// sudo is what the next install needs, not something this run
+				// uses: the row is about whether a wrap can be produced, and
+				// twin producing it itself is exactly that.
+				detail := fmt.Sprintf("内核在限制（%s）：twin install 会用 sudo 装一份挂在私有副本上的 profile"+
+					"（一次密码，装好后重装、重启都不再问）", why)
+				if hasTrampoline {
+					detail += fmt.Sprintf("；不想给密码还有 %d 个 Electron 跳板可退回，例如 %s",
+						electron, pick.Path)
+				}
+				add("非特权 userns", KindOK, detail, "")
+			case hasTrampoline:
 				add("非特权 userns", KindOK,
-					fmt.Sprintf("内核在限制（%s），但发现 %d 个 Electron 跳板可用，例如 %s —— "+
-						"Chromium / Electron 会走「私有 bwrap 副本 + 跳板」这条路", why, electron, pick.Path),
-					"")
+					fmt.Sprintf("内核在限制（%s），本机没有 sudo：走 Electron 跳板（发现 %d 个，例如 %s），"+
+						"私有 bwrap 副本借它的标签", why, electron, pick.Path), "")
 			case len(cands) > 0:
 				add("非特权 userns", KindWarn,
-					fmt.Sprintf("内核在限制，%s 下 %d 个候选里没有一个像 Electron —— "+
+					fmt.Sprintf("内核在限制（%s），本机也没有 sudo，而 %s 下 %d 个候选里没有一个像 Electron —— "+
 						"它们拿不到「只跑脚本、不开窗口」的驱动方式，Chromium / Electron 包裹会起不来",
-						userns.DefaultDir, len(cands)),
+						why, userns.DefaultDir, len(cands)),
 					"装一个 Electron 应用（VS Code 即可），然后 twin reinstall <id> 让它当跳板")
 			default:
 				add("非特权 userns", KindWarn,
-					"内核在限制，且没有找到任何自带 userns 许可的已安装程序：Chromium / Electron 包裹会起不来",
-					"twin install 会自己装一份 AppArmor profile（要 sudo）；也可以装一个 Electron 应用"+
-						"（VS Code 即可）当跳板")
+					fmt.Sprintf("内核在限制（%s），本机也没有 sudo，也没有自带 userns 许可的已安装程序："+
+						"Chromium / Electron 包裹会起不来", why),
+					"在一台有 sudo 的机器上装一份 AppArmor profile；"+
+						"或装一个 Electron 应用（VS Code 即可）当跳板")
 			}
 		}
 	} else {

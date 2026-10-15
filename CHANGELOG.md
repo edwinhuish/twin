@@ -85,6 +85,21 @@
 
 ### Changed
 
+- **受限机器上优先"让 twin 自己装那份 AppArmor profile"，跳板降为兜底**（行为变更）：
+  `userns.trampoline = "auto"` 原先一上来就去找一个已安装的 Electron 应用、借它的标签让 bwrap 副本
+  建出嵌套 user namespace —— 不需要任何权限，代价是把一个包裹的寿命挂在了别人家的程序上（那个应用
+  卸载/改名，实例就起不来），而"这台机器上恰好装了什么"会悄悄决定一次安装的结果。现在先走 twin
+  自己那份：`twin install` 写 `/etc/apparmor.d/twin-bwrap` 并 `apparmor_parser -r`（两条命令经
+  `sudo`，**一次密码**；AppArmor 每次开机重读 `/etc/apparmor.d`，所以重装、重启都不再问），
+  `sandbox.Resolve` 一旦认出它，启动器里写的就是私有副本、不需要跳板。装不成才退回跳板，而且
+  理由与后果都打在 `🧱 沙箱方案` 那一段：问不到密码（没有 `sudo`、标准输入不是终端）或者那一次
+  没装成时，"跳过自动安装"后面紧跟着"没装 profile：退回借一个已安装 Electron 的标签"。两条都不行
+  才打印 profile 全文并以退出码 3 收尾。`userns.trampoline` 的取值含义随之调整（`"off"` 仍然是不走
+  跳板，显式路径仍然优先于自己装），`doctor` 那一行与 `docs/apparmor-userns.md` 的路线表也跟着改
+  （现在是从 A 到 D 五条）。取证方式：scratch HOME 下 `--dry-run` 打印的是"会用 sudo 装一份…" ——
+  预演演的是真装会走的那条路，不是自己给自己预言一次失败；没有终端时真跑一次，打印"跳过自动安装"
+  并退回 `/usr/share/code/code`，把它写进了启动器。
+
 - **可选的东西不再挡在"还差一步"里**（行为变更）：托盘尺寸助手扩展只是把托盘图标画成面板那么大 ——
   没装它，兜底那条路照旧画图标，只是小一圈。原先 `verify` 把它标成 `Manual`，于是
   `twin install` / `twin reinstall` 会以**退出码 3** 收尾，并在末尾那段

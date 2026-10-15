@@ -182,11 +182,12 @@ twin doctor | grep -A2 userns
 | `doctor` 那一行 | 含义 | 做法 |
 |---|---|---|
 | `内核未限制…可以直接包裹` | 没这个问题 | — |
-| `内核在限制，但发现 N 个 Electron 跳板可用` | 正常，自动走路线 B | 不用管 |
-| `内核在限制，N 个候选里没有一个像 Electron` | 有带 `userns` 许可的程序，但没有能静默驱动的 | 装个 Electron 应用，或按打印的 profile 装一份 |
-| `内核在限制，且没有找到任何…` | 一个都没有 | 同上 |
+| `内核在限制…：twin install 会用 sudo 装一份…` | 正常：`install` 会自己给副本装那份 profile（一次密码，之后不再问） | 不用管；不想给密码它会退回跳板 |
+| `内核在限制…本机没有 sudo：走 Electron 跳板…` | 正常，但走的是"借别人的标签"那条路 | 不用管；想换成 profile，就在有 `sudo` 的终端里 `twin install <id>` |
+| `内核在限制…候选里没有一个像 Electron` / `…也没有自带 userns 许可的已安装程序` | 既没有 `sudo`、也没有能静默驱动的跳板 | 装个 Electron 应用当跳板；或按它打印的 profile 手工装一份 |
 
-另外：**跳板被卸载/改名**会让本来正常的实例突然起不来。`twin reinstall <id> --refresh` 会重挑一个。
+另外：**跳板被卸载/改名**会让走那条路的实例突然起不来（走 profile 那条路的不受影响）。
+`twin reinstall <id> --refresh` 会重挑一个。
 
 ### C2. X11 程序报 `cannot open display` / `No protocol specified`
 

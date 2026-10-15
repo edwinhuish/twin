@@ -126,7 +126,7 @@ twin config > ~/.config/twin/config.toml
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `trampoline` | `"auto"` | `"auto"` 自动探测最佳跳板；`"off"` 不用跳板（受限机器上改走 AppArmor profile，`twin install` 会用 `sudo` 装它）；或一个显式路径（**必须是 Electron 程序**） |
+| `trampoline` | `"auto"` | `"auto"`（受限机器上先让 `twin install` 自己装那份 AppArmor profile，装不了才退回自动挑一个跳板）；`"off"` 不用跳板（装不了 profile 就是打印全文 ＋ 退出码 3）；或一个显式路径（**必须是 Electron 程序**，优先于自己装） |
 
 ### `[icon]`
 
@@ -360,7 +360,7 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 | **环境** | bwrap 路径、python 路径、图标尺寸（由本机 DPI 决定） | ❌ | 换机器/换会话就变，写进文件必然过期 |
 | **源的现状** | `Categories` / `Keywords` / `Icon=`（实例里留空表示"继承"时） | ❌ | 源桌面项可能被系统更新覆盖 ⇒ `install` / `reinstall` 时重读 |
 | **应用知识** | 该程序是否需要嵌套 ns | ✅ | 它跟着程序走，不跟着机器走 |
-| **机器状态** | 用哪个跳板、副本放哪 | ❌ | 留在 `config.toml`，让下一台机器自己决定 |
+| **机器状态** | 用哪个跳板 / 要不要自己装 profile、副本放哪 | ❌ | 留在 `config.toml`，让下一台机器自己决定 |
 | **会话类型** | Wayland / X11 | ⚠️ 部分 | 已固化成 `isolation.tmpfs`；`reinstall` 时会**警告**它与当前会话不符 |
 
 ⇒ 一句话：**"这台机器现在什么样"每次重算；"我要什么"写死在文件里。**
