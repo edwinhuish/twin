@@ -212,7 +212,7 @@ twin reinstall <id>
 ### C3. 程序起不来，报 `Can't create file: Read-only file system`（或 `Can't mkdir …`）
 
 **根因**：一条路径映射的**目标**（程序看到那一侧）在沙箱里不存在，而沙箱的根是只读的 ——
-只读的根里建不出挂载点。（`twin gen` 写的基座是 `--dev-bind / /`，根是可写的，bwrap 其实建得出来
+只读的根里建不出挂载点。（`twin gen` 写的根挂载是 `/:/:dev`，根是可写的，bwrap 其实建得出来
 —— 但它会把挂载点建在**宿主的家目录**里。所以"先把两端建出来"这一步一直留在启动器里。）
 
 `twin` 会在挂载**两端**都先建出来（`twin install` 建自己那一侧，生成的启动器每次启动前再确认
@@ -261,8 +261,8 @@ abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 ### C5. 程序报 `Failed to create socket directory` / `mktemp: Read-only file system`
 
 **根因**：沙箱里的 `/tmp` 是**只读**的 —— 这份定义的 `bwrap.args` 里既没有 `--tmpfs /tmp`
-也没有 `--bind /tmp /tmp`，`bwrap.tmpfs` 里也没有 `/tmp`（改了那一行、或把根换成了 `--ro-bind / /`
-而没补回来的实例会这样）。
+也没有 `--bind /tmp /tmp`，`bwrap.tmpfs` 里也没有 `/tmp`（改了那一条、或把根换成了 `/:/:ro`
+而没给 `/tmp` 补一条的实例会这样）。
 
 **最典型的一例**是 Chromium / Electron：单实例锁的 socket 目录建在 `base::GetTempDir()`
 （`$TMPDIR`，否则 `/tmp`）下的一个 `mkdtemp` 里，建不出来就打

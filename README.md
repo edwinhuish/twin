@@ -41,8 +41,9 @@ $ twin install wechat2  # 读它，落盘，然后自检这条身份链路的每
   "内核不放行非特权 userns、机器上又没有跳板"时的唯一退路，`twin install` 会问你密码去装它，
   **不给密码就用不了它**（那时打印 profile 全文，你自己决定）。
 - ❌ 不隔离网络（`isolation.unshare` 里出现 `net` 会被直接拒绝）
-- ❌ 不做"权限沙箱" —— 它给的是**身份**，不是安全边界。基座那一行就是整个宿主根（`--dev-bind / /`，
-  可写、设备可用）：沙箱在这里的职责是"换名字 ＋ 分开数据目录"，不是拦住不受信任的代码
+- ❌ 不做"权限沙箱" —— 它给的是**身份**，不是安全边界。定义里的根挂载就是整个宿主根
+  （`bwrap.bind` 里那条 `/:/:dev`，就是 `--dev-bind / /`，可写、设备可用）：沙箱在这里的职责是
+  "换名字 ＋ 分开数据目录"，不是拦住不受信任的代码
 - ❌ 不提供 GUI（为什么不做，见 [`docs/architecture.md`](docs/architecture.md) §7）
 
 ## 30 秒上手
@@ -168,7 +169,8 @@ mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files"
 mount_pair "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users"
 
 exec '/usr/bin/bwrap' \
-  '--dev-bind' '/' '/' '--die-with-parent' \
+  '--dev-bind' '/' '/' \
+  '--die-with-parent' \
   '--proc' '/proc' \
   '--tmpfs' '/dev/shm' \
   '--tmpfs' '/tmp' \
@@ -184,29 +186,31 @@ exec '/usr/bin/bwrap' \
 ```
 
 （上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
-`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端。这些 token 全部**来自 `profile.yml`**：
-排在最前的那一行是它的 `bwrap.args`，其余各条来自同名的键（`bwrap.proc` / `bwrap.tmpfs` /
-`bwrap.bind` / `bwrap.env`）—— `twin` 不知道任何 bwrap 选项的元数，所以除了那份列表，它只按文件里
-的键序发它们。想换根、想加减隔离，改的就是那份定义。）
+`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端，根挂载不建，它两端都是 `/`。这些 token
+全部**来自 `profile.yml`**：第一行是它的 `bwrap.bind` 里那条根挂载 `/:/:dev`，接着是它的
+`bwrap.args`，其余各条来自同名的键（`bwrap.proc` / `bwrap.tmpfs` / `bwrap.bind` / `bwrap.env`）
+—— `twin` 不知道任何 bwrap 选项的元数，所以除了那份列表，它只按文件里的键序发它们。想换根、
+想加减隔离，改的就是那份定义。）
 
 几处关键点，每一条都对应一次实测：
 
 1. `--overlay-src` 必须排在 `--ro-bind … 别名` **之前**，否则挂载点建不出来；
-2. `profile.yml` 里那份选项列表排在**所有映射之前**：映射要能覆盖基座，就不能被基座覆盖
-   （bubblewrap 的规则是"后挂载遮蔽前者"）；
+2. 根挂载与 `profile.yml` 里那份选项列表排在**所有映射之前**：映射要能覆盖基座，就不能被基座
+   覆盖（bubblewrap 的规则是"后挂载遮蔽前者"）。根挂载写在 `bwrap.bind` 里（`/:/:dev`），位置由
+   生成器保证 —— 写在文件的第几行都一样；
 3. 程序名写成 `/opt/wechat/wechat2`（别名，只在命名空间里存在）⇒ `/proc/self/exe` 的
    basename 就是 `wechat2`，`argv[0]` 默认也是它 ⇒ **窗口与托盘的 id 天然一致**；
 4. 每个 bind 的**两端**都要先在宿主机上存在。`--dev-bind / /` 之后 bwrap 其实建得出来，但它会把
-   挂载点建在**宿主的家目录**里；换成 `--ro-bind / /` 时更是完全建不了
+   挂载点建在**宿主的家目录**里；换成只读的 `/:/:ro` 时更是完全建不了
    （`Can't mkdir parents …: Read-only file system`）。而**形态要判**：一条映射的两端必须
    同形（bwrap：`Can't create file at <目录>: Is a directory`），而 `mkdir -p` 打在**文件**上会报
    `Already exists` 并让这份脚本死在 `set -e` 上 —— 所以形态按磁盘上**已有的那一端**决定，两端
    都没在时按目录。这样"源是文件"的映射（单个配置文件，如 `vlcrc`）才走得通，`twin install`
    也会按同一条规则把私有侧建成文件而不是目录。
-5. `/tmp` 必须是这两种之一：`--tmpfs /tmp`（空的私有 `/tmp`）或 `--bind /tmp /tmp`（宿主那个，
-   可写）。只读的 `/tmp` 是最糟的一种 —— 建不出临时目录的程序会在别处报错：Chromium 会打印
-   `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。这一条写在
-   `bwrap.args` 里，就在根那一行的旁边。
+5. `/tmp` 必须是这两种之一：`bwrap.tmpfs` 里的 `/tmp`（空的私有 `/tmp`）或 `bwrap.args` 里的
+   `--bind /tmp /tmp`（宿主那个，可写 —— 它排在根挂载之后，只读的根也压不住它）。只读的 `/tmp`
+   是最糟的一种 —— 建不出临时目录的程序会在别处报错：Chromium 会打印
+   `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。
 
 ## Electron / Chromium 的特殊情况
 

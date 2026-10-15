@@ -182,34 +182,43 @@ style → {}    ← 只有标准库
     而默认值属于"猜错了一个字都不会有人告诉你"的那类信息。PrintDefaults 打不出来的用法
     （`--` 透传区、`install <id> | -p` 的二选一）进 `cmd/twin/main.go` 的 `helpFooter`，也不进文档。
     文档只写**为什么**：这个命令是干什么的、这条边界对应哪次实测。
-14. **挂载点两端同形，形态看磁盘。** bwrap 的根在基座里定（`gen` 写的是 `--dev-bind / /`，可写；
-    换成 `--ro-bind / /` 它就建不了挂载点），而一条映射的两端必须是同一种东西（文件挂到目录上
-    bwrap 直接拒绝），`mkdir -p` 打在文件上还会报 `Already exists` 并让 `set -e` 的启动器在 exec
-    之前死掉。所以两端都建，形态由**磁盘上已有的那一端**决定，两端都没在时按目录 —— 可写根下也
-    照建：省掉它，bwrap 会把挂载点建到**宿主的家目录**里。这条规则有**两份实现**，各管一段时间：
-    生成的启动器里是 `sandbox.mountHelpers` 的 `mount_point` / `mount_pair`（每次启动判一次），
-    install 里是 `sandbox.EnsureMountPoints`（落盘时判一次，否则一个被造成目录的私有副本会一直
-    留着 —— 启动器不碰已经存在的路径）。**改一处必须改两处**。
+14. **挂载点两端同形，形态看磁盘。** 一条映射的两端必须是同一种东西（文件挂到目录上 bwrap 直接
+    拒绝），而 `mkdir -p` 打在文件上还会报 `Already exists` 并让 `set -e` 的启动器在 exec 之前死掉。
+    所以两端都建，形态由**磁盘上已有的那一端**决定，两端都没在时按目录 —— 可写根下也照建：省掉它，
+    bwrap 会把挂载点建到**宿主的家目录**里，而且一律建成目录。唯一不建的是**根挂载**（两端都是
+    `/`，本来就在那儿）。这条规则有**两份实现**，各管一段时间：生成的启动器里是
+    `sandbox.mountHelpers` 的 `mount_point` / `mount_pair`（每次启动判一次），install 里是
+    `sandbox.EnsureMountPoints`（落盘时判一次，否则一个被造成目录的私有副本会一直留着 —— 启动器
+    不碰已经存在的路径）。**改一处必须改两处**。
 15. **沙箱基座是文件里的一段文本，不是 Go 里的常量，而且每条各归自己那个键。** `sandbox.BaseFor`
-  只负责在 `gen` 时把它**写进** `profile.yml`：`--proc /proc` → `bwrap.proc`、`--tmpfs /dev/shm`
-  与（选了私有 `/tmp` 时的）`/tmp` → `bwrap.tmpfs`、`--setenv TWIN_INSTANCE <id>` → `bwrap.env`；
-  `args` 只留**没有自己节点**的那几条 —— 根挂载 `--dev-bind / /`（排在最前）、宿主 `/tmp` 那一支的
-  `--bind /tmp /tmp`、`--die-with-parent`。`sandbox.Build` 一字不改地照发，并把 `args` 这份列表排在
-  **所有映射之前**；twin 不再自己补任何 bwrap 选项。之所以这么费劲："这个程序拿到哪个根"是定义里
-  唯一随程序而变、又曾经完全表达不了的决定 —— 基座原先是硬编码的 `--ro-bind / /`，要碰设备的程序
-  只能从透传区开口，而透传区排在所有映射**之后**，在那里重新绑一次根会把前面的挂载全盖掉。
+  只负责在 `gen` 时把它**写进** `profile.yml`：根挂载 `/:/:dev`（`--dev-bind / /` 就是它）→
+  `bwrap.bind`、`--proc /proc` → `bwrap.proc`、`--tmpfs /dev/shm` 与（选了私有 `/tmp` 时的）
+  `/tmp` → `bwrap.tmpfs`、`--setenv TWIN_INSTANCE <id>` → `bwrap.env`；`args` 只留**没有自己节点**
+  的那两条 —— 宿主 `/tmp` 那一支的 `--bind /tmp /tmp`、`--die-with-parent`。`sandbox.Build` 一字
+  不改地照发；twin 不再自己补任何 bwrap 选项。之所以这么费劲："这个程序拿到哪个根"是定义里唯一
+  随程序而变、又曾经完全表达不了的决定 —— 基座原先是硬编码的 `--ro-bind / /`，要碰设备的程序只能
+  从透传区开口，而透传区排在所有映射**之后**，在那里重新绑一次根会把前面的挂载全盖掉。
   **按节点摊开**是因为 `args` 里一条 `--tmpfs /dev/shm` 看不出它是哪一种挂载，`bwrap.tmpfs` 里的
   `/dev/shm` 才说得清；宿主 `/tmp` 那一条偏偏留在 `args`：`bwrap.bind` 是"隔离哪些数据目录"的清单，
-  塞进去 `install` 会把它报成一条路径映射、还建议照抄进这个程序的 `rules.d`（实测）。
+  塞进去（它不是根，认不出来）`install` 会把它报成一条路径映射、还建议照抄进这个程序的 `rules.d`
+  （实测）。
+  **根挂载为此要自己保住位置**：它写在 `bind` 里（那是挂载该在的节点），而 `Build` 把两端都是 `/`
+  的那一条提到**所有挂载之前** —— 写在文件的第几行都一样。bwrap 按顺序挂载、后写的胜出，根排在
+  overlay 别名之后会把宿主的目录盖回程序的运行路径上，别名和程序一起消失；`args` 排在它之后、
+  其余映射再往后，所以每一条都能压住它（`/:/:ro` 就是把整个根收紧成只读）。同一份 `bind` 清单在
+  终端那边要**滤掉根挂载**：`install` 的「路径映射」数的是这个程序的数据目录，而 `uncoverHints`
+  拿映射的**目标端**做前缀比较 —— 根的目标端是 `/`，留下它那一段建议就永久闭嘴了。
+
   **`/tmp` 两个方向都必须是可写的**：建不出临时目录的程序会在跟 twin 无关的地方炸（Chromium 的单
   实例 socket → `process_singleton_posix.cc: Failed to create socket directory`，Electron 实测）。
   走 tmpfs 的程序拿空的私有 `/tmp`，X11 那一路拿宿主那个 —— tmpfs 会把 `/tmp/.X11-unix/X0`
   一起带走。映射写在**同层的 `bwrap.bind`**（它和 `args` 是同一次调用的两半，所以共用一个节点；
    `rules.d` 里那条仍在顶层，那是应用知识、不是一个 bwrap 调用），顶层 `bind` **指名报错** ——
    读成"没有映射"会让程序看不见自己的文件，而那时离这次编辑已经很远。旧键 `bwrap.extra`
-   （instance / config.toml / rules.d 三处同名）同理；会改名的 level 之下 `bwrap.args` 为空也
-   **指名报错** —— 少了根挂载，程序会在一个什么都没挂的命名空间里"找不到自己"，而那条失败信息里
-   不会有一个字提到 twin。同一个节点下还有四个**有形状的挂载**（`proc` / `tmpfs` / `remountRO` /
+   （instance / config.toml / rules.d 三处同名）同理；会改名的 level 之下**两处都没有根挂载**
+   （`bind` 里没有 `/:/…`、`args` 也空着）就**指名报错** —— 少了根挂载，程序会在一个什么都没挂的
+   命名空间里"找不到自己"，而那条失败信息里不会有一个字提到 twin。顺带：`/:/ro` 这种两段写法
+   会被拒（它读成"把根挂到 `/ro`"），只读的根是三段的 `/:/:ro`。同一个节点下还有四个**有形状的挂载**（`proc` / `tmpfs` / `remountRO` /
     `env`，见 `inst.toTree`）：基座里属于它们的那几条就写在这里（见上），空值发出零个参数，`Build`
    按文件里的键序发它们，`remountRO` 排在所有挂载之后（只能作用在自己就是一条挂载的路径上，实测）。
    往 `bwrap.tmpfs` 加新目录之前先问：去掉它之后这里还写得进去吗。
