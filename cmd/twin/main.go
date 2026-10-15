@@ -117,8 +117,12 @@ var version = "0.2.0-dev"
 
 func main() {
 	if len(os.Args) < 2 {
+		// 空命令行就是 `twin --help`：没有动作可做，能回答的只有"这个工具是什么"，
+		// 所以走和 --help 相同的出口 —— 包括退出码 0。2 说的是"你的命令行写错了"，
+		// 而裸调用一个字都没写错：按用法错误收尾，会让 `twin || echo 坏了` 这种写法
+		// 把一次提问报成故障。
 		fmt.Print(usage)
-		os.Exit(exitUsage)
+		return
 	}
 	cmd := os.Args[1]
 
