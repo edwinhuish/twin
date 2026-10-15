@@ -261,7 +261,9 @@ style → {}    ← 只有标准库
 
 ### 加一个自检项
 `internal/verify/verify.go` 的 `Run()` 里 `add(name, status, detail, fix)`。若这一项**只能由人
-在图形会话里完成**，把 `Finding.Manual` 置真 —— 它会被 `printManual` 收集，并驱动退出码 3。
+在图形会话里完成**（写 dconf 表那种），把 `Finding.Manual` 置真 —— 它驱动退出码 3；打印上和别的
+非 OK 项没有区别，`install` 就地列在 `🔍 自检` 那一段、`verify` 列在整份报告里。**可选项不要标
+Manual**：那会让它和非做不可的那一步共用一个退出码（托盘尺寸助手扩展就是这么被摘出去的）。
 
 ### 加一个新 Trait
 `internal/generate/traits.go` 的 `Traits` 结构体 ＋ 一个 needle。扫描是**按二进制内字符串**做的

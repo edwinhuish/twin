@@ -60,9 +60,9 @@ func ExtFiles() []string {
 // extension directories once, at startup, so a uuid it has never seen cannot be
 // enabled by any command until the next login.
 //
-// Four places print this sentence — the install-time check, the report from
-// `twin install --ext`, verify and doctor — and they must not drift into
-// four different instructions for one action.
+// Three places print this sentence — the report from `twin install --ext`,
+// verify and doctor — and they must not drift into three different
+// instructions for one action.
 func EnableHint() string {
 	return "注销重登一次（shell 只在启动时扫扩展目录），再跑 gnome-extensions enable " + ExtUUID
 }

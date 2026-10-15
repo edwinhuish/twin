@@ -299,10 +299,22 @@ func TestProblemsAreQuietWhenNothingIsWrong(t *testing.T) {
 			Detail: "custom-icons 里没有 wechat2 的条目",
 			Fix:    "gsettings set …",
 		},
+		// Manual 也是一样：这一条曾经被留到末尾那个「还差一步」清单里，于是同一件事
+		// 有两个出口、而「必须人做」和「可选」混在同一张清单上。现在它就地打印。
+		{
+			Name:   "托盘扩展",
+			Status: verify.StatusWarn,
+			Detail: "助手扩展未装入",
+			Fix:    "twin install --ext",
+			Manual: true,
+		},
 	}}
 	got := formatProblems(bad)
 	if !strings.Contains(got, "托盘图标覆盖表") || !strings.Contains(got, "gsettings set") {
 		t.Errorf("有 WARN 时应当连修复命令一起打印：\n%s", got)
+	}
+	if !strings.Contains(got, "托盘扩展") || !strings.Contains(got, "twin install --ext") {
+		t.Errorf("Manual 的条目也该在这里就地打印：\n%s", got)
 	}
 	// A fix under a ✅ offers a command for a problem the reader does not have;
 	// the tray check always has one ready, so this is the difference between a
@@ -501,17 +513,18 @@ func fakeGSettings(t *testing.T, list string) {
 	t.Setenv("PATH", dir)
 }
 
-// The one thing `twin install --ext` must not do is claim it finished: on a
-// first install the shell cannot load the helper yet, and that is a logout, not
-// a retry. So the files land, and the run ends with the manual step and exit 3.
+// `twin install --ext` 装完就得算装完了：首次装好后 shell 还加载不了它，但那是一次
+// 注销重登，不是一次重试，更不是失败 —— 扩展只是把图标画成面板那么大，底下那条兜底
+// 的路一直在画。所以文件落盘、三步说明印出来，退出码仍是 0：把它算成「还差一步」，
+// 一个可选增强就会和「宿主表写不进去」用同一个码。
 func TestInstallExtWritesTheFilesAndAsksForOneRelogin(t *testing.T) {
 	fakeGSettings(t, "[]")
 	p := inst.Paths{Home: t.TempDir()}
 
 	var code int
 	got := captureStdout(t, func() { code = cmdInstall(p, []string{"--ext"}) })
-	if code != exitHuman {
-		t.Errorf("文件装好了、只差一次注销重登 ⇒ 退出码应为 %d，得到 %d:\n%s", exitHuman, code, got)
+	if code != exitOK {
+		t.Errorf("装完就是装完了，扩展是可选增强 ⇒ 退出码应为 %d，得到 %d:\n%s", exitOK, code, got)
 	}
 	for _, name := range tray.ExtFiles() {
 		if !sysx.Exists(filepath.Join(tray.ExtDir(p), name)) {
@@ -523,6 +536,9 @@ func TestInstallExtWritesTheFilesAndAsksForOneRelogin(t *testing.T) {
 	}
 	if !strings.Contains(got, "gnome-extensions enable "+tray.ExtUUID) {
 		t.Errorf("没给出要跑的那条命令：\n%s", got)
+	}
+	if strings.Contains(got, "还差一步") {
+		t.Errorf("扩展是可选增强，不该说成还差一步：\n%s", got)
 	}
 }
 
@@ -624,33 +640,22 @@ func TestInstallWithAnIDReadsThatInstancesDefinition(t *testing.T) {
 	}
 }
 
-// install / reinstall only look. If this ever writes again, the helper is back
-// to being a side effect of wrapping one instance — and the switch that exists
-// to install it becomes a second way to do the same thing.
-func TestCheckTrayExtOnlyChecks(t *testing.T) {
+// install / reinstall only look at the helper. If this ever writes again, the
+// helper is back to being a side effect of wrapping one instance — and the
+// switch that exists to install it becomes a second way to do the same thing.
+// Two places on that path touch it: applyTray, which picks the mechanism, and
+// the self-check line that reports its state. Both have to be read-only.
+func TestInstallingAnInstanceOnlyReadsTheHelper(t *testing.T) {
 	fakeGSettings(t, "[]")
 	p := inst.Paths{Home: t.TempDir()}
+	it := &inst.Instance{ID: "demo2", TrayOverride: true, Level: inst.LevelAlias}
 
-	got := checkTrayExt(p, &inst.Instance{ID: "demo2", TrayOverride: true})
-	if !strings.Contains(got, "twin install --ext") {
-		t.Errorf("缺扩展时要给出那个开关：%q", got)
+	applyTray(p, it)
+	if got := verify.TrayExtFinding(p, it); !strings.Contains(got.Fix, "twin install --ext") {
+		t.Errorf("缺扩展时要指出那个开关：%+v", got)
 	}
 	if sysx.Exists(tray.ExtDir(p)) {
-		t.Error("install / reinstall 上的这一句碰了扩展目录：它只许看")
-	}
-
-	if got := checkTrayExt(p, &inst.Instance{ID: "demo2"}); !strings.Contains(got, "跳过") {
-		t.Errorf("tray.override = false 时应当跳过：%q", got)
-	}
-
-	// Both halves in place: the files are there and the shell's list names the
-	// uuid, which is the only state that may come out green.
-	fakeGSettings(t, "['"+tray.ExtUUID+"']")
-	if _, err := tray.EnsureExt(p); err != nil {
-		t.Fatal(err)
-	}
-	if got := checkTrayExt(p, &inst.Instance{ID: "demo2", TrayOverride: true}); !strings.Contains(got, "已启用") {
-		t.Errorf("文件在、启用列表里也有它时应当报已启用：%q", got)
+		t.Error("install / reinstall 碰了扩展目录：它只许看")
 	}
 }
 
@@ -760,16 +765,16 @@ func TestInstallHelpNamesTheMachineLevelSwitch(t *testing.T) {
 // `reinstall --ext` and `install --ext` are one action through two doors:
 // installing a configuration and replaying the snapshot it wrote differ only in
 // where the instance comes from, and the helper belongs to neither. So the
-// switch has to mean here exactly what it means there — including the exit code
-// that says the last step is a logout rather than a retry.
+// switch has to mean here exactly what it means there — including the exit code,
+// which says the last step is a logout that adds nothing but a bigger icon.
 func TestReinstallExtIsTheSameActionAsInstallExt(t *testing.T) {
 	fakeGSettings(t, "[]")
 	p := inst.Paths{Home: t.TempDir()}
 
 	var code int
 	got := captureStdout(t, func() { code = cmdReinstall(p, []string{"--ext"}) })
-	if code != exitHuman {
-		t.Errorf("与 install --ext 是同一件事 ⇒ 退出码也应当是 %d，得到 %d:\n%s", exitHuman, code, got)
+	if code != exitOK {
+		t.Errorf("与 install --ext 是同一件事 ⇒ 退出码也应当是 %d，得到 %d:\n%s", exitOK, code, got)
 	}
 	for _, name := range tray.ExtFiles() {
 		if !sysx.Exists(filepath.Join(tray.ExtDir(p), name)) {

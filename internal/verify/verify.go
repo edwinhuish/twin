@@ -483,13 +483,14 @@ func warnFinding(f Finding, detail, fix string) Finding {
 // the host's table — because that is the same question the install answered,
 // and the two have to agree. Three facts have to hold for the helper: the files
 // are in the user extension directory, the shell has the uuid in its enable
-// list, and the shell has not refused it. The first of those is why this can be
-// Manual — the shell scans extension directories once, at startup, so right
-// after a first install no command can enable the helper and the only honest
-// answer is "log out once".
+// list, and the shell has not refused it.
 //
 // It stays a WARN rather than a FAIL: the fallback path draws the icon fine, it
-// is just pinned to the theme's size.
+// is just pinned to the theme's size. And it is deliberately *not* Manual: the
+// helper only makes that icon bigger, so a machine that never installs it is
+// not missing a step. Marking it Manual put "twin install --ext" in the same
+// block as the tray-table write that really does need a desktop session, and
+// made a plain `twin install` exit 3 over something nobody has to do.
 func TrayExtFinding(p inst.Paths, i *inst.Instance) Finding {
 	f := Finding{Name: "托盘扩展", Status: StatusOK}
 	if !i.TrayOverride {
@@ -505,8 +506,9 @@ func TrayExtFinding(p inst.Paths, i *inst.Instance) Finding {
 		// whether or not the extension lists could be read. Installing the
 		// helper is its own command now: it is machine-wide, so an
 		// instance-level reinstall is the wrong verb for it.
-		f.Status, f.Manual = StatusWarn, true
-		f.Detail = tray.ExtUUID + " 不在 " + tray.ExtDir(p) + "：托盘图标走宿主表兜底（比面板图标小一圈）"
+		f.Status = StatusWarn
+		f.Detail = tray.ExtUUID + " 不在 " + tray.ExtDir(p) + "：托盘图标走宿主表兜底" +
+			"（可选增强：装了才和面板图标一样大）"
 		if st.Why != "" {
 			f.Detail += "；扩展列表也读不到：" + st.Why
 		}
@@ -515,17 +517,18 @@ func TrayExtFinding(p inst.Paths, i *inst.Instance) Finding {
 		// Installed, but the lists themselves could not be read. Saying "not
 		// enabled" here would send the reader to fix the wrong thing — the
 		// lists are unreadable, which is a session-bus question.
-		f.Status, f.Manual = StatusWarn, true
+		f.Status = StatusWarn
 		f.Detail = tray.ExtUUID + " 已装入，但读不到 shell 的扩展列表：" + st.Why +
 			"（现在托盘图标走宿主表兜底）"
 		f.Fix = "在图形会话的终端里跑一次 twin install --ext（它会重新问一遍 shell）"
 	case st.Blocked:
-		f.Status, f.Manual = StatusWarn, true
+		f.Status = StatusWarn
 		f.Detail = tray.ExtUUID + " 在 shell 的禁用列表里（被关掉过，shell 不会加载它）：托盘图标走宿主表兜底"
 		f.Fix = "twin install --ext"
 	default:
-		f.Status, f.Manual = StatusWarn, true
-		f.Detail = tray.ExtUUID + " 已装入但未启用：托盘图标走宿主表兜底（比面板图标小一圈）"
+		f.Status = StatusWarn
+		f.Detail = tray.ExtUUID + " 已装入但未启用：托盘图标走宿主表兜底" +
+			"（可选增强：装了才和面板图标一样大）"
 		f.Fix = tray.EnableHint()
 	}
 	return f

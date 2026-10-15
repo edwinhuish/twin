@@ -218,19 +218,86 @@ func TestTrayFindingCatchesTheRowTheHelperReplaced(t *testing.T) {
 	}
 }
 
-// 被 shell 拒过的扩展不算可用：这条路一选错，实例就一个图标都没有了 ——
-// 所以自检必须把托盘图标这条结论落在兜底那条路上，并说清为什么。
-func TestTrayExtFindingOnARefusedHelper(t *testing.T) {
+// 助手扩展是**可选增强**：没装、装了没启用、被 shell 拒了，都只是走兜底那条路，
+// 图标照画、只是小一圈 —— 所以这三条只能是 WARN，绝不能是 Manual。Manual 会被
+// 当成「还差一步必须人做」并让 `twin install` 以退出码 3 收尾，而那个码留给真正
+// 做不了的那一步（写不进宿主表）：把可选项混进去，脚本分不出「回来再跑一次」和
+// 「你坏了」。
+func TestTrayExtFindingIsNeverManual(t *testing.T) {
+	cases := []struct {
+		name    string
+		files   bool
+		enabled string
+		blocked string
+		want    string
+	}{
+		{"没装", false, "[]", "[]", "可选增强"},
+		{"装了没启用", true, "[]", "[]", "可选增强"},
+		{"被 shell 拒了", true, "['" + tray.ExtUUID + "']", "['" + tray.ExtUUID + "']", "禁用列表"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := trayPaths(t)
+			if c.files {
+				installHelper(t, p)
+			}
+			stubShell(t, "[]", c.enabled, c.blocked)
+
+			f := TrayExtFinding(p, iconInstance())
+			if f.Manual {
+				t.Fatalf("扩展是可选项，不该进「还差一步」：%+v", f)
+			}
+			if f.Status != StatusWarn {
+				t.Fatalf("走了兜底就得报出来：%+v", f)
+			}
+			if f.Fix == "" {
+				t.Error("WARN 必须给出那条命令，否则用户不知道该怎么装上它")
+			}
+			if !strings.Contains(f.Detail, c.want) {
+				t.Errorf("要说清是哪个状态（%q）：%q", c.want, f.Detail)
+			}
+		})
+	}
+}
+
+// 自检里的这一行只许看：install / reinstall 走到这里时，一旦它开始写，包一个实例
+// 就又会顺手改掉一个机器级的东西 —— 而那正是 `--ext` 这个开关存在的理由。
+func TestTrayExtFindingOnlyReads(t *testing.T) {
+	stubShell(t, "[]", "[]", "[]")
+	p := trayPaths(t)
+
+	TrayExtFinding(p, iconInstance())
+	if _, err := os.Stat(tray.ExtDir(p)); err == nil {
+		t.Error("自检碰了扩展目录")
+	}
+}
+
+// 两半都在位（文件在、启用列表里有它）是唯一能出绿的状态。
+func TestTrayExtFindingWhenTheHelperIsLoaded(t *testing.T) {
 	p := trayPaths(t)
 	installHelper(t, p)
-	stubShell(t, "[]", "['"+tray.ExtUUID+"']", "['"+tray.ExtUUID+"']")
+	stubShell(t, "[]", "['"+tray.ExtUUID+"']", "[]")
 
 	f := TrayExtFinding(p, iconInstance())
-	if f.Status != StatusWarn || !f.Manual {
-		t.Fatalf("被拒的扩展应当报出来：%+v", f)
+	if f.Status != StatusOK || f.Manual {
+		t.Errorf("扩展已加载、图标由它画，不该报问题：%+v", f)
 	}
-	if !strings.Contains(f.Detail, "禁用列表") {
-		t.Errorf("要说清是禁用列表挡住的：%q", f.Detail)
+	if !strings.Contains(f.Detail, "已启用") {
+		t.Errorf("要说清它已启用：%q", f.Detail)
+	}
+}
+
+func TestTrayExtFindingHonoursTheOptOut(t *testing.T) {
+	stubShell(t, "[]", "[]", "[]")
+	it := iconInstance()
+	it.TrayOverride = false
+
+	f := TrayExtFinding(trayPaths(t), it)
+	if f.Status != StatusOK || f.Manual {
+		t.Errorf("显式关掉托盘覆盖时扩展一并跳过：%+v", f)
+	}
+	if !strings.Contains(f.Detail, "tray.override") {
+		t.Errorf("要说清是按设置跳过的：%q", f.Detail)
 	}
 }
 

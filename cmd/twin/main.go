@@ -90,24 +90,6 @@ func exitFor(rep *verify.Report) int {
 	return exitOK
 }
 
-// printManual prints the steps that only a graphical session can finish, and
-// says why the exit code is not 0.
-func printManual(rep *verify.Report) {
-	var lines []string
-	for _, f := range rep.Findings {
-		if f.Manual && f.Status != verify.StatusOK && f.Fix != "" {
-			lines = append(lines, f.Fix)
-		}
-	}
-	if len(lines) == 0 {
-		return
-	}
-	fmt.Printf("\n%s\n", title(fmt.Sprintf("✋ 还差一步（必须由真实图形会话执行，脚本里写不了 —— 这就是退出码 %d 的含义）", exitHuman)))
-	for i, l := range lines {
-		fmt.Printf("  %d. %s\n", i+1, l)
-	}
-}
-
 const usage = `twin —— 程序双开
 
 用法:
@@ -1140,7 +1122,6 @@ func cmdVerify(p inst.Paths, args []string) int {
 	rep := verify.Run(it, p)
 	fmt.Printf("%s %s（level=%s，别名=%s）\n\n", outStyle.Bold("🪪 实例"), it.ID, it.Level, it.EffectiveAlias())
 	fmt.Print(formatFindings(rep))
-	printManual(rep)
 	return exitFor(rep)
 }
 
@@ -1159,13 +1140,18 @@ func formatFindings(rep *verify.Report) string {
 // just wrote the files the other checks confirm. Everything else passed a
 // moment ago by construction, and listing it as ✅ is a page of text between the
 // paths and the only thing still to do; a check that is not OK is the one line
-// in the run that needs the user. Findings marked Manual are left out because
-// printManual already collects them, under a heading that also explains the exit
-// code.
+// in the run that needs the user.
+//
+// Manual findings are included: there is no separate "还差一步" list any more.
+// They used to be collected into one block at the end, which is exactly what
+// made a step nobody is required to take (the tray helper) look like the same
+// kind of thing as one they are. Anything not OK is printed here, with its
+// command, and the exit code is what distinguishes "come back from the desktop"
+// from "you are broken".
 func formatProblems(rep *verify.Report) string {
 	var b strings.Builder
 	for _, f := range rep.Findings {
-		if f.Status == verify.StatusOK || f.Manual {
+		if f.Status == verify.StatusOK {
 			continue
 		}
 		writeFinding(&b, f)
@@ -1385,11 +1371,12 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 
 	// The tray override is written here, before the self-check, so the check
 	// reads back what this run just did rather than a state from last time.
-	// The shell-side helper is only *looked at*: it is machine-wide, so it has
-	// its own switch (`twin install --ext`) and this run must not quietly
-	// change something that outlives the instance it was called for.
+	// The shell-side helper is only *read*: it is machine-wide, so it has its
+	// own switch (`twin install --ext`) and this run must not quietly change
+	// something that outlives the instance it was called for. Its state is
+	// reported by the self-check below, in the same line `verify` prints —
+	// one fact, one place.
 	trayLine := applyTray(p, it)
-	extLine := checkTrayExt(p, it)
 	rep := verify.Run(it, p)
 
 	fmt.Printf("%s\n", report.lead)
@@ -1401,7 +1388,6 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		fmt.Printf("  L5 规则  %s\n", res.Rule)
 	}
 	fmt.Printf("  %s\n", trayLine)
-	fmt.Printf("  %s\n", extLine)
 	if report.verbose {
 		// The derived values are all already in profile.yml, and their whole
 		// point is to be visible — visible is profile.yml, not a wall of
@@ -1425,7 +1411,6 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		fmt.Printf("\n%s\n%s", title("🔍 自检"), problems)
 	}
 	printNextSteps(p, it, report.verbose)
-	printManual(rep)
 
 	if rt.NeedsProfile {
 		// The identity is complete and every file is on disk; what is missing
@@ -1488,7 +1473,7 @@ func printNextSteps(p inst.Paths, it *inst.Instance, verbose bool) {
 	if verbose {
 		fmt.Printf("  1. 桌面项是后写的，GNOME 不会给已经存在的窗口重算归属 —— 请**重新启动**这个实例。\n")
 		fmt.Printf("  2. 托盘图标已就位：上面「托盘覆盖」那条说了这次走的是哪条路（助手扩展，或宿主表兜底）。\n")
-		fmt.Printf("     两条都是热生效，不用重登；那条若是 WARN，说明有一半没到位，按它给的命令跑一次。\n")
+		fmt.Printf("     两条都是热生效，不用重登；🔍 自检 那一段里若有 ⚠️，按它给的那条命令跑一次。\n")
 		fmt.Printf("  3. 想确认身份，看这两个值是否都等于 %q：\n", it.EffectiveAlias())
 		fmt.Printf("     窗口 app_id ：WAYLAND_DEBUG=1 bash %s 2>&1 | grep set_app_id\n", p.Launch(it.ID))
 		fmt.Printf("     托盘 SNI Id ：busctl --user list | grep -i statusnotifier  （名字里带 pid）\n")
@@ -1550,9 +1535,15 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 				tray.Schema, tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
 		}
 		// The helper itself is machine-wide, so this run only *looks* at it —
-		// and says what it found in the same words the real run will print:
-		// checkTrayExt is the one place that sentence lives.
-		fmt.Printf("  %s\n", checkTrayExt(p, it))
+		// and says what it found in the very words the real run's 自检 section
+		// uses (verify.TrayExtFinding). The rehearsal prints no other part of
+		// that report, so this is not one fact twice; a sentence drawn up here
+		// instead would be a second answer to one question.
+		var sb strings.Builder
+		writeFinding(&sb, verify.TrayExtFinding(p, it))
+		for _, line := range strings.Split(strings.TrimRight(sb.String(), "\n"), "\n") {
+			fmt.Printf("  %s\n", line)
+		}
 	}
 	printDerived(report.der)
 	printPathMaps(p, it, insp, report.origin, report.fix, report.verbose)
@@ -1901,9 +1892,12 @@ func applyTrayFile(p inst.Paths, it *inst.Instance, table, vague string) string 
 // only *checks* it now and names the missing piece; this command is what changes
 // it.
 //
-// The one honest failure is "the files are there but the shell has not scanned
-// them yet": that is a login, not a retry, and it is reported as the manual step
-// it is (exit code 3), never as a FAIL.
+// The one outcome that is not "done" is "the files are there but the shell has
+// not scanned them yet": that is a login, not a retry, and the run spells the
+// three steps out instead of calling them a failure. It stays exit code 0: the
+// helper is an enhancement on top of a fallback that already draws the icon, so
+// installing it does not leave an outstanding task the way writing the host's
+// table without a session bus does.
 func installExt(p inst.Paths, dry bool) int {
 	dir := tray.ExtDir(p)
 	if dry {
@@ -1943,12 +1937,12 @@ func installExt(p inst.Paths, dry bool) int {
 		} else {
 			fmt.Printf("  启用     还没有 —— 在装的当下做不到\n")
 		}
-		fmt.Printf("\n%s\n", title(fmt.Sprintf("✋ 还差一步（脚本里写不了 —— 这就是退出码 %d 的含义）", exitHuman)))
+		fmt.Printf("\n%s\n", title("🔔 让它生效还要三步（可选增强：不做也不影响任何实例的托盘图标）"))
 		fmt.Printf("  1. 注销重登一次：shell 只在启动时扫一遍扩展目录，它现在还不认识这个 uuid。\n")
 		fmt.Printf("  2. gnome-extensions enable %s\n", tray.ExtUUID)
 		fmt.Printf("  在此之前，各实例仍走宿主覆盖表兜底 —— 图标是对的，只是比面板图标小一圈。\n")
 		fmt.Printf("  3. 重登之后，让已装的实例改走这条路：twin reinstall <id>（一条命令一个实例）。\n")
-		return exitHuman
+		return exitOK
 	default:
 		fmt.Printf("  启用     状态未知\n")
 	}
@@ -1959,58 +1953,6 @@ func installExt(p inst.Paths, dry bool) int {
 	// user has not run yet.
 	fmt.Printf("  已装的实例不会自己搬家：下一次 twin install / reinstall 时它们才改走这条路。\n")
 	return exitOK
-}
-
-// checkTrayExt reports the shell-side half of the tray override, and warns when
-// it is not there.
-//
-// This is the other half of the switch applyTray just took: the tray line says
-// which mechanism drew the icon, this one says what state the helper is in and
-// what to run about it. The two share the same reading of ExtState.Usable, so
-// the block can never claim "the helper draws it" while this line says the
-// helper is missing.
-//
-// It deliberately does not install it: the helper belongs to the machine while
-// the install that calls this belongs to one instance (see installExt above).
-// What is left to do here is exactly what the user asked for at wrap time — say
-// whether it is in place, and if not, name the one command that fixes it.
-//
-// The line is coloured and glyphed rather than quiet because a helper that is
-// not loaded is not a file this run forgot: without it the tray override goes
-// through the host's table (which works, at the theme's 16px), and nothing else
-// in the output would mention why the icon looks small. `verify` and the ✋
-// block repeat it with the same wording, which is how every other not-OK check
-// in this tool behaves.
-func checkTrayExt(p inst.Paths, it *inst.Instance) string {
-	if !it.TrayOverride {
-		return "托盘扩展 跳过（tray.override = false）"
-	}
-	st := tray.CheckExt(p)
-	const install = "twin install --ext"
-	warn := func(s string) string { return outStyle.Yellow(style.Glyph(style.LevelWarn) + " " + s) }
-	switch {
-	case st.Usable():
-		// Plain, like every other line in the artefact block: only the not-OK
-		// cases carry a verdict, because they are the ones the reader has to
-		// act on.
-		return "托盘扩展 " + tray.ExtUUID + " 已启用 —— 托盘图标由它接管"
-	case !st.Installed:
-		why := ""
-		if st.Why != "" {
-			why = "；扩展列表也读不到：" + st.Why
-		}
-		return warn("托盘扩展 未装入 —— 托盘图标走宿主表兜底（图标会比面板图标小一圈）" + why +
-			"；装它：`" + install + "`")
-	case st.Why != "":
-		return warn("托盘扩展 已装入，但读不到 shell 的扩展列表：" + st.Why +
-			"；在图形会话的终端里跑 `" + install + "` 重新问一遍")
-	case st.Blocked:
-		return warn("托盘扩展 在 shell 的禁用列表里（被关掉过）—— 托盘图标走宿主表兜底；" +
-			"`" + install + "` 会重新请求启用一次")
-	default:
-		return warn("托盘扩展 已装入但未启用 —— 托盘图标走宿主表兜底（图标会比面板图标小一圈）；" +
-			tray.EnableHint())
-	}
 }
 
 // dropTray removes this instance's row from the host table. The table is global

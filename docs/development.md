@@ -300,8 +300,12 @@ PATH=/tmp/fakebin:$PATH HOME=/tmp/scratch-home DISPLAY=:0 \
 ### 加一个自检项
 
 `internal/verify/verify.go` 的 `Run()` 里 `add(name, status, detail, fix)`。
-若这一项**只能由人在图形会话里完成**，把 `Finding.Manual` 置真 —— 它会被 `printManual`
-收集，并驱动退出码 3。
+若这一项**只能由人在图形会话里完成**（写 dconf 表那种），把 `Finding.Manual` 置真 —— 它驱动
+退出码 3，脚本据此知道该回到桌面再跑一次。打印上没有特殊待遇：非 OK 项一律就地列在 `🔍 自检`
+那一段（`install`）或整份报告里（`verify`），带着它自己那条命令。
+
+⚠️ **可选项不要标 Manual**：那会让它和"必须人做"共用同一个退出码，而脚本正是拿这个码判断
+要不要回来重跑（托盘尺寸助手扩展就是这么被摘出去的）。
 
 ⚠️ 别把"这台机器没有某能力"写成 FAIL。那属于 `ActionNoHost` 那类事实性跳过，应该是 OK。
 
@@ -350,6 +354,6 @@ HOME=/tmp/scratch-home twin verify wechat2
 | 跳板是外部依赖 | 那个 Electron 应用被卸载/改名 ⇒ 实例起不来。`verify` 有对应 FAIL |
 | 路线 B 未做真启动验证 | 三条事实由独立探针取证；`--dry-run` 只证明"选择"对 |
 | 托盘表是全局单键 | 写入必须 read-modify-write；并发写入没有加锁（桌面会话里不会有并发 `wrap`） |
-| 扩展目录只在 shell 启动时扫一次 | "装好了但没启用"不是缺陷、也不是可重试的错误 ⇒ 报"注销重登一次"＋退出码 3（`verify` 里它是 WARN ＋ Manual，不是 FAIL） |
+| 扩展目录只在 shell 启动时扫一次 | "装好了但没启用"不是缺陷、也不是可重试的错误 ⇒ 报"注销重登一次"，并按**可选增强**处理：WARN，不是 FAIL，也不占退出码 3 |
 | 只在 Ubuntu / GNOME 上实测过 | 其他发行版/桌面：`doctor` 会如实报告哪些能力缺失 |
 | 依赖 `python3-gi` 做最强的那道自检 | 没有它时 `doctor` 与 `verify` 会报 WARN 并说明损失 |
