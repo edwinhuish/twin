@@ -102,6 +102,11 @@
   `identity.wm_class` / `notify` 补上了"别依赖它（Wayland 认领窗口的是别名基名）"与"默认 true、
   总是写出来"；`bwrap.extra` 的"不猜 arity"改成"不猜每个选项的元数"，并写明它是
   `config.toml → rules.d → gen 的 -- 透传区` 合并后的最终列表。
+- **角标改成贴齐图标的右边缘与下边缘**（行为变更）：原先它缩在画布内 4%（256px 下 10px），为的是
+  不让圆角图标的右下角切到它。这个取舍是反的 —— 角标是 16px 面板里那张图上唯一还要数得清的东西，
+  那道缝让它看起来浮在图上，而不是标在这个图标的角上。现在 `corner` / `number` / `dot` 三种风格都
+  贴齐（圆形与两条边相切，圆点也是）：图标自己是圆角、或者图标主题再圆一次角裁到角标，都不再让
+  角标让位。
 - **`twin gen` 的落点改到实例自己的目录，`install` 不再拷贝一份定义**（行为变更）：原先 `gen` 写在
   当前目录的 `./profile.yml`，`install` 读它、并在 `~/.local/share/twin/<id>/profile.yml` 写出一份
   存档快照。现在 `gen` 直接写 `~/.local/share/twin/<id>/profile.yml`（`Paths.Profile(id)`；id 由

@@ -564,16 +564,22 @@ var (
 	badgeInk  = color.RGBA{R: 0x10, G: 0x10, B: 0x10, A: 0xFF}
 )
 
-// drawBadge paints the badge in the bottom-right corner. Nothing touches the
-// canvas edge: a badge that gets clipped reads as a rendering bug.
+// drawBadge paints the badge in the bottom-right corner, flush with the icon's
+// right and bottom edges (the canvas is the icon: trimAlpha cropped it to the
+// artwork).
+//
+// It used to sit 4% inside them, to keep a rounded icon corner from cutting
+// into the badge. That is the wrong way round: the badge is the one thing that
+// still has to be countable at 16px in a panel, and the gap made it read as
+// decoration floating inside the artwork rather than a mark on its corner. A
+// rounded icon — or an icon theme that rounds it again — now takes a sliver off
+// the badge's own corner, which is a fair trade and not twin's corner to design
+// around.
 func drawBadge(img *image.RGBA, text, style string) {
 	s := img.Bounds().Dx()
-	margin := int(0.04 * float64(s))
 	box := int(0.46 * float64(s))
-	x1 := s - margin
-	y1 := s - margin
-	x0 := x1 - box
-	y0 := y1 - box
+	x1, y1 := s, s
+	x0, y0 := x1-box, y1-box
 
 	const ring = 2.0
 	outer := newMask(s, s)
@@ -605,13 +611,14 @@ func drawBadge(img *image.RGBA, text, style string) {
 	tm.paint(img, badgeInk)
 }
 
-// drawDot paints the geometric-only badge.
+// drawDot paints the geometric-only badge, tangent to the same two edges — a
+// disc cannot hug them any closer than one point each, and a margin here would
+// only make it float again.
 func drawDot(img *image.RGBA) {
 	s := img.Bounds().Dx()
-	margin := 0.045 * float64(s)
 	d := 0.30 * float64(s)
-	cx := float64(s) - margin - d/2
-	cy := float64(s) - margin - d/2
+	cx := float64(s) - d/2
+	cy := float64(s) - d/2
 
 	ring := newMask(s, s)
 	ring.fillCircle(cx, cy, d/2)
