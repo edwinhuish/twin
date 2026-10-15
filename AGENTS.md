@@ -181,6 +181,12 @@ style → {}    ← 只有标准库
     启动器里是 `sandbox.mountHelpers` 的 `mount_point` / `mount_pair`（每次启动判一次），
     install 里是 `sandbox.EnsureMountPoints`（落盘时判一次，否则一个被造成目录的私有副本会一直
     留着 —— 启动器不碰已经存在的路径）。**改一处必须改两处**。
+15. **`/tmp` 两条路都必须可写。** `--ro-bind / /` 把宿主的 `/tmp` 变成**只读**，而没被
+    `isolation.tmpfs` 盖住的 `/tmp` 恰好落在这个状态：建不出临时目录的程序会在跟 twin 无关的
+    地方炸（Chromium 的单实例 socket → `process_singleton_posix.cc: Failed to create socket
+    directory`，Electron 实测）。所以 `sandbox.Build` 在不 tmpfs 时补 `--bind /tmp /tmp` ——
+    X11 那一路要的正是宿主那个 `/tmp`（tmpfs 会把 `/tmp/.X11-unix/X0` 一起带走）。往
+    `isolation.tmpfs` 加新目录之前先问：去掉它之后这里还写得进去吗。
 
 ## 5. 常见任务怎么做
 

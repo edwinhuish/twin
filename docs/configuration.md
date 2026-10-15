@@ -72,7 +72,7 @@ twin config > ~/.config/twin/config.toml
 | `level` | `"alias"` | 默认身份级别。只能是 `none` / `alias` / `redirect` |
 | `icon_size` | `256` | 生成图标的边长（像素）。必须是正数 |
 | `badge_style` | `"corner"` | `corner` \| `number` \| `dot` |
-| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时是否自动加 `--tmpfs /tmp`。**在你确信二进制特征扫描判错的机器上关掉它** |
+| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时是否自动加 `--tmpfs /tmp`。**在你确信二进制特征扫描判错的机器上关掉它**（关掉＝实例用宿主那个 `/tmp`，可写，只是与宿主共享） |
 | `tray_override` | `true` | 生成实例时是否把宿主的托盘图标覆盖表指向本实例 |
 
 > `tray_override` 是一个**整机**开关，理由很实在：值得关掉它的原因是机器的属性（换一套托盘
@@ -281,7 +281,7 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 
 | 键 | 说明 |
 |---|---|
-| `tmpfs` | 在沙箱内被盖成空目录的路径列表 |
+| `tmpfs` | 在沙箱内被盖成空目录的路径列表（写后即弃，宿主看不见；代价是那里原本的东西也看不见）。`/tmp` 不在这个列表里 ⇒ 程序用的是**宿主那个 `/tmp`，可写** |
 | `unshare` | 额外 unshare 的命名空间。**含 `net` 会被拒绝** |
 | `nested_ns` | 这个程序要不要自己建嵌套 user namespace（Chromium/Electron 类）。**总是写**，见下 |
 

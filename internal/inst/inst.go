@@ -563,7 +563,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	ex.Set("env", envT)
 
 	iso := t.Ensure("isolation")
-	iso.SetComment("tmpfs", "在沙箱内被盖成空目录的路径。")
+	iso.SetComment("tmpfs", "在沙箱内被盖成空目录的路径（写后即弃，宿主看不见；代价是 /tmp 里"+
+		"原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0）。\n"+
+		"不写 /tmp 不等于什么都没有：程序看到的是宿主那个 /tmp，可写、也与宿主共享。")
 	if len(i.Tmpfs) == 0 {
 		iso.Set("tmpfs", []string{})
 	} else {

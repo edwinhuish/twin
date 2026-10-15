@@ -107,7 +107,7 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 | `badge` | `id` 尾部的数字串（`wechat2` → `2`） |
 | `badge_style` | `config.toml` → `corner` |
 | `level` | CLI → rules.d → `config.toml` → `alias` |
-| `/tmp` 是否 tmpfs | 程序支持 Wayland ⇒ 加 `--tmpfs /tmp`；只支持 X11 ⇒ **不加**（会砍掉 `/tmp/.X11-unix/X0`） |
+| `/tmp` 是否 tmpfs | 程序支持 Wayland ⇒ 加 `--tmpfs /tmp`；只支持 X11 ⇒ **不加**（会砍掉 `/tmp/.X11-unix/X0`）。不加时用的是宿主那个 `/tmp`，**可写**（这一条不是"顺带"：只读的 `/tmp` 会让 Chromium 的单实例 socket 建不出来，见 §5） |
 
 > `id` 为什么从 2 开始：`wechat` 这个 id 通常已被**系统的那份桌面项**占用，而同名会撞车 ——
 > GNOME 对重复桌面项 id 的处理是**静默遮蔽其中一个**。`freeID` 找的是第一个既不是 twin
@@ -263,7 +263,7 @@ bwrap
   --dev-bind-try /dev/dri /dev/dri  # 显卡（没有就跳过）
   --proc /proc
   --bind /run/user /run/user        # ⚠️ 必须在 --ro-bind / / 之后
-  [--tmpfs /tmp]                    # 由 /tmp 策略决定
+  [--tmpfs /tmp | --bind /tmp /tmp] # /tmp 策略：两者之一必居其一，见下
   --overlay-src <targetdir>
   --tmp-overlay <targetdir>         # ⚠️ 必须在创建别名之前
   --ro-bind <target> <alias path>
@@ -291,6 +291,15 @@ bwrap
 `mount_pair` 两个 shell 函数（每次启动都判），`twin install` 里是 `sandbox.EnsureMountPoints`
 （落盘时判，免得把一个本该是文件的私有副本造成目录 —— 启动器不碰已经存在的路径，那个错误会一直
 留着）。改这条规则要**两处一起改**。
+
+**`/tmp` 必须两条路都通，而且两条都是可写的。** `--ro-bind / /` 不会把宿主的 `/tmp` 原样留着 ——
+它把 `/tmp` 变成**只读**的，而一个建不出临时目录的程序会以跟 twin 毫无关系的样子失败。实测的那一例
+是 Chromium：`process_singleton_posix.cc` 在 `base::GetTempDir()`（`$TMPDIR`，否则 `/tmp`）下
+`CreateUniqueTempDir()`，`mkdir` 拿到 `EROFS` 就打印
+`[ERROR:chrome/browser/process_singleton_posix.cc] Failed to create socket directory` 并放弃单实例锁
+—— 一条关于 *socket* 的报错，来自一个用户刚刚才包上的程序。所以：走 tmpfs 的程序拿到一个空的私有
+`/tmp`；不走 tmpfs 的程序（X11 那一路，tmpfs 会把 `/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，
+可写**。"存在但写不进去的 /tmp" 不是第三种选择，它是只读根悄悄产生的那个状态。
 
 另外，透传区放在**基座之后**是刻意的：bwrap 允许后写的挂载遮蔽同目标的前一个挂载，于是用户
 的 token 天然有最终话语权，而 `twin` 不需要拥有任何一条冲突规则。

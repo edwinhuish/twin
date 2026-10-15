@@ -168,6 +168,9 @@ twin doctor | grep -A2 userns
 twin gen <source> --no-tmpfs && twin install
 ```
 
+去掉 tmpfs 之后 `/tmp` 不是"什么都没有"，而是宿主那个 `/tmp`（**可写**，X11 socket 也在里面）——
+所以 `--no-tmpfs` 不会顺带带来另一个问题（见 C5）。
+
 `twin inspect` 的 `/tmp 策略` 一节会告诉你这个程序是 Wayland 还是 X11。同时支持两套的
 程序会有一条警告：它今天走 Wayland，但哪天真退到 X11，`--tmpfs /tmp` 就会踩这个坑。
 
@@ -219,7 +222,28 @@ twin verify <id>    # 会说明这一条被拒绝
 改 `profile.yml` 去掉它，或接受"这个程序无法被这样隔离"。`net` 切断网络，也会打破基于
 abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 
-### C5. `错误：HOME is not set`
+### C5. 程序报 `Failed to create socket directory` / `mktemp: Read-only file system`
+
+**根因**：沙箱里的 `/tmp` 是**只读**的 —— 实例落盘时 `/tmp` 既不在 `isolation.tmpfs` 里，也没被
+显式挂成可写（`--ro-bind / /` 之后它默认只读）。
+
+**最典型的一例**是 Chromium / Electron：单实例锁的 socket 目录建在 `base::GetTempDir()`
+（`$TMPDIR`，否则 `/tmp`）下的一个 `mkdtemp` 里，建不出来就打
+`[ERROR:chrome/browser/process_singleton_posix.cc] Failed to create socket directory` ——
+一条关于 socket 的报错，看着像 profile 出了问题。
+
+```bash
+twin reinstall <id>                                  # 重新落盘，启动器会带上 /tmp 的明确决定
+grep -n "tmpfs\|'--bind' '/tmp'" ~/.local/share/twin/<id>/launch
+```
+
+修复后的启动器里 `/tmp` 必定是这两种之一：`--tmpfs /tmp`（空的私有 `/tmp`）或
+`--bind /tmp /tmp`（宿主那个 `/tmp`，可写）。若两条都没有，说明这份启动器是旧版本落的盘。
+
+⚠️ 别用"把 `/tmp` 加进 `isolation.tmpfs`"来救 X11 的程序：那样连 `/tmp/.X11-unix/X0` 一起没了
+（见 C2）。X11 那一路要的正是宿主那个可写的 `/tmp`。
+
+### C6. `错误：HOME is not set`
 
 `twin` 拒绝在没有 HOME 时猜一个家目录。手写包裹曾用 `HOME=${HOME:-/root}` —— 在无 HOME
 的上下文里会往 `/root` 建目录，那是**数据丢失**级别的默认值。

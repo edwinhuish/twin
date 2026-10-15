@@ -113,6 +113,15 @@
 
 ### Fixed
 
+- **沙箱里的 `/tmp` 是只读的**：`--ro-bind / /` 不会把宿主的 `/tmp` 原样留着，它把 `/tmp` 变成
+  只读 —— 而没被 `isolation.tmpfs` 盖住的 `/tmp` 就落在这个状态里。于是任何要建临时目录的程序都
+  在别处报错：Chromium 的单实例 socket 建在 `base::GetTempDir()`（`$TMPDIR`，否则 `/tmp`）下的
+  一个 `mkdtemp` 里，`mkdir` 拿到 `EROFS` 就打印
+  `[ERROR:chrome/browser/process_singleton_posix.cc] Failed to create socket directory` 并放弃
+  单实例锁 —— 一条关于 socket 的报错，来自一个用户刚包上的程序（WorkBuddy / Electron 实测）。
+  现在 `/tmp` 两条路都通、两条都可写：走 tmpfs 的程序拿到一个空的私有 `/tmp`，不走的（X11 那一路，
+  tmpfs 会把 `/tmp/.X11-unix/X0` 一起带走）拿到宿主的 `/tmp`。
+
 - **生成的启动器把"源是文件"的映射建成了目录**：`mkdir -p` 有个它表达不了的事 —— 挂载点要在
   宿主机上先存在（bwrap 看到的根是只读的，`Can't mkdir parents …: Read-only file system`），
   但一条映射的两端必须是同一种东西（文件挂到目录上 bwrap 直接拒绝）。旧写法对每个端一律

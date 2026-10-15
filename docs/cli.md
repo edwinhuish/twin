@@ -103,6 +103,12 @@ Keywords   微信;wechat;
 `显示名` / `说明` 打印的是**语言化**取值（`Name[<当前语言>]` 优先），因为 `wrap` 就是这么
 推导的 —— 预览与真实写入必须一致，否则这个工具的预览就是一句谎话。
 
+`/tmp 策略` 说的是这条选择：加 `--tmpfs /tmp` ⇒ 程序看到的是一个空的可写 `/tmp`（宿主看不见，
+代价是 `/tmp` 里原本的东西也看不见 —— X11 的 socket 就在里面）；不加 ⇒ 程序用的是**宿主那个
+`/tmp`，同样可写**（两个实例与宿主共享它）。两条都不是"没有 /tmp"：只读的 `/tmp` 会让一堆程序
+以别处的报错告终（Chromium 是 `Failed to create socket directory`，见
+[`troubleshooting.md`](troubleshooting.md) C5）。
+
 `--name` 只影响预览：它会**真的**参与 keywords 的推导（因为你显式给了名字），所以能在不写盘
 的前提下看到"命名 ↔ 关键词"的联动结果。
 

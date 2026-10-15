@@ -219,6 +219,43 @@ func TestBuildNoSeparatorWithoutBwrap(t *testing.T) {
 	}
 }
 
+// /tmp has to come out writable in **both** branches, and which branch it is has
+// to be visible in the plan: the tmpfs one is an empty private /tmp, the other
+// is the host's own. A read-only /tmp is not a third option — it is what the
+// read-only root quietly produced, and what Chromium reports as "[process_
+// singleton_posix.cc] Failed to create socket directory".
+func TestBuildKeepsTmpWritable(t *testing.T) {
+	cases := []struct {
+		name   string
+		tmpfs  []string
+		want   string
+		absent []string
+	}{
+		{"没有 tmpfs ⇒ 用宿主那个 /tmp", nil, "--bind /tmp /tmp", []string{"--tmpfs /tmp"}},
+		{"tmpfs /tmp ⇒ 空的那一个", []string{"/tmp"}, "--tmpfs /tmp", []string{"--bind /tmp /tmp"}},
+		{"尾斜杠也算 tmpfs", []string{"/tmp/"}, "--tmpfs /tmp/", []string{"--bind /tmp /tmp"}},
+		{"tmpfs 别的目录时 /tmp 仍要可写", []string{"/home/edwin/private"},
+			"--bind /tmp /tmp", []string{"--tmpfs /tmp"}},
+	}
+	for _, c := range cases {
+		i := passthroughInstance()
+		i.Tmpfs = c.tmpfs
+		plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Join(plan.Args(), " ")
+		if !strings.Contains(args, c.want) {
+			t.Errorf("%s：argv 里没有 %q：%s", c.name, c.want, args)
+		}
+		for _, a := range c.absent {
+			if strings.Contains(args, a) {
+				t.Errorf("%s：两个方向不该同时出现（%q）：%s", c.name, a, args)
+			}
+		}
+	}
+}
+
 // redirect is alias plus a rule file, so the namespace part must be identical:
 // the rename is what leaves the alias path in mountinfo and argv[0], and that
 // is the evidence the rule matches on.

@@ -196,6 +196,25 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 		plan.Groups = append(plan.Groups, []string{"--tmpfs", t})
 	}
 
+	// /tmp is a decision in *both* directions. `--ro-bind / /` does not leave
+	// the host's /tmp alone — it leaves it read-only — and a program that cannot
+	// create a temporary directory fails in ways that have nothing to do with
+	// what the user changed. Chromium's single-instance socket is the measured
+	// case: process_singleton_posix.cc does `CreateUniqueTempDir()` under
+	// base::GetTempDir() ($TMPDIR, else /tmp) and, when that mkdir fails with
+	// EROFS, logs "[ERROR:chrome/browser/process_singleton_posix.cc] Failed to
+	// create socket directory" and gives up on the lock — a message about a
+	// *socket*, printed by a program the user only just wrapped.
+	//
+	// So the two branches are both "writable /tmp": an empty private one when
+	// the program talks Wayland, and the host's own when it does not (the tmpfs
+	// would take /tmp/.X11-unix/X0 with it, which is why this list is empty for
+	// the X11-capable ones). What it is not is "a /tmp that exists but cannot be
+	// written to", which is what the read-only root quietly produced.
+	if !tmpfsCovers(i.Tmpfs, "/tmp") {
+		plan.Groups = append(plan.Groups, []string{"--bind", "/tmp", "/tmp"})
+	}
+
 	if i.Level.Renames() {
 		dir := i.TargetDir()
 		plan.Groups = append(plan.Groups,
@@ -321,6 +340,18 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	fmt.Fprintf(&b, "  -- \\\n")
 	fmt.Fprintf(&b, "  %s \"$@\"\n", shHome(p.Home, plan.Prog))
 	return []byte(b.String()), nil
+}
+
+// tmpfsCovers reports whether the tmpfs list already covers path. Entries are
+// compared with trailing slashes ignored: "/tmp/" and "/tmp" are the same
+// directory to everyone except a shell.
+func tmpfsCovers(list []string, path string) bool {
+	for _, e := range list {
+		if strings.TrimRight(e, "/") == path {
+			return true
+		}
+	}
+	return false
 }
 
 // Mount shapes. The two ends of a mapping must be the same kind — bwrap refuses

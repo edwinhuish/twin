@@ -196,6 +196,9 @@ exec '/usr/bin/bwrap' \
    `Already exists` 并让这份脚本死在 `set -e` 上 —— 所以形态按磁盘上**已有的那一端**决定，两端
    都没在时按目录。这样"源是文件"的映射（单个配置文件，如 `vlcrc`）才走得通，`twin install`
    也会按同一条规则把私有侧建成文件而不是目录。
+5. `/tmp` 必须是这两种之一：`--tmpfs /tmp`（空的私有 `/tmp`）或 `--bind /tmp /tmp`（宿主那个，
+   可写）。只读的 `/tmp` 是最糟的一种 —— 建不出临时目录的程序会在别处报错：Chromium 会打印
+   `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。
 
 ## Electron / Chromium 的特殊情况
 
