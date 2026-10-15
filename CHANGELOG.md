@@ -94,6 +94,13 @@
 
 ### Changed
 
+- **`profile.yml` 里的注释瘦身：每个键的说明最多三行**（`bind` 那段从 17 行压到 3 行，整份文件
+  的注释从 85 行降到 46 行）。这份文件是给人**当场读**的：注释一旦淹过内容，读者就跳过它，
+  而它是这些键**唯一**的说明书（终端不重复任何键）。删掉的是"查得到、或别处已经说过"的那部分：
+  Docker 卷写法的逐条展开（压成一行）、`net` 那条的后果、托盘两条路的实现细节（都在
+  [`docs/configuration.md`](docs/configuration.md) §4 与 [`docs/architecture.md`](docs/architecture.md) §7.1）。
+  新加的 `TestEveryNoteFitsInThreeLines` 守着这条线 —— 下次往这里加注释会被它拦下。
+
 - **实例定义里的 `bwrap.args` 改名 `bwrap.extras`，并写在 `bwrap` 节点的最后一个键的位置上**：
   `extras` 说的是"上面那些有形状的挂载之外的那些 token"，而它本身是一份**合并后**的列表
   （基座剩下的两条 ＋ `config.toml` ＋ `rules.d` ＋ `gen` 的 `--` 透传区），不是"另外再加一点"。

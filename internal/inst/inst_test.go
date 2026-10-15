@@ -714,6 +714,34 @@ func TestEverySnapshotKeyIsExplained(t *testing.T) {
 	}
 }
 
+// 每个键上面那段说明最多三行。这份文件是给人当场读的：注释一旦淹过内容，读者就跳过它，
+// 而它是这些键**唯一**的说明书（终端不再重复任何键，见设计 §4）。
+//
+// 头那一段与 id 的说明连在一起（它们之间没有别的行），所以整段放行：header 自己是固定的
+// 三行，id 一行。
+func TestEveryNoteFitsInThreeLines(t *testing.T) {
+	data, err := base().Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	run, start, header := 0, 0, true
+	for n, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			if run == 0 {
+				start = n + 1
+			}
+			run++
+			continue
+		}
+		if run > 3 && !header {
+			t.Errorf("第 %d 行起那段说明有 %d 行，守着 %q：读的人会跳过它", start, run, trimmed)
+		}
+		header, run = false, 0
+	}
+}
+
 // "一条映射都没有"是默认决定，而且终端不再重复它了 —— 这句话只剩下文件里这一个
 // 落点，所以 bind 必须无条件写出，空的时候写成 bind: []。
 func TestSnapshotWritesBindEvenWhenEmpty(t *testing.T) {

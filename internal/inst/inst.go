@@ -729,7 +729,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// that is a group, and it reads as one. Spread out at the root they were
 	// the widest thing in the file and the part a reader had to re-derive.
 	dt := t.Ensure("desktop")
-	dt.SetComment("name", "显示名（窗口标题与菜单里看到的）。name_en / comment_en 是可选英文版。")
+	dt.SetComment("name", "显示名（窗口标题与菜单里看到的）。")
 	dt.Set("name", i.Name)
 	dt.SetComment("name_en", "英文显示名。")
 	if i.NameEn != "" {
@@ -770,8 +770,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	id.Set("notify", i.Notify)
 
 	ic := t.Ensure("icon")
-	ic.SetComment("source", "源图标：png/jpeg/svg 路径，或图标主题里的名字。路径可以绝对、可以 ~/ 开头，\n"+
-		"也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。")
+	ic.SetComment("source", "源图标：png/jpeg/svg 路径，或图标主题里的名字。路径写法同 exec.target。")
 	if i.IconSource != "" {
 		ic.Set("source", i.IconSource)
 	}
@@ -779,16 +778,16 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	if i.Badge != "" {
 		ic.Set("badge", i.Badge)
 	}
-	ic.SetComment("style", "角标画法：corner 右下角圆角方块 / number 右下角圆形 / dot 右下角小圆点（不带文字）。\n"+
-		"三种都贴齐图标的右边缘与下边缘 —— 图标自己是圆角也照贴，角标不让位。")
+	ic.SetComment("style", "角标画法：corner 圆角方块 / number 圆形 / dot 小圆点（不带文字）；\n"+
+		"三种都贴齐图标右下角，图标自己是圆角也照贴。")
 	ic.Set("style", i.BadgeStyle)
 
 	ex := t.Ensure("exec")
-	ex.SetComment("target", "真实程序的路径。可以绝对、可以 ~/ 开头，也可以相对 ——\n"+
-		"相对的话基准是这份 profile.yml 自己所在的目录（下同：icon.source、bwrap 里那几个路径键）。")
+	ex.SetComment("target", "真实程序的路径。可以绝对、~/ 开头、或相对 —— 相对时基准是这份文件所在的\n"+
+		"目录（icon.source 与 bwrap 里那几个路径键同此）。")
 	ex.Set("target", i.Target)
-	ex.SetComment("alias", "沙箱内建在 target 同目录下的别名文件名。窗口 app_id 取自真实路径名，\n"+
-		"托盘 SNI Id 取自 argv[0]，两者都等于它 —— 让它们分叉，就有一个找不到桌面项。")
+	ex.SetComment("alias", "沙箱内建在 target 同目录下的别名文件名：窗口 app_id 与托盘 SNI Id 都等于它，\n"+
+		"分叉了就有一个找不到桌面项。")
 	if i.Level.Renames() {
 		ex.Set("alias", i.EffectiveAlias())
 	}
@@ -798,8 +797,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	}
 
 	iso := t.Ensure("isolation")
-	iso.SetComment("unshare", "额外 unshare 的命名空间。含 `net` 会被拒绝：它切断网络，\n"+
-		"也打破基于 abstract socket 的单实例锁。")
+	iso.SetComment("unshare", "额外 unshare 的命名空间；含 `net` 会被拒绝 —— 它切断网络，也打破\n"+
+		"基于 abstract socket 的单实例锁。")
 	if len(i.Unshare) == 0 {
 		iso.Set("unshare", []string{})
 	} else {
@@ -808,8 +807,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// Written unconditionally. The machine-scoped half of this decision lives
 	// in config.toml, so a reader of this file must be able to tell "this
 	// program needs no trampoline" from "this file predates the field".
-	iso.SetComment("nested_ns", "这个程序自己要不要建嵌套 user namespace（Chromium / Electron 类）。\n"+
-		"它跟着程序走；用哪个跳板是机器属性，留在 config.toml 里。")
+	iso.SetComment("nested_ns", "这个程序自己要不要建嵌套 user namespace（Chromium / Electron 类）；\n"+
+		"用哪个跳板是机器属性，留在 config.toml 里。")
 	iso.Set("nested_ns", i.NestedNS)
 
 	// The flattened base and the shaped mounts. The base is part of the file:
@@ -836,19 +835,16 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// where they belong; an empty one emits no argument, which is what "not
 	// asked for" has to mean for a knob as opposed to a decision (a decision is
 	// something like `bind: []`, which says the program shares its data).
-	bw.SetComment("proc", "挂一个 proc 到这条路径（bwrap --proc）。`gen` 写的是 /proc；留空 = 一个都不挂。\n"+
-		"路径可以绝对、可以 ~/ 开头，也可以相对（基准是这份 profile.yml 所在的目录）。")
+	bw.SetComment("proc", "挂一个 proc 到这条路径（bwrap --proc）；`gen` 写的是 /proc，留空 = 一个都不挂。")
 	if i.Proc == "" {
 		bw.Set("proc", "")
 	} else {
 		bw.Set("proc", i.Proc)
 	}
 
-	bw.SetComment("tmpfs", "盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主看不见，\n"+
-		"代价是那里原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0。\n"+
-		"`gen` 写的是 /dev/shm（空的私有共享内存）与 /tmp（程序走 Wayland 时的私有 /tmp）；\n"+
-		"只走 X11 的程序不能要后者，那时 `gen` 改成在 extras 里写一条 --bind /tmp /tmp 把宿主那个挂回来\n"+
-		"（两条路都保证 /tmp 可写，只读的 /tmp 会让程序在别处报错）。留空 = 不盖。")
+	bw.SetComment("tmpfs", "盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主与里头原有的东西都看不见\n"+
+		"（含 X11 的 /tmp/.X11-unix/X0）。`gen` 写的是 /dev/shm，以及走 Wayland 时的 /tmp —— X11 的程序\n"+
+		"要改成在 extras 里写 --bind /tmp /tmp。两条路 /tmp 都必须可写。留空 = 不盖。")
 	if len(i.Tmpfs) == 0 {
 		bw.Set("tmpfs", []string{})
 	} else {
@@ -864,26 +860,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// invocation the list above fills, emitted in the order written here. Two
 	// keys that have to agree about one command line belong next to each other
 	// in the file, not in two halves of it.
-	bw.SetComment("bind", "隔离哪个数据目录。整段替换内置规则（不是追加）。\n"+
-		"`gen` 写的第一条是根挂载 /:/:dev —— 它就是 --dev-bind / /，把整个宿主根挂进来\n"+
-		"（设备可用、根可写）。它永远排在所有挂载之前，写在第几行都无所谓：排在 overlay\n"+
-		"别名之后会把程序的真名还回来。收紧成只读就是把它改成 /:/:ro。\n"+
-		"它是底座，不是这个程序的数据目录 —— 所以它不算在「路径映射」那几行里。\n"+
-		"写法同 Docker Compose 的卷：源:目标[:ro|:dev]，源是数据实际所在，目标是程序看到它的位置。\n"+
-		"路径可以绝对、可以 ~/ 开头，也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。\n"+
-		"（同层那个 extras 例外：那里逐字照搬，twin 不认、也解析不了里面的路径。）\n"+
-		"  源路径:目标路径        ⇒ 私有副本，两个实例互不干扰\n"+
-		"  只写一条路径           ⇒ 该路径挂回自己（数据不搬家）；根挂载是可写的 /:/:dev 时\n"+
-		"                            它不改变什么，把根换成 /:/:ro 之后它才是「把只读升回可写」\n"+
-		"  源路径:目标路径:ro     ⇒ 只读挂载，程序看得见但改不动\n"+
-		"  源路径:目标路径:dev    ⇒ 带上设备访问（--dev-bind），给设备节点用。\n"+
-		"                            bwrap 没有只读的设备映射，所以 dev 不能与 ro 同用；\n"+
-		"                            根挂载 /:/:dev 已让整个宿主带设备可用，这一条是\n"+
-		"                            给把根收紧成 /:/:ro 的定义留着表达这件事用的\n"+
-		"两端也可以是同一个文件（单个配置文件）：形态照磁盘上已经存在的那一端，都没在时按目录。\n"+
-		"空着 = 数据目录与源程序共用；程序若有单实例锁（Electron / Qt / GTK 系常见），\n"+
-		"两个实例会互相干扰。这里只影响这一个实例；要让这个程序以后新建的实例也用同样\n"+
-		"的映射，写 ~/.config/twin/rules.d/<程序>.toml（twin rules --init <程序名> 生成草稿）。")
+	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:dev]`，同 Docker 的卷\n"+
+		"（:ro 只读、:dev 带设备访问，单写一条路径则挂回自己）。`gen` 的第一条是根挂载 /:/:dev，\n"+
+		"整个宿主根可写 = --dev-bind / /，永远排最前，收紧成只读改成 /:/:ro。空 = 数据目录与源程序共用。")
 	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
 		binds = append(binds, b.String())
@@ -896,19 +875,16 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// to tighten would be laid down on top of it, writable again. This is the
 	// counterpart of the writable root the base binds: `--dev-bind / /` hands
 	// over the whole host, so taking a path back is a per-path decision.
-	bw.SetComment("remountRO", "把哪些路径收回只读（bwrap --remount-ro），写在所有挂载之后，所以能压住\n"+
-		"bind 给出的那种可写。⚠️ 只能作用在「自己就是一条挂载」的路径上：bind 的**目标端**、\n"+
-		"overlay 或 tmpfs 那条路径、或者整个 `/`。宿主本来就属于那一条大根挂载的路径（比如\n"+
-		"~ 底下某个目录）底下没有单独的挂载，bwrap 会拒绝启动：Can't remount readonly on …:\n"+
-		"Unable to find … in mount table（实测）。整根要收紧就把 bind 里那条 /:/:dev 换成 /:/:ro。\n"+
-		"留空 = 不收回。路径的基准同 bind（可以 ~/、可以相对这份 profile.yml）。")
+	bw.SetComment("remountRO", "把哪些路径收回只读（bwrap --remount-ro），发在所有挂载之后（否则被它收紧\n"+
+		"的那条挂载会盖回来）。⚠️ 只对「自己就是一条挂载」的路径有效：bind 的目标端、overlay 或 tmpfs\n"+
+		"那条、或者整个 `/` —— 宿主大根挂载里的路径底下没有单独的挂载，点错了 bwrap 拒绝启动。留空 = 不收回。")
 	remount := make([]string, 0, len(i.RemountRO))
 	remount = append(remount, i.RemountRO...)
 	bw.Set("remountRO", remount)
 
-	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键:值`，后面的同名者胜。\n"+
-		"冒号只在第一个处断开，所以值里可以再有冒号（PATH:/a:/b）。值可以是空的（写 `键:`），\n"+
-		"键名不能带冒号、空格或 =。`gen` 写的 TWIN_INSTANCE:<id> 就在这一条里；留空 = 一个都不注入。")
+	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键:值`，后面的同名者胜；冒号只在\n"+
+		"第一个处断开，所以值里可以再有冒号（PATH:/a:/b）。`gen` 写的 TWIN_INSTANCE:<id> 在这一条里；\n"+
+		"留空 = 一个都不注入。")
 	env := make([]string, 0, len(i.Env))
 	for _, e := range i.Env {
 		env = append(env, e.String())
@@ -925,20 +901,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// The list is stored in the same flat-token shape the CLI and rules.d use, so
 	// merging stays "concatenate the arrays" rather than "invent a quoting rule"
 	// (设计 §3.2).
-	bw.SetComment("extras", "没有自己节点的那些 bwrap 选项，逐 token 原样排列；twin 不解析它们（不猜每个选项的元数）。\n"+
-		"它是**合并后的完整列表**，不是「另外再加一点」：这份文件里的基座剩下的两条 → config.toml 的\n"+
-		"[bwrap] args → rules.d 的 [bwrap] args → gen 命令行上 `--` 之后那一段，都并到这里（低优先级在前）。\n"+
-		"extras 这个名字说的是「上面那些有形状的挂载之外的那些」—— bind / proc / tmpfs / remountRO / env\n"+
-		"各自管一种挂载，剩下的全在这份列表里。\n"+
-		"`twin gen` 写进来的基座只剩下面这两条（根挂载在 bind 里，其余各在同类键里）：\n"+
-		"  --bind /tmp /tmp 宿主那个 /tmp（可写）—— 程序走 X11、不要私有 /tmp 时才有这一条；\n"+
-		"                   要私有的那种写法在 bwrap.tmpfs 里。它是「哪个根配哪个 /tmp」的一部分，\n"+
-		"                   不是这个程序的数据映射，所以不写成 bwrap.bind 里的一行\n"+
-		"  --die-with-parent\n"+
-		"⚠️ 它在命令里排在**根挂载之后、上面那几个有形状的键之前**，跟它写在文件的哪一行无关：\n"+
-		"同目标挂载由后写的那个胜出，所以想覆盖根挂载或别的映射，就写进这份列表；而 proc / tmpfs / env\n"+
-		"由 Build 发在它之后，压不住（想改就改那个键）。\n"+
-		"手写进来的照旧保留。空列表本身没问题（根挂载在 bind 里）；两种写法里都没有根挂载的定义会被拒绝。")
+	bw.SetComment("extras", "没有自己节点的那些 bwrap 选项，逐 token 原样排列，twin 不解析它们。它是**合并后的\n"+
+		"完整列表**：这份文件里基座剩下的两条 → config.toml 的 [bwrap] args → rules.d 的 [bwrap] args →\n"+
+		"gen 的 `--` 之后那一段。写在最后，但命令里排在根挂载之后、上面那几个有形状的键之前。")
 	if len(i.Extras) == 0 {
 		bw.Set("extras", []string{})
 	} else {
@@ -949,12 +914,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// is a decision worth seeing in the file, and an absent section would make
 	// it indistinguishable from a file written before this option existed.
 	trayT := t.Ensure("tray")
-	trayT.SetComment("override", "要不要让 twin 管这个实例的托盘图标。false = 不管：托盘还是程序自己的图标\n"+
-		"（有些程序的托盘 id twin 预测不了，只能交给它自己）；整机开关是 config.toml 的\n"+
-		"defaults.tray_override，两处任一关掉都写 false。\n"+
-		"走哪条路是这台机器的事、不在这里选：助手扩展被 shell 加载了 ⇒ 写它读的那份文件表\n"+
-		"（~/.local/share/twin/tray.d/<id>.json）；没加载（未装／未启用／被禁用列表挡住／\n"+
-		"读不到列表）⇒ 写宿主的 custom-icons 覆盖表兜底。")
+	trayT.SetComment("override", "让不让 twin 管这个实例的托盘图标：false = 托盘还是程序自己的（有些程序的托盘\n"+
+		"id twin 预测不了）。整机开关在 config.toml 的 defaults.tray_override，两处任一关掉都写 false。\n"+
+		"走哪条路是这台机器的事：助手扩展被加载 ⇒ 写它读的文件表，否则写宿主 custom-icons 表兜底。")
 	trayT.Set("override", i.TrayOverride)
 
 	return t, nil
@@ -1005,19 +967,19 @@ func (i *Instance) render(role Role, elsewhere string) ([]byte, error) {
 	// Only the header differs between the roles; the keys and their notes are
 	// rendered once, so a key cannot be documented one way in the file the user
 	// edits and another way in the file install archives.
-	head := "# twin —— 实例定义。改完跑 `twin install " + i.ID + "` 按它落盘；\n" +
-		"# `twin reinstall " + i.ID + "` 重放的就是这一份。\n"
+	head := "# twin —— 实例定义。改完跑 `twin install " + i.ID + "` 按它落盘，" +
+		"`twin reinstall " + i.ID + "` 重放的就是它。\n"
 	if elsewhere != "" {
-		head = "# twin —— 实例定义。改完跑 `twin install -p " + elsewhere + "` 按它落盘；\n" +
-			"# `twin reinstall " + i.ID + "` 重放的是实例目录里那份记录。\n"
+		head = "# twin —— 实例定义。改完跑 `twin install -p " + elsewhere + "` 按它落盘，" +
+			"`twin reinstall " + i.ID + "` 重放的是实例目录里那份记录。\n"
 	}
 	if role == RoleSnapshot {
-		head = "# twin —— 实例定义（存档记录）。`twin install` 按你指定的那份配置写出它；\n" +
-			"# 改完跑 `twin reinstall " + i.ID + "` 重放。\n"
+		head = "# twin —— 实例定义（存档记录）。`twin install` 按你指定的那份配置写出它，" +
+			"改完跑 `twin reinstall " + i.ID + "` 重放。\n"
 	}
 	header := head +
-		"# 每个键的说明就写在它自己上面，终端不再重复。\n" +
-		"# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。\n"
+		"# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。\n" +
+		"# 每个键的说明写在它自己上面 —— 终端不再重复一遍。\n"
 	return append([]byte(header), yamlz.Encode(t)...), nil
 }
 
