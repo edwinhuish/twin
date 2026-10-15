@@ -1,0 +1,112 @@
+# 一次发布 = 把一个 tag 变成三样东西：Release、两个可直接下载的 tarball、一份校验和。
+# 产物名是 `twin-<tag>-linux-<arch>.tar.gz` —— tag 原文进名字，所以资产与 tag 一一对得上；
+# 里面两样东西：`twin` 二进制 ＋ MIT 的 LICENSE 全文（再分发要带上它）。
+#
+# 构建与质量门都不在这里另写一份：`task build` / `task check` 就是 Taskfile.yml 里那份定义
+# （AGENTS.md §2），版本号作为命令行变量喂进 `task build` —— 它自己的默认值（`git describe`）
+# 只服务本地开发。发布是一条承诺，所以先过一遍与 CI 完全相同的那道门，再动手打包。
+name: Release
+
+on:
+  # tag 是这次发布的唯一输入：Release 挂在它身上，二进制里的版本号也是它。
+  # 只认 `v*` 是仓库的约定（CHANGELOG 按语义化版本写）；别的 tag 要发就走下面的手动触发。
+  push:
+    tags: ['v*']
+  # 手动触发是给「tag 已经推了、上一次跑挂了」用的：checkout 的还是同一个 tag，所以重跑出来的
+  # 产物与第一次同源，只是接着上次那半路往下走（Release 已存在就只补传资产）。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（必须已经存在于远端，形如 v0.2.0）'
+        required: true
+      draft:
+        description: '发成草稿（先在 GitHub 上核对一眼，再公开）'
+        type: boolean
+        default: false
+
+# 发布的两次运行不该同时改一个 Release。排队，不取消 —— 发布不是可以半途丢掉的事。
+# 不按 tag 分组：同一个人连发两个版本，第二次排在第一次后面本来就是对的。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # 建 Release、传资产都要它；默认令牌是只读的
+
+jobs:
+  release:
+    # twin 只在 Linux 上成立（bwrap / GNOME Shell / AppArmor 都在那一侧），没有别的 runner 可挑。
+    # 两个架构在同一个作业里交叉编译：纯 Go，不需要 CGO，也不值得为两份产物搭一套矩阵 ＋
+    # 两次 artifact 中转。amd64 是实测过的目标（Ubuntu / GNOME）；arm64 是顺手交叉出来的，
+    # 这台机器上没跑过 —— 它是给 ARM 桌面用户的一个方便，不是一句承诺。
+    runs-on: ubuntu-latest
+    env:
+      # tag 只算一次：checkout 认它、产物名里写它、注进二进制的也是它。
+      # 手动触发时 checkout 的必须是那个 tag，不是默认分支 —— 否则会从分支上建出一个
+      # 根本没推过的 tag，而这正是「重跑一次」最不该发生的事。
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      # Go 版本从 go.mod 读，不在这里再写一遍 —— 与 CI 同一个理由。
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: arduino/setup-task@v3
+        with:
+          version: 3.x
+
+      - name: 质量门：与 CI 跑的是同一条
+        run: task check
+
+      # 版本号用 tag 原文（`twin version` 因此打印 `v0.2.0`）：去掉那个 v，发布的二进制就和
+      # 本地 `git describe --tags` 构建出来的对不上，而版本号是 bug 报告里第一个要对的东西。
+      - name: 交叉编译并打包
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            stage="dist/linux-${arch}"
+            mkdir -p "$stage"
+            GOOS=linux GOARCH="$arch" task build VERSION="$TAG" BINARY="$stage/twin"
+            cp LICENSE "$stage/"
+            tar -C "$stage" -czf "dist/twin-${TAG}-linux-${arch}.tar.gz" twin LICENSE
+            rm -rf "$stage"
+          done
+          # 校验和放在资产名同一层：`sha256sum -c SHA256SUMS` 在下载目录里直接能用。
+          (cd dist && sha256sum twin-*.tar.gz > SHA256SUMS)
+          ls -l dist
+
+      # 先把产物挂到这次运行上：Release 那一步万一挂掉（令牌权限、网络、tag 不在远端），
+      # 东西还留在这趟运行的页面上，不用整个重来。没有产物就报错 —— 空的发布不该成功。
+      - uses: actions/upload-artifact@v7
+        with:
+          name: twin-${{ env.TAG }}
+          path: dist/
+          if-no-files-found: error
+
+      # 建 Release 与传资产都用 runner 自带的 gh，不再多引一个第三方 action。
+      # 已存在就只补资产（`--clobber` 覆盖同名），所以手动重跑是幂等的。
+      - name: 建 Release 并上传
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          flags=()
+          # 带 `-` 的 tag（v0.2.0-rc1）按预发布算：GitHub 的「最新版本」不该被它顶掉。
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          case "$DRAFT" in true|True) flags+=(--draft) ;; esac
+          # 说明用 GitHub 自己按提交生成的（--generate-notes）：仓库里的 CHANGELOG.md 仍是
+          # 人读的那一份，同一件事写两处，只会有两处各自过期。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --title "$TAG" --generate-notes "${flags[@]}"
+          fi
+          gh release view "$TAG" --json url -q .url
