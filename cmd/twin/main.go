@@ -572,19 +572,19 @@ func cmdInspect(p inst.Paths, args []string) int {
 	fmt.Printf("  多合一二进制  %s\n", yn(t.MultiCall))
 	switch {
 	case insp.Rule != nil && len(insp.Rule.Tmpfs) > 0:
-		fmt.Printf("\n📂 /tmp 策略：用应用规则 %s 里的 tmpfs（%s）—— 其中 /tmp 那一条落在基座上\n",
+		fmt.Printf("\n📂 /tmp 策略：用应用规则 %s 里的 tmpfs（%s）—— 写进实例的 bwrap.tmpfs\n",
 			orBuiltin(insp.Rule), strings.Join(insp.Rule.Tmpfs, " "))
 	case t.Wayland && t.X11:
-		fmt.Printf("\n📂 /tmp 策略：基座里写 --tmpfs /tmp —— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（空的私有 /tmp）—— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
 		fmt.Printf("  %s 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X；\n"+
-			"     那时把生成出来的 bwrap.args 里那一行改成 --bind /tmp /tmp。\n",
+			"     那时把那份定义里 tmpfs 的 /tmp 去掉、改成在 args 里写 --bind /tmp /tmp（生成时用 --no-tmpfs 就是它）。\n",
 			outStyle.Yellow("⚠️"))
 	case t.Wayland && cfg.Defaults.TmpfsUnlessX11:
-		fmt.Printf("\n📂 /tmp 策略：基座里写 --tmpfs /tmp（该程序走 Wayland）\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（该程序走 Wayland）\n")
 	case t.Wayland:
-		fmt.Printf("\n📂 /tmp 策略：基座里写 --bind /tmp /tmp（config.toml 关掉了 tmpfs_unless_x11）\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.args 里写 --bind /tmp /tmp（宿主那个，可写；config.toml 关掉了 tmpfs_unless_x11）\n")
 	default:
-		fmt.Printf("\n📂 /tmp 策略：基座里写 --bind /tmp /tmp，%s\n",
+		fmt.Printf("\n📂 /tmp 策略：bwrap.args 里写 --bind /tmp /tmp（宿主那个，可写），%s\n",
 			outStyle.Red("**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）"))
 	}
 
@@ -632,7 +632,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		force      = fs.Bool("force", false, "覆盖已存在的输出文件（默认拒绝：那份文件正是你要改的东西）")
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（连配置正文一起打印）")
 		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、路径映射的修改粒度、规则模板）")
-		noTmpfs    = fs.Bool("no-tmpfs", false, "基座里的 /tmp 不盖 tmpfs，改成 --bind /tmp /tmp（宿主那个，可写）—— X11 程序必须如此：--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0")
+		noTmpfs    = fs.Bool("no-tmpfs", false, "不把 /tmp 盖成空 tmpfs，改成写一条 --bind /tmp /tmp（宿主那个，可写）—— X11 程序必须如此：--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0")
 		noTray     = fs.Bool("no-tray", false, "不要把这个实例的托盘图标指给 twin（写文件表还是宿主覆盖表见 tray_override 的说明；整机开关在 config.toml 的 defaults.tray_override）")
 	)
 	// Go's flag package has no aliases, so the documented `-o` is a second
@@ -641,7 +641,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	var shortOutput string
 	fs.StringVar(&shortOutput, "o", "", "配置写到哪（--output 的简写；两个拼写同时给是用法错误）")
 	var tmpfs listFlag
-	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录（空 tmpfs），可重复，写到 bwrap.tmpfs 里；写 /tmp 时会落到基座那一行上（路径享受 ~/ 展开；bwrap.args 里逐字照搬，不展开）")
+	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录（空 tmpfs），可重复，写到 bwrap.tmpfs 里（路径享受 ~/ 展开；bwrap.args 里逐字照搬，不展开）")
 	// Cut the bwrap passthrough off before twin's own parser runs: tokens
 	// after `--` are not twin's to interpret (设计 §2.2).
 	head, bwrapTokens, err := splitPassthrough(args)

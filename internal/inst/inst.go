@@ -268,14 +268,16 @@ type Instance struct {
 	// token list in Args. They are separate keys because each one is a *kind* of
 	// mount — a proc, a throwaway tmpfs, a path re-tightened to read-only —
 	// which is exactly what `bind`'s `:ro` and `:dev` say for a mapping, and
-	// nothing in a flat token list can say it. Empty means "not asked for":
-	// these are knobs, not decisions, so an empty one emits no argument at all.
-	Proc      string   // `--proc DEST`; empty = no proc mount of our own
+	// nothing in a flat token list can say it. Empty means "not asked for": an
+	// empty one emits no argument at all, so a reader can tell a mount they
+	// deleted from a mount twin never made.
+	Proc      string   // `--proc DEST`; empty = no proc mount at all
 	Tmpfs     []string // `--tmpfs DEST` each: hidden behind an empty directory
 	RemountRO []string // `--remount-ro DEST` each: re-tightened to read-only
 	// Env is `--setenv` pairs, in the order written (later pairs win, as bwrap
-	// does it). The instance's own TWIN_INSTANCE lives in Args with the rest of
-	// the base, not here.
+	// does it). The instance's own TWIN_INSTANCE is one of them: `twin gen`
+	// writes it here, because it is a variable twin sets and has no business
+	// being invisible in the definition.
 	Env []EnvVar
 
 	Unshare []string
@@ -287,6 +289,12 @@ type Instance struct {
 	// then had no way to ask for `--dev-bind / /`, and asking for it through the
 	// old passthrough region put it *after* every mapping, where binding the
 	// root again shadows all of them.
+	//
+	// Only what has no node of its own is left in it: the root bind, the host's
+	// /tmp when that is the branch, and --die-with-parent. Everything else the
+	// base carries is written into the key that names its kind (Proc / Tmpfs /
+	// Env), where a reader can see what a mount *is* without knowing bubblewrap's
+	// options.
 	//
 	// twin never parses or rewrites these tokens (设计 §2.1): the arity of a
 	// bwrap option is bwrap's business, and re-deriving it here would be a table
@@ -752,23 +760,26 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// use, so merging stays "concatenate the arrays" rather than "invent a
 	// quoting rule" (设计 §3.2).
 	//
-	// The base is part of it now. twin used to keep the base in Go and let this
-	// list only *append*, which made the one decision that actually varies per
-	// program — which root the program sees — the one decision the file could
-	// not express.
+	// The base is part of the file. What is left of it in this list are the two
+	// options that name no kind of mount and so have no key of their own — the
+	// root bind and --die-with-parent; the rest of it is written under `proc` /
+	// `tmpfs` / `bind` / `env` below, where a reader can tell a throwaway tmpfs
+	// from a mapping without knowing bubblewrap's options. twin used to keep the
+	// whole base in Go and let this list only *append*, which made the one
+	// decision that actually varies per program — which root the program sees —
+	// the one decision the file could not express.
 	bw := t.Ensure("bwrap")
 	bw.SetComment("args", "交给 bwrap 的完整选项列表，逐 token 原样排列；twin 不解析它们（不猜每个选项的元数）。\n"+
-		"它排在路径映射之前、程序之前：同目标挂载由后写的那个胜出，所以想覆盖下面这几条，就把自己的写在它们后面。\n"+
-		"`twin gen` 写进来的基座是：\n"+
+		"它排在所有路径映射与程序之前：同目标挂载由后写的那个胜出，所以想覆盖自己的那些映射，就把它们写在这个列表里更靠后的位置。\n"+
+		"`twin gen` 写进来的基座只剩下面这几条 —— 基座其余的挂载各在下面与自己同类的键里：\n"+
 		"  --dev-bind / /   整个宿主根挂进来（含设备）—— 换来的是设备可用，代价是它不再是只读的；\n"+
 		"                   改成 --ro-bind / / 的话，设备与 /run/user 都要自己补回来\n"+
 		"                   （--dev-bind /dev /dev、--bind /run/user /run/user），否则 Wayland socket 与会话总线全断；\n"+
-		"  --proc /proc\n"+
-		"  --tmpfs /dev/shm 空的私有共享内存\n"+
-		"  --tmpfs /tmp      空的私有 /tmp；程序若只走 X11，这一条换成 --bind /tmp /tmp（宿主那个，可写）——\n"+
-		"                    两者必居其一，只读的 /tmp 会让程序在别处报错（Chromium 的 process_singleton_posix.cc）\n"+
+		"                   那时也要给 /tmp 补一条 --bind /tmp /tmp，只读的 /tmp 会让程序在别处报错\n"+
+		"  --bind /tmp /tmp 宿主那个 /tmp（可写）—— 程序走 X11、不要私有 /tmp 时才有这一条；\n"+
+		"                   要私有的那种写法在 bwrap.tmpfs 里。它是「哪个根配哪个 /tmp」的一部分，\n"+
+		"                   不是这个程序的数据映射，所以不写成 bwrap.bind 里的一行\n"+
 		"  --die-with-parent\n"+
-		"  --setenv TWIN_INSTANCE <id>\n"+
 		"这里是合并后的最终列表，低优先级在前：上面这份基座 → config.toml → rules.d → gen 的 -- 透传区；\n"+
 		"手写进来的照旧保留。会改名的 level 之下空列表会被拒绝：bwrap 至少要有一个根挂载。")
 	if len(i.Args) == 0 {
@@ -781,14 +792,15 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// then `bind` between them, then remountRO (which has to come after whatever
 	// it tightens). The file reads top-to-bottom like the command line it turns
 	// into, which is the only reason these have keys of their own at all: each
-	// one names a *kind* of mount that a flat token list cannot name.
+	// one names a *kind* of mount that a flat token list cannot name — and that
+	// is where the base's own mounts are written too, so the file says what each
+	// of them is (see sandbox.BaseFor).
 	//
 	// All four are written even when empty, so that a reader discovers them
 	// where they belong; an empty one emits no argument, which is what "not
 	// asked for" has to mean for a knob as opposed to a decision (a decision is
 	// something like `bind: []`, which says the program shares its data).
-	bw.SetComment("proc", "再挂一个 proc 到这条路径（bwrap --proc）。留空 = 不挂 —— `gen` 写的基座里\n"+
-		"已经有一条 `--proc /proc` 了（在 args 里），这一条是额外再挂一个的口子。\n"+
+	bw.SetComment("proc", "挂一个 proc 到这条路径（bwrap --proc）。`gen` 写的是 /proc；留空 = 一个都不挂。\n"+
 		"路径可以绝对、可以 ~/ 开头，也可以相对（基准是这份 profile.yml 所在的目录）。")
 	if i.Proc == "" {
 		bw.Set("proc", "")
@@ -796,10 +808,11 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		bw.Set("proc", i.Proc)
 	}
 
-	bw.SetComment("tmpfs", "额外盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主看不见，\n"+
+	bw.SetComment("tmpfs", "盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主看不见，\n"+
 		"代价是那里原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0。\n"+
-		"留空 = 不额外盖。/tmp 不在这个列表里：它的取舍属于基座那一行（args 里的\n"+
-		"`--tmpfs /tmp` 或 `--bind /tmp /tmp`），因为「用哪个 /tmp」是「用哪个根」的一部分。")
+		"`gen` 写的是 /dev/shm（空的私有共享内存）与 /tmp（程序走 Wayland 时的私有 /tmp）；\n"+
+		"只走 X11 的程序不能要后者，那时 `gen` 改成在 args 里写一条 --bind /tmp /tmp 把宿主那个挂回来\n"+
+		"（两条路都保证 /tmp 可写，只读的 /tmp 会让程序在别处报错）。留空 = 不盖。")
 	if len(i.Tmpfs) == 0 {
 		bw.Set("tmpfs", []string{})
 	} else {
@@ -853,9 +866,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	remount = append(remount, i.RemountRO...)
 	bw.Set("remountRO", remount)
 
-	bw.SetComment("env", "额外注入沙箱的环境变量（bwrap --setenv），一条一个 `键:值`。\n"+
+	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键:值`，后面的同名者胜。\n"+
 		"冒号只在第一个处断开，所以值里可以再有冒号（PATH:/a:/b）。值可以是空的（写 `键:`），\n"+
-		"键名不能带冒号、空格或 =。留空 = 不额外注入；实例自己的 TWIN_INSTANCE 在基座里（args）。")
+		"键名不能带冒号、空格或 =。`gen` 写的 TWIN_INSTANCE:<id> 就在这一条里；留空 = 一个都不注入。")
 	env := make([]string, 0, len(i.Env))
 	for _, e := range i.Env {
 		env = append(env, e.String())

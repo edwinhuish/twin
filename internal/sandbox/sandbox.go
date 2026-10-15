@@ -158,17 +158,17 @@ func (p *Plan) String() string {
 //
 // It lives in Go only because it has to be written *once*, into the file where
 // the user can read and change it; Build never adds it (see Build below). What
-// has a node of its own goes to that node: `--proc /proc` and `tmpfs: [/dev/shm]`
+// has a node of its own goes to that node: `proc: /proc` and `tmpfs: [/dev/shm]`
 // are the same two mounts as before, but the file now says which *kind* each one
 // is without the reader having to know bubblewrap's options (设计 §2.1). Args
 // keeps what has no node — the root bind, which has to come first (it is the
 // mount everything else is laid on top of, and binding it *after* the alias
-// overlay would put the program's real name back), and --die-with-parent.
+// overlay would put the program's real name back), --die-with-parent, and the
+// host's /tmp when that is the branch (see BaseFor).
 type Base struct {
 	Args  []string
 	Proc  string
 	Tmpfs []string
-	Binds []inst.Bind
 	Env   []inst.EnvVar
 }
 
@@ -181,28 +181,36 @@ type Base struct {
 // region, which lands *after* every mapping, where binding the root again
 // shadows all of them.
 //
-// privateTmp picks the node the /tmp decision is written in: an empty private
-// tmpfs (Tmpfs), or the host's own bound back in (Binds, the single-path form of
-// a mapping, which is also what keeps a root tightened to `--ro-bind / /`
-// usable). Both have to leave /tmp *writable*, and writable is the point — a
-// read-only /tmp is what a read-only root quietly produces, and it makes
+// privateTmp says which branch the /tmp decision takes, and twin only has to
+// write one of them: a private /tmp is a tmpfs entry, and it is already in the
+// caller's own `tmpfs` list (that is what makes this true) — so what is owed
+// here is the *other* branch, the host's /tmp bound onto itself. That line stays
+// in Args, beside the root, rather than becoming a `bind` entry: `twin install`
+// reports `bind` as the directories this program's data is isolated in and
+// offers to copy the list into rules.d for the program, and a /tmp line there
+// would be twin's own decision wearing the user's data layout as a disguise
+// (实测：把它写成 bind 条目之后，那份规则草稿就会建议照抄一条 /tmp:/tmp)。
+//
+// Either branch leaves /tmp *writable*: the mount itself is a no-op under the
+// writable root of today's base, and it is the only thing keeping /tmp writable
+// if a definition tightens that root to `--ro-bind / /`. Writable is the point —
+// a read-only /tmp is what a read-only root quietly produces, and it makes
 // programs fail somewhere unrelated (Chromium: "Failed to create socket
 // directory"). The caller chooses from whether the program can fall back to
 // X11, because a tmpfs /tmp takes /tmp/.X11-unix/X0 with it.
 func BaseFor(id string, privateTmp bool) Base {
 	b := Base{
-		Args: []string{"--dev-bind", "/", "/", "--die-with-parent"},
+		Args: []string{"--dev-bind", "/", "/"},
 		Proc: "/proc",
 		// An empty private shared memory: /dev/shm on the host is shared with
 		// every other process, which is not what an instance's own name means.
 		Tmpfs: []string{"/dev/shm"},
 		Env:   []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: id}},
 	}
-	if privateTmp {
-		b.Tmpfs = append(b.Tmpfs, "/tmp")
-	} else {
-		b.Binds = []inst.Bind{{Source: "/tmp", Target: "/tmp"}}
+	if !privateTmp {
+		b.Args = append(b.Args, "--bind", "/tmp", "/tmp")
 	}
+	b.Args = append(b.Args, "--die-with-parent")
 	return b
 }
 
@@ -255,23 +263,24 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	// passthrough region put the new root binding *after* every mapping, where
 	// it shadows all of them. Now the answer is in the file, and everything
 	// below is a mount that may in turn shadow it (bubblewrap: the later mount
-	// wins).
+	// wins). What is left in this list is exactly what has no node of its own:
+	// the root bind and --die-with-parent (see BaseFor).
 	if len(i.Args) > 0 {
 		plan.Groups = append(plan.Groups, append([]string(nil), i.Args...))
 	}
 
-	// `--proc`: the definition asks for one of its own. The base gen writes
-	// already carries `--proc /proc`, so this is the *second* one when it is set
-	// — which is why empty has to mean "add nothing" rather than "add the
-	// default": the default is in the file, in `args`, where a reader can see it.
+	// `--proc`: the definition asks for one. `gen` writes the base's `/proc`
+	// here, so empty means "no proc mount at all" rather than "the default one"
+	// — the default is the file's, written where a reader looks for a proc
+	// mount.
 	if i.Proc != "" {
 		plan.Groups = append(plan.Groups, []string{"--proc", p.Expand(i.Proc)})
 	}
 
-	// Extra directories to hide behind an empty tmpfs. /tmp is not among them
-	// even when the program gets a private one: it is a decision about the root
-	// the base binds, so `twin gen` writes it into bwrap.args where the root is
-	// (see BaseArgs) — keeping it here as well would print the same mount twice.
+	// The paths the definition hides behind an empty tmpfs. The base's /dev/shm
+	// and, when the program got a private one, its /tmp are in this list too:
+	// this key is where a tmpfs is written, whichever layer asked for it (see
+	// BaseFor).
 	for _, t := range i.Tmpfs {
 		plan.Groups = append(plan.Groups, []string{"--tmpfs", p.Expand(t)})
 	}
@@ -318,10 +327,10 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	}
 
 	// The variables, in the order the file lists them (later `--setenv` wins on
-	// a duplicate, exactly as bwrap does it). TWIN_INSTANCE and
-	// --die-with-parent are not here: they are part of the base written into the
-	// file (see BaseArgs), so a reader can delete them, and so that nothing twin
-	// emits is invisible in the definition.
+	// a duplicate, exactly as bwrap does it). TWIN_INSTANCE is in this list:
+	// `gen` writes it there, so a reader can see — and delete — what twin sets.
+	// --die-with-parent is left out, having no node: it stays in the
+	// definition's option list, where the root is (see BaseFor).
 	for _, e := range i.Env {
 		plan.Groups = append(plan.Groups, []string{"--setenv", e.Key, e.Value})
 	}

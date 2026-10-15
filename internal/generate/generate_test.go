@@ -564,16 +564,12 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	if got := derivationFor(der, "desktop.categories"); got == "" {
 		t.Error("规则提供的 categories 必须出现在推导来源里")
 	}
-	// The rule's /tmp moves into the base's line — it is a fact about the root
-	// the base binds, so it is written where the root is — and must not be left
-	// in isolation.tmpfs as well, or the same mount would be printed twice.
-	if got := strings.Join(it.Args, " "); !strings.Contains(got, "--tmpfs /tmp") {
-		t.Errorf("规则给的 /tmp 没落到 bwrap.args 里：%q", got)
+	// The rule's /tmp stays in the node that names what it is — a tmpfs — and
+	// the base's own /dev/shm is written there beside it.
+	if got := strings.Join(it.Tmpfs, " "); got != "/dev/shm /tmp" {
+		t.Errorf("bwrap.tmpfs = %q, want %q", got, "/dev/shm /tmp")
 	}
-	if len(it.Tmpfs) != 0 {
-		t.Errorf("tmpfs = %v，规则里那一条已经由基座表达了", it.Tmpfs)
-	}
-	if got := derivationFor(der, "tmpfs"); got == "" {
+	if got := derivationFor(der, "bwrap.tmpfs"); got == "" {
 		t.Error("规则提供的 tmpfs 必须出现在推导来源里")
 	}
 	// {id} / <id> are substituted with the concrete instance id.
@@ -642,7 +638,7 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := sandbox.BaseArgs(it.ID, true)
+	base := sandbox.BaseFor(it.ID, true).Args
 	want := append(append(append([]string(nil), base...), "--from-config"), "--rule-flag", "--from-cli")
 	if strings.Join(it.Args, " ") != strings.Join(want, " ") {
 		t.Fatalf("bwrap.args = %v, want %v", it.Args, want)
@@ -652,6 +648,74 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	// see it and change it.
 	if derivationFor(der, "bwrap.args") == "" {
 		t.Error("基座必须出现在推导来源里")
+	}
+}
+
+// Every piece of the base goes into the node that names its kind. `--tmpfs
+// /dev/shm` inside a token list and `tmpfs: [/dev/shm]` are the same mount, but
+// only the node tells a reader what kind of mount it is without knowing
+// bubblewrap's options — and that is what those keys are for.
+func TestPlanWritesTheBaseByNode(t *testing.T) {
+	clearLocale(t, "zh_CN.UTF-8")
+	p := inst.Paths{Home: t.TempDir()}
+
+	it, der, err := Plan(p, Options{}, wechatInspection())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range []string{"--proc", "--tmpfs", "--setenv"} {
+		if containsToken(it.Args, tok) {
+			t.Errorf("bwrap.args 里还留着 %s，它有自己那个节点：%v", tok, it.Args)
+		}
+	}
+	// The root bind stays here, and stays first: it is the mount every mapping
+	// below it is laid on top of, the alias overlay included.
+	if len(it.Args) == 0 || it.Args[0] != "--dev-bind" {
+		t.Errorf("根挂载必须留在 args 里、排在最前：%v", it.Args)
+	}
+	if it.Proc != "/proc" {
+		t.Errorf("bwrap.proc = %q, want /proc", it.Proc)
+	}
+	if got := strings.Join(it.Tmpfs, " "); got != "/dev/shm" {
+		t.Errorf("bwrap.tmpfs = %q, want /dev/shm", got)
+	}
+	// This fixture has no Wayland trait and no rule, so the host's /tmp is the
+	// branch — and that one stays in the option list beside the root: `bind` is
+	// where the *program's* data mappings go, and twin's own line there would be
+	// reported as one and offered for copying into the program's rules.d.
+	if !strings.Contains(strings.Join(it.Args, " "), "--bind /tmp /tmp") {
+		t.Errorf("宿主 /tmp 那一支要写在 args 里：%v", it.Args)
+	}
+	if len(it.Binds) != 0 {
+		t.Errorf("bwrap.bind = %v，基座不往这个节点里写东西", it.Binds)
+	}
+	if len(it.Env) != 1 || it.Env[0].Key != "TWIN_INSTANCE" || it.Env[0].Value != "wechat2" {
+		t.Errorf("bwrap.env = %+v", it.Env)
+	}
+	// Every node the base filled has to name its source: this is the part the
+	// user did not write.
+	for _, key := range []string{"bwrap.args", "bwrap.proc", "bwrap.tmpfs", "bwrap.env"} {
+		if !hasDerivation(der, key) {
+			t.Errorf("%s 的推导来源没记下来", key)
+		}
+	}
+}
+
+// No base, no sandbox options: `level none` runs the program untouched, so a
+// /tmp entry there would describe a mount that never happens — and
+// SessionWarning reads that list when an instance is replayed in an X11 session.
+func TestPlanNoneLevelTakesNoTmpDecision(t *testing.T) {
+	clearLocale(t, "zh_CN.UTF-8")
+	p := inst.Paths{Home: t.TempDir()}
+	insp := wechatInspection()
+	insp.Traits.Wayland = true
+
+	it, _, err := Plan(p, Options{Cfg: config.Builtin(), Level: inst.LevelNone}, insp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(it.Args) != 0 || len(it.Tmpfs) != 0 || it.Proc != "" || len(it.Env) != 0 {
+		t.Errorf("level none 没有基座：args=%v tmpfs=%v proc=%q env=%v", it.Args, it.Tmpfs, it.Proc, it.Env)
 	}
 }
 
@@ -722,10 +786,10 @@ func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
 	}
 }
 
-// Both spellings have to be read: the base's line in bwrap.args (what `twin
-// gen` writes) and a hand-written entry in isolation.tmpfs. Missing the first
-// one would let the warning go quiet exactly where it matters — a Wayland
-// instance replayed in an X11 session.
+// Both spellings have to be read: the entry `twin gen` writes into bwrap.tmpfs,
+// and the line an older or hand-written definition keeps in bwrap.args. Missing
+// that second one would let the warning go quiet exactly where it matters — a
+// Wayland instance replayed in an X11 session.
 func TestSessionWarning(t *testing.T) {
 	fromArgs := &inst.Instance{ID: "x", Target: "/bin/true",
 		Args: []string{"--dev-bind", "/", "/", "--tmpfs", "/tmp"}}

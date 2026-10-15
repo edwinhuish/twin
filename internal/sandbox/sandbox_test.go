@@ -177,6 +177,7 @@ func TestEnsureMountPointsCreatesFilesForFileMappings(t *testing.T) {
 // ---------------------------------------------------------------- option list
 
 func passthroughInstance(extra ...string) *inst.Instance {
+	b := BaseFor("wechat2", false)
 	return &inst.Instance{
 		ID:         "wechat2",
 		Name:       "微信2",
@@ -184,47 +185,52 @@ func passthroughInstance(extra ...string) *inst.Instance {
 		BadgeStyle: "corner",
 		Target:     "/opt/wechat/wechat",
 		Alias:      "wechat2",
-		// A real instance carries a base: twin does not add one any more, so an
-		// instance without it is one bwrap would start with nothing mounted.
-		Args: append(BaseArgs("wechat2", false), extra...),
+		// A real instance carries a base, split across the nodes that name each
+		// mount's kind: twin adds none of it at launch, so an instance without
+		// it is one bwrap would start with nothing mounted.
+		Args:  append(b.Args, extra...),
+		Proc:  b.Proc,
+		Tmpfs: b.Tmpfs,
+		Env:   b.Env,
 	}
 }
 
-// The base twin writes into the definition: every branch has to leave /tmp
-// *writable*, because a read-only /tmp is what a read-only root quietly
-// produced — Chromium reports it as "[process_singleton_posix.cc] Failed to
-// create socket directory", a message about a socket from a program the user
-// only just wrapped. Which branch it is has to be visible in the file, so both
-// spellings are asserted here rather than left to a launch-time decision.
-func TestBaseArgsKeepsTmpWritable(t *testing.T) {
-	cases := []struct {
-		name       string
-		privateTmp bool
-		want       []string
-		absent     []string
-	}{
-		{"私有 /tmp", true, []string{"--tmpfs", "/tmp"}, []string{"--bind /tmp /tmp"}},
-		{"宿主 /tmp", false, []string{"--bind /tmp /tmp"}, []string{"--tmpfs /tmp"}},
+// The base twin writes into the definition, each piece in the node that names
+// its kind — and only what has no such node (the root bind, --die-with-parent)
+// is left in the option list.
+//
+// Both branches of the /tmp decision have to leave /tmp *writable*, because a
+// read-only /tmp is what a read-only root quietly produced — Chromium reports it
+// as "[process_singleton_posix.cc] Failed to create socket directory", a message
+// about a socket from a program the user only just wrapped. Which branch it is
+// has to be visible in the file, so both spellings are asserted here rather than
+// left to a launch-time decision.
+func TestBaseIsWrittenByNode(t *testing.T) {
+	private := BaseFor("wechat2", true)
+	if got := strings.Join(private.Args, " "); got != "--dev-bind / / --die-with-parent" {
+		t.Errorf("args = %q：私有 /tmp 那一支没有自己节点的只剩这两条", got)
 	}
-	for _, c := range cases {
-		args := BaseArgs("wechat2", c.privateTmp)
-		joined := strings.Join(args, " ")
-		for _, want := range append([]string{
-			"--dev-bind / /",
-			"--proc /proc",
-			"--tmpfs /dev/shm",
-			"--die-with-parent",
-			"--setenv TWIN_INSTANCE wechat2",
-		}, c.want...) {
-			if !strings.Contains(joined, want) {
-				t.Errorf("%s：基座里没有 %q：%s", c.name, want, joined)
-			}
-		}
-		for _, a := range c.absent {
-			if strings.Contains(joined, a) {
-				t.Errorf("%s：两个方向不该同时出现（%q）：%s", c.name, a, joined)
-			}
-		}
+	if private.Proc != "/proc" {
+		t.Errorf("proc = %q", private.Proc)
+	}
+	if len(private.Tmpfs) != 1 || private.Tmpfs[0] != "/dev/shm" {
+		t.Errorf("tmpfs = %v，want [/dev/shm]：私有 /tmp 那条是调用方自己列表里的一条", private.Tmpfs)
+	}
+	if len(private.Env) != 1 || private.Env[0].Key != "TWIN_INSTANCE" || private.Env[0].Value != "wechat2" {
+		t.Errorf("env = %+v", private.Env)
+	}
+
+	// The host's /tmp stays in the option list, beside the root: it is a fact
+	// about the root, not one of this program's data mappings — writing it into
+	// `bwrap.bind` would make `twin install` report it as one and offer to copy
+	// it into the program's rules.d.
+	host := BaseFor("wechat2", false)
+	want := "--dev-bind / / --bind /tmp /tmp --die-with-parent"
+	if got := strings.Join(host.Args, " "); got != want {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+	if len(host.Tmpfs) != 1 || host.Tmpfs[0] != "/dev/shm" {
+		t.Errorf("tmpfs = %v，两个分支都要有 /dev/shm", host.Tmpfs)
 	}
 }
 

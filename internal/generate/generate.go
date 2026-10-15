@@ -430,21 +430,24 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		it.Tmpfs = append([]string(nil), o.Tmpfs...)
 	case rule != nil && len(rule.Tmpfs) > 0:
 		it.Tmpfs = append([]string(nil), rule.Tmpfs...)
-		note("tmpfs", strings.Join(rule.Tmpfs, " "), "应用规则 "+ruleOrigin(rule))
+		note("bwrap.tmpfs", strings.Join(rule.Tmpfs, " "), "应用规则 "+ruleOrigin(rule))
 	case insp.Traits.Wayland && cfg.Defaults.TmpfsUnlessX11:
 		it.Tmpfs = []string{"/tmp"}
 	default:
 		it.Tmpfs = nil
 	}
-	// The /tmp half of that decision does not stay in the list: it is a fact
-	// about the root the base binds, so it is written where the root is — a line
-	// of bwrap.args (see sandbox.BaseArgs). Both branches have to leave /tmp
-	// *writable*; which one it is now says so in the file instead of being
-	// decided invisibly at launch, and leaving the same mount in isolation.tmpfs
-	// as well would print it twice in the command line, where twin has no
-	// conflict rule to hide it.
+	// Which node the /tmp half of that decision belongs in is the base's call,
+	// because the two branches are two different kinds of mount: an empty
+	// private tmpfs stays right here (this is the node that names tmpfs mounts),
+	// while the host's own /tmp is one more option beside the root mount — not a
+	// `bind` entry, see sandbox.BaseFor. Both branches have to leave /tmp
+	// *writable*, and which one it is says so in the file instead of being
+	// decided invisibly at launch.
 	privateTmp := tmpfsCovers(it.Tmpfs, "/tmp")
-	if privateTmp {
+	// There is no branch to take when there is no base: `level none` runs the
+	// program untouched, so an entry here would describe a mount that never
+	// happens — and SessionWarning reads this list to warn about X11 sessions.
+	if !level.Renames() {
 		it.Tmpfs = withoutPath(it.Tmpfs, "/tmp")
 	}
 
@@ -473,10 +476,23 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// the only way to change a hard-coded one was the `--` region — which lands
 	// at the *end*, where binding the root again shadows every mapping before
 	// it. Writing it here is what makes the option list the file's business.
+	//
+	// Each piece of it lands in the node that names its kind: `--tmpfs /dev/shm`
+	// inside a token list and `tmpfs: [/dev/shm]` are the same mount, but only
+	// one of the two tells the reader what kind of mount it is (设计 §2.1). `args`
+	// keeps what has no node of its own — the root, the host's /tmp beside it,
+	// and --die-with-parent. Base-first inside every node too, so the layers
+	// above can still overrule the base.
 	if level.Renames() {
-		base := sandbox.BaseArgs(id, privateTmp)
-		it.Args = append(it.Args, base...)
-		note("bwrap.args", strings.Join(base, " "), "gen 写的沙箱基座（要改就在这份定义里改）")
+		base := sandbox.BaseFor(id, privateTmp)
+		it.Args = append(it.Args, base.Args...)
+		it.Proc = base.Proc
+		it.Tmpfs = append(base.Tmpfs, it.Tmpfs...)
+		it.Env = append(base.Env, it.Env...)
+		note("bwrap.args", strings.Join(base.Args, " "), "gen 写的沙箱基座：没有自己节点的那些")
+		note("bwrap.proc", base.Proc, "gen 写的沙箱基座")
+		note("bwrap.tmpfs", strings.Join(base.Tmpfs, " "), "gen 写的沙箱基座")
+		note("bwrap.env", base.Env[0].String(), "gen 写的沙箱基座")
 	}
 	it.Args = append(it.Args, cfg.Args...)
 	if rule != nil {
@@ -1047,8 +1063,9 @@ func SessionWarning(it *inst.Instance) string {
 // tmpfsHidesTmp asks whether the definition hides /tmp behind an empty tmpfs.
 //
 // Two spellings have to be read, because the definition may hold it either way:
-// the line the base carries in bwrap.args (what `twin gen` writes, see
-// sandbox.BaseArgs), or an entry someone kept in isolation.tmpfs by hand.
+// the entry `twin gen` writes into bwrap.tmpfs, or the line someone wrote into
+// bwrap.args by hand — every definition written before the base was split by
+// node carries it there, and this warning has to keep finding it.
 //
 // Matching one literal pair is not the arity table the passthrough region
 // refuses to build (设计 §2.1): the pattern is one option name twin itself
