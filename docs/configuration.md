@@ -27,13 +27,13 @@ profile.yml      （你正在编辑的那一份：gen 写，install / reinstall 
       > 内置默认
 ```
 
-**数组类字段**（`bwrap.args`、`tmpfs`、`bind`）按**低位在前拼接**，同目标由后写的遮蔽：
+**数组类字段**（`bwrap.extras`、`tmpfs`、`bind`）按**低位在前拼接**，同目标由后写的遮蔽：
 
 ```
-最终 bwrap.args = gen 写的基座里「没有自己节点」的那些 ++ config.args ++ rules.args ++ gen 命令行 `--` 那一段
+最终 bwrap.extras = gen 写的基座里「没有自己节点」的那些 ++ config.args ++ rules.args ++ gen 命令行 `--` 那一段
 ```
 
-`bwrap.args` 是**交给 bwrap 的完整选项列表**（基座也在里面，见 §4），所以"这个程序拿到哪个根"
+`bwrap.extras` 是**交给 bwrap 的完整选项列表**（基座也在里面，见 §4），所以"这个程序拿到哪个根"
 第一次成了这份文件能回答的问题 —— 原先基座硬编码在 twin 里，想换根只有透传区一条路，而透传区
 排在所有映射之后，重新绑一次根会把前面的挂载全盖掉。
 
@@ -60,7 +60,7 @@ profile.yml      （你正在编辑的那一份：gen 写，install / reinstall 
 是**你刚刚交出来的那份配置**，没有第二份意图能和它冲突。）
 
 `--refresh` 只做**加法与填空**，绝不改写那份定义里已有的值：**为空**的
-`desktop.keywords` / `desktop.categories` 才补（rules.d → 源桌面项），`bwrap.args` 把 config ＋
+`desktop.keywords` / `desktop.categories` 才补（rules.d → 源桌面项），`bwrap.extras` 把 config ＋
 rules 的 token 追加进来（已存在的跳过，所以是幂等的），其余字段（id / name / level / tmpfs / binds）
 一律不动 —— 它们一定已被写满，"空"与"用户就是要空"分不开。基座也不动：它属于那份定义本身。
 逐字段的行为写在 `twin reinstall -h` 里。
@@ -89,7 +89,7 @@ rules 的 token 追加进来（已存在的跳过，所以是幂等的），其�
 
 两个例外，都值得记：
 
-- **`bwrap.args` 不解析**：那是 bwrap 的选项列表，逐 token 原样交给它，twin 不认、也猜不出哪个
+- **`bwrap.extras` 不解析**：那是 bwrap 的选项列表，逐 token 原样交给它，twin 不认、也猜不出哪个
   token 是路径（[`architecture.md`](architecture.md) §2.1）。在那里写相对路径，等于交给 bwrap 按
   **启动器的工作目录**解析 —— 那个目录没人选过。
 - **`rules.d` 里不接受相对路径**（指名报错，退出码 2）：规则是给这个程序**所有实例**用的共享知识，
@@ -117,7 +117,7 @@ twin config > ~/.config/twin/config.toml
 | `level` | `"alias"` | 默认身份级别。只能是 `none` / `alias` / `redirect` |
 | `icon_size` | `256` | 生成图标的边长（像素）。必须是正数 |
 | `badge_style` | `"corner"` | `corner` \| `number` \| `dot` |
-| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时，新实例的 `bwrap.tmpfs` 里写 `/tmp`（空的私有 `/tmp`）；关掉则改成在 `bwrap.args` 里写 `--bind /tmp /tmp`（宿主那个，可写，只是与宿主共享）。**在你确信二进制特征扫描判错的机器上关掉它**。两条都必须**可写** —— 只读的 `/tmp` 会让程序在别处报错 |
+| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时，新实例的 `bwrap.tmpfs` 里写 `/tmp`（空的私有 `/tmp`）；关掉则改成在 `bwrap.extras` 里写 `--bind /tmp /tmp`（宿主那个，可写，只是与宿主共享）。**在你确信二进制特征扫描判错的机器上关掉它**。两条都必须**可写** —— 只读的 `/tmp` 会让程序在别处报错 |
 | `tray_override` | `true` | 生成实例时是否把宿主的托盘图标覆盖表指向本实例 |
 
 > `tray_override` 是一个**整机**开关，理由很实在：值得关掉它的原因是机器的属性（换一套托盘
@@ -147,7 +147,7 @@ twin config > ~/.config/twin/config.toml
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `args` | `[]` | 追加到每个**新**实例 `bwrap.args` 的尾部（排在它那份基座之后、路径映射之前）。**一个元素 = 一个 token**，原样拼接、不做替换。写进实例定义之后就不再回读这里 —— 改这份文件只影响以后新建的实例 |
+| `args` | `[]` | 追加到每个**新**实例 `bwrap.extras` 的尾部（排在它那份基座之后、路径映射之前）。**一个元素 = 一个 token**，原样拼接、不做替换。写进实例定义之后就不再回读这里 —— 改这份文件只影响以后新建的实例 |
 
 ⚠️ 一个文件写坏了会**硬报错**而不是静默回退到内置默认 —— 否则你改了 `config.toml`、什么都没
 发生，而没有任何线索能告诉你为什么。
@@ -217,7 +217,7 @@ args = []
 | `categories` | 留空 ⇒ 继承源桌面项 |
 | `tmpfs` | 数组，**替换**内置；写进实例的 `bwrap.tmpfs`，`/tmp` 那一项就留在那里（基座自己那条 `/dev/shm` 也在同一处） |
 | `bind` | 字符串数组，**替换**内置。每条是 `源:目标[:ro\|:dev]`；单写一条路径 ⇒ 该路径挂回自己（原地升级可写） |
-| `[bwrap] args` | 数组，**替换**内置；追加到实例 `bwrap.args` 的尾部（基座之后、路径映射之前） |
+| `[bwrap] args` | 数组，**替换**内置；追加到实例 `bwrap.extras` 的尾部（基座之后、路径映射之前） |
 
 ### 合并语义（与内置同名字段）
 
@@ -336,22 +336,24 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 
 ### `bwrap`
 
-这一个节点就是这次 bwrap 调用：`args` 是原始选项列表，其余每个键都是**一种挂载的写法**
-（它对应哪条 bwrap 选项，见右列）。键的顺序就是它们在命令里出现的顺序。
+这一个节点就是这次 bwrap 调用：`extras` 是原始选项列表，其余每个键都是**一种挂载的写法**
+（它对应哪条 bwrap 选项，见右列）。键的顺序就是它们在命令里出现的顺序 —— 唯一的例外是
+`extras`，它写在最后，却在命令里排在根挂载之后、其余各条之前（见 §4 末尾）。
 
 | 键 | 对应 | 说明 |
 |---|---|---|
-| `args` | （原样） | 交给 bwrap 的**完整选项列表**：`gen` 写的基座里没有自己节点的那几条（宿主 `/tmp`、`--die-with-parent`）→ config ＋ rules ＋ CLI 的追加，低位在前。它是跑起来那一份，不是一份建议 —— twin 不再自己补任何选项。**总是写**；空列表本身没问题（根挂载在 `bind` 里），两处都没有根挂载才会被拒绝。`--dry-run` 印出来的、启动器里 exec 的就是它 |
+| `extras` | （原样） | 交给 bwrap 的**完整选项列表**：`gen` 写的基座里没有自己节点的那几条（宿主 `/tmp`、`--die-with-parent`）→ config ＋ rules ＋ CLI 的追加，低位在前。它是跑起来那一份，不是一份建议 —— twin 不再自己补任何选项。**总是写**，而且写在节点的最后；空列表本身没问题（根挂载在 `bind` 里），两处都没有根挂载才会被拒绝。`--dry-run` 印出来的、启动器里 exec 的就是它 |
 | `proc` | `--proc` | 挂一个 proc 到这条路径。`gen` 写的是 `/proc`；留空 = 一个都不挂 |
-| `tmpfs` | `--tmpfs` | 盖成空目录的路径（写后即弃，宿主看不见；代价是那里原本的东西也看不见）。`gen` 写的是 `/dev/shm`（空的私有共享内存）与 `/tmp`（程序走 Wayland 时的私有 `/tmp`）；只走 X11 的程序不能要后者，那时 `gen` 改成在 `args` 里写一条 `--bind /tmp /tmp` 把宿主那个挂回来 |
-| `bind` | `--bind` / `--ro-bind` / `--dev-bind` | 隔离哪个数据目录。**总是写**（空时是 `bind: []`）—— "一条映射都没有"本身是一个决定。写法见下。⚠️ 第一条是**根挂载** `/:/:dev`：它是整个宿主根（就是 `--dev-bind / /`），永远发在所有挂载之前，**不算**这个程序的数据映射（终端列「路径映射」时会滤掉它）。宿主 `/tmp` 那条跟着根走，留在 `args` 里 |
+| `tmpfs` | `--tmpfs` | 盖成空目录的路径（写后即弃，宿主看不见；代价是那里原本的东西也看不见）。`gen` 写的是 `/dev/shm`（空的私有共享内存）与 `/tmp`（程序走 Wayland 时的私有 `/tmp`）；只走 X11 的程序不能要后者，那时 `gen` 改成在 `extras` 里写一条 `--bind /tmp /tmp` 把宿主那个挂回来 |
+| `bind` | `--bind` / `--ro-bind` / `--dev-bind` | 隔离哪个数据目录。**总是写**（空时是 `bind: []`）—— "一条映射都没有"本身是一个决定。写法见下。⚠️ 第一条是**根挂载** `/:/:dev`：它是整个宿主根（就是 `--dev-bind / /`），永远发在所有挂载之前，**不算**这个程序的数据映射（终端列「路径映射」时会滤掉它）。宿主 `/tmp` 那条跟着根走，留在 `extras` 里 |
 | `remountRO` | `--remount-ro` | 把哪些路径**收回只读**，排在所有挂载之后，所以能压住 `bind` 给出的那种可写。⚠️ 只能作用在**自己就是一条挂载**的路径上（`bind` 的目标端、overlay/tmpfs 那条路径、或整个 `/`）：宿主本来就在那一条大根挂载里的路径底下没有单独的挂载，bwrap 会拒绝启动（`Can't remount readonly on …: Unable to find … in mount table`） |
 | `env` | `--setenv` | 注入沙箱的环境变量，一条一个 `键:值`，后面的同名者胜。冒号只在**第一个**处断开，所以值里可以再有冒号（`PATH:/a:/b`）；值可以为空（写 `键:`），键名不能带冒号、空格或 `=`。`gen` 写的 `TWIN_INSTANCE:<id>` 就在这一条里 |
 
 为空就是没设置：空值不发出任何参数，也不会被理解成"要默认的那个" —— 默认的那几条是 `gen`
 写在这几个键里的，是文件里看得见的一段文本。
 
-基座（`gen` 写的，可改）。**每条挂在它自己那个键里**，只有没有对应键的那几条留在 `args`：
+基座（`gen` 写的，可改）。**每条挂在它自己那个键里**，只有没有对应键的那几条留在 `extras`
+（写在最后，理由见下）：
 
 ```
 # bwrap.bind / bwrap.proc / bwrap.tmpfs / bwrap.env
@@ -361,7 +363,7 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 --tmpfs /tmp          空的私有 /tmp（选了私有那一条时）
 --setenv TWIN_INSTANCE <id>
 
-# bwrap.args：没有自己节点的那几条
+# bwrap.extras：没有自己节点的那几条
 --bind /tmp /tmp      宿主那个 /tmp，可写（不要私有 /tmp 时才有这一条）
 --die-with-parent
 ```
@@ -371,6 +373,12 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 源、目标、模式 —— 两段的 `/:/ro` 读成"把根挂到 `/ro`"，会被指名拒掉），代价是设备与 `/run/user`
 要自己补回来（`--dev-bind /dev /dev`、`--bind /run/user /run/user`），否则 Wayland socket、会话
 总线、PipeWire 全断 —— 这份文件里那段注释就写在那一行旁边。
+
+`extras` 写在节点的**最后**，位置同样不由它自己决定 —— 它是这份定义里唯一一个文件位置不读的键：
+`Build` 把它发在根挂载之后、上面那几个有形状的键**之前**（有形状的那几条得能压住它，而基座剩下
+的那两条属于基座旁边）。所以它写在末尾不是"最后才加的那几个 token"：它是一份**合并后**的完整
+列表（基座剩下的两条 ＋ config.toml ＋ rules.d ＋ `gen` 的 `--` 透传区），名字说的是"上面那些有
+形状的挂载之外的那些"。
 
 #### `bwrap.bind`
 

@@ -187,12 +187,7 @@ isolation:
   unshare: []
   nested_ns: false
 
-bwrap:                 # 这一个节点就是这次调用；键的顺序就是命令里的顺序
-  args:                # 交给 bwrap 的完整选项列表；基座里**没有自己节点**的那几条在这里
-    - --bind           # 宿主那个 /tmp，可写（程序走 X11、不要私有 /tmp 时才有这一条）
-    - /tmp
-    - /tmp
-    - --die-with-parent
+bwrap:                 # 这一个节点就是这次调用；键的顺序就是命令里的顺序 —— extras 除外
   proc: /proc          # 挂一个 proc 到这条路径（基座写的就是它）
   tmpfs:               # 盖成空目录的路径（含基座那两条：/dev/shm 与私有 /tmp）
     - /dev/shm
@@ -202,6 +197,11 @@ bwrap:                 # 这一个节点就是这次调用；键的顺序就是�
   remountRO: []        # 把哪些路径收回只读（只能作用在自己就是一条挂载的路径上）
   env:                 # 注入沙箱的环境变量，一条一个 `键:值`（基座那条 TWIN_INSTANCE 也在里面）
     - TWIN_INSTANCE:wechat2
+  extras:              # 没有自己节点的那些 token；基座里**没有自己节点**的那几条在这里
+    - --bind           # 宿主那个 /tmp，可写（程序走 X11、不要私有 /tmp 时才有这一条）
+    - /tmp
+    - /tmp
+    - --die-with-parent
 
 tray:
   override: true
@@ -217,7 +217,7 @@ tray:
 - **状态目录用 `~/` 而非绝对路径**（`RelStateDir`）：文件要能搬到另一台机器重放，不能把今天的
   HOME 烤进去。`~/` 由 `Paths.Expand` 在**用的时候**折叠成本机 home；而同一种"不烤进机器路径"的
   诉求还有第二种写法 —— **相对路径，基准是这份文件所在的目录**（`inst.Load` 解析一次），
-  它让"配置 + 程序 + 状态目录"能放成一个整体搬走的 bundle。`bwrap.args` 两种都不解析：那是 bwrap
+  它让"配置 + 程序 + 状态目录"能放成一个整体搬走的 bundle。`bwrap.extras` 两种都不解析：那是 bwrap
   的选项列表，逐 token 照搬。
 - **凡是会变成 bwrap 参数的东西都在 `bwrap` 节点里**：`args`（原始 token 列表）、`bind`、以及
   `proc` / `tmpfs` / `remountRO` / `env` 这四个**有形状的挂载**。后四个各有自己的键，是因为每个都
@@ -304,6 +304,11 @@ StartupNotify=true
 扁平列表里。`sandbox.Build` 一字不改地照发；twin 不再自己补任何选项，所以"最终跑的是哪些参数"
 在文件里就能整份读到、也能整份改掉。
 
+**有一处例外要记住**：`bwrap.extras` 写在节点的**最后**，而它在命令里排在根挂载之后、其余各条
+**之前**。它不是"最后才加的那几个 token"（那是一份合并后的完整列表，见 §6），只是因为它是这份
+定义里唯一一个**文件位置不决定命令位置**的键，放在末尾才不会让文件暗示一个它没有的顺序。其余键
+的文件顺序就是命令顺序。
+
 ```
 # bwrap.bind / bwrap.proc / bwrap.tmpfs / bwrap.env（gen 写的基座，用户可改）
   /:/:dev                           # 根挂载：整个宿主根（含设备）挂进来，就是 --dev-bind / /
@@ -312,14 +317,14 @@ StartupNotify=true
   --tmpfs /tmp                      # 空的私有 /tmp（选了私有那一条时；另一条见下）
   --setenv TWIN_INSTANCE <id>
 
-# bwrap.args（同样由 gen 写，用户可改）：**没有自己节点**的那几条
+# bwrap.extras（同样由 gen 写，用户可改；写在节点最后，但位置与命令无关）
   --bind /tmp /tmp                  # 宿主那个 /tmp，可写（不要私有 /tmp 时才有这一条）
   --die-with-parent
 ```
 ```
 bwrap
   --dev-bind / /                    # 根挂载：从 bwrap.bind 里提到最前（见下）
-  <bwrap.args 整个列表>             # 原样，跟在根挂载后面
+  <bwrap.extras 整个列表>             # 原样，跟在根挂载后面（与它在文件里的位置无关）
   [--proc <bwrap.proc>]…            # 其余各条从这一行往下，顺序照文件里的键
   [--tmpfs <bwrap.tmpfs 里的路径>]…
   --overlay-src <targetdir>
@@ -378,10 +383,10 @@ file system`）。唯一不建挂载点的是根挂载本身 —— 它两端都
 `[ERROR:chrome/browser/process_singleton_posix.cc] Failed to create socket directory` 并放弃单实例锁
 —— 一条关于 *socket* 的报错，来自一个用户刚刚才包上的程序。所以两条路都保证它可写：走 tmpfs 的
 程序拿到一个空的私有 `/tmp`（`bwrap.tmpfs` 里的一条），不走 tmpfs 的程序（X11 那一路，tmpfs 会把
-`/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，可写**（`bwrap.args` 里的 `--bind /tmp /tmp`）。
+`/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，可写**（`bwrap.extras` 里的 `--bind /tmp /tmp`）。
 "存在但写不进去的 /tmp" 不是第三种选择。
 
-宿主 `/tmp` 那一条留在 `bwrap.args` 而不是进 `bwrap.bind`：它在默认那个可写的根下**什么也不做**
+宿主 `/tmp` 那一条留在 `bwrap.extras` 而不是进 `bwrap.bind`：它在默认那个可写的根下**什么也不做**
 （整个宿主根本来就带着一个可写的 `/tmp`），它管的是"哪天把根收紧成 `/:/:ro` 时 /tmp 仍然可写"
 （`args` 排在根挂载之后，所以那条收紧压不住它）。而 `bwrap.bind` 是"隔离哪些数据目录"的清单
 —— `install` 会把它整段报成路径映射，还会建议照抄进这个程序的 `rules.d`，一条 twin 自己的
@@ -393,7 +398,7 @@ file system`）。唯一不建挂载点的是根挂载本身 —— 它两端都
 原则：**传 token，不重新解析**。`twin` 不知道也不想知道任何 bwrap 选项的元数（arity）——
 那是 bwrap 的事，在这里再实现一张表只会随每个 bwrap 版本腐烂。
 
-- `bwrap.args` 拼的是**这份列表自己**，按位置、低位在前：`gen` 写的基座（没有自己节点的那几条）
+- `bwrap.extras` 拼的是**这份列表自己**，按位置、低位在前：`gen` 写的基座（没有自己节点的那几条）
   → `config.toml` 的 `[bwrap] args` → `rules.d` 的 `[bwrap] args` → `gen` 命令行上 `--` 之后那一段。
   后写的遮蔽同目标的前一个挂载，而 twin 不需要拥有任何一条冲突规则 —— bubblewrap 自己就是规则。
   ⚠️ 基座里**有**自己节点的那几条（根挂载在 `bind`，`proc` / `tmpfs` / `env` 在各自那个键）不在这份
@@ -403,7 +408,7 @@ file system`）。唯一不建挂载点的是根挂载本身 —— 它两端都
 - `--` 之后那一段**是写进文件的一份**，不是每次启动的覆盖：它落在基座与全局/规则层之后，
   于是它在**列表内部**有最终话语权，而列表整体排在根挂载之后、路径映射之前。
 - 这些 token **不享受**三件事（在别处都有的）：挂载点自动补齐（含形态判断）、`~/` 展开、语义校验。
-  ⇒ 数据路径请写进 `rules.d` 或实例定义里的 `bind`，不要写进 `bwrap.args`。
+  ⇒ 数据路径请写进 `rules.d` 或实例定义里的 `bind`，不要写进 `bwrap.extras`。
 - 三条硬边界（拒绝，不是警告）：
   - `--`（会截断 bwrap 自己的选项解析，后面全被当成程序名）；
   - `--argv0`（会破坏"窗口 app_id 与托盘 Id 同名"的不变量）；
@@ -411,7 +416,7 @@ file system`）。唯一不建挂载点的是根挂载本身 —— 它两端都
     启动器由桌面环境 exec，手里没有可用的 fd。
 - 校验是 **lint 而不是 transform**：宁可警告，不悄悄改写用户写的东西。
 - 旧键 `bwrap.extra`（以及 `config.toml` / `rules.d` 里的同名键）**指名报错**：它只装用户追加的
-  token，而 `bwrap.args` 装的是交给 bwrap 的完整列表（基座也在里面，只是分节点写），读错会交给
+  token，而 `bwrap.extras` 装的是交给 bwrap 的完整列表（基座也在里面，只是分节点写），读错会交给
   bwrap 一个什么都没挂的命名空间，失败信息里一个字都不会提到 twin。没有根挂载同理（`bind` 里没有
   `/:/…`、`args` 也空着）—— 有沙箱就必须有一个根挂载，`/:/ro` 这种两段写法也会被指名拒掉。
 

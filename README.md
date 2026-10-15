@@ -188,8 +188,9 @@ exec '/usr/bin/bwrap' \
 （上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
 `mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端，根挂载不建，它两端都是 `/`。这些 token
 全部**来自 `profile.yml`**：第一行是它的 `bwrap.bind` 里那条根挂载 `/:/:dev`，接着是它的
-`bwrap.args`，其余各条来自同名的键（`bwrap.proc` / `bwrap.tmpfs` / `bwrap.bind` / `bwrap.env`）
-—— `twin` 不知道任何 bwrap 选项的元数，所以除了那份列表，它只按文件里的键序发它们。想换根、
+`bwrap.extras`，其余各条来自同名的键（`bwrap.proc` / `bwrap.tmpfs` / `bwrap.bind` / `bwrap.env`）
+—— `twin` 不知道任何 bwrap 选项的元数，所以除了那份列表，它只按文件里的键序发它们（`extras` 例外：
+它写在文件的最后一个键的位置上，却在命令里排在前面 —— 那份列表的文件位置不决定命令位置）。想换根、
 想加减隔离，改的就是那份定义。）
 
 几处关键点，每一条都对应一次实测：
@@ -207,7 +208,7 @@ exec '/usr/bin/bwrap' \
    `Already exists` 并让这份脚本死在 `set -e` 上 —— 所以形态按磁盘上**已有的那一端**决定，两端
    都没在时按目录。这样"源是文件"的映射（单个配置文件，如 `vlcrc`）才走得通，`twin install`
    也会按同一条规则把私有侧建成文件而不是目录。
-5. `/tmp` 必须是这两种之一：`bwrap.tmpfs` 里的 `/tmp`（空的私有 `/tmp`）或 `bwrap.args` 里的
+5. `/tmp` 必须是这两种之一：`bwrap.tmpfs` 里的 `/tmp`（空的私有 `/tmp`）或 `bwrap.extras` 里的
    `--bind /tmp /tmp`（宿主那个，可写 —— 它排在根挂载之后，只读的根也压不住它）。只读的 `/tmp`
    是最糟的一种 —— 建不出临时目录的程序会在别处报错：Chromium 会打印
    `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。
@@ -283,9 +284,9 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 `profile.yml` 是**这一个实例**的全部意图：`gen` 写它，`install <id>` 与 `reinstall <id>` 读它
 （两者读的是同一个文件，也都不会改写它）。定义放在别处（`-o` / `-p`）时，实例目录里那份才是
 `install` 写下的**存档记录**，`reinstall` 重放的是它。
-`config.toml` 不存在是正常的（用内置默认）。数组类字段（实例定义里的 `bwrap.args` /
+`config.toml` 不存在是正常的（用内置默认）。数组类字段（实例定义里的 `bwrap.extras` /
 `bwrap.tmpfs` / `bwrap.bind`，规则文件里的 `tmpfs` / `bind` / `[bwrap] args`）
-按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。`bwrap.args` 是交给
+按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。`bwrap.extras` 是交给
 bwrap 的**完整**选项列表（沙箱基座也在里面），所以"这个程序拿到哪个根"在文件里看得见也改得动。
 
 ```bash
