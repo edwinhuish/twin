@@ -72,12 +72,12 @@ func TestLauncherRendersOneMountPairPerMapping(t *testing.T) {
 	got := string(body)
 
 	for _, want := range []string{
-		`mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat"` + "\n",
-		`mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files"` + "\n",
-		`mount_pair '/usr/share/wechat/theme.conf' "$HOME/.config/wechat/theme.conf" ro` + "\n",
+		`mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" || twin_fail "$?" '建立挂载点失败：~/.local/state/twin/wechat2/xwechat → ~/.xwechat'` + "\n",
+		`mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" || twin_fail "$?" '建立挂载点失败：~/Documents/xwechat_files → ~/Documents/xwechat_files'` + "\n",
+		`mount_pair '/usr/share/wechat/theme.conf' "$HOME/.config/wechat/theme.conf" ro || twin_fail "$?"`,
 		// The state root is a mount point like any other, and a file end needs
 		// the helper that can create one.
-		`mount_point dir "$HOME/.local/state/twin/wechat2"` + "\n",
+		`mount_point dir "$HOME/.local/state/twin/wechat2" || twin_fail "$?" '建立状态目录失败：~/.local/state/twin/wechat2'` + "\n",
 		`touch -- "$2"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -88,6 +88,12 @@ func TestLauncherRendersOneMountPairPerMapping(t *testing.T) {
 	// non-zero, and `set -e` then kills the launcher before exec.
 	if strings.Contains(got, "mkdir -p \"$HOME/.xwechat\"") {
 		t.Errorf("launcher still mkdirs mapping ends directly:\n%s", got)
+	}
+	// `set -e` is suspended inside a function called as the left side of `||`,
+	// so without this line the first mount_point's failure would be swallowed
+	// by the second one's success — and bwrap would be the one to complain.
+	if !strings.Contains(got, `mount_point "$kind" "$1" || return 1`) {
+		t.Errorf("mount_pair does not pass on its first failure:\n%s", got)
 	}
 }
 
@@ -330,5 +336,258 @@ func TestLintBwrapWarnsOnBindInPassthrough(t *testing.T) {
 	}
 	if !strings.Contains(joined, "bind") {
 		t.Errorf("the warning does not point at the supported route: %q", warns)
+	}
+}
+
+// ------------------------------------------------------------- 启动失败报告
+
+// launchSandbox prepares the three things a launcher needs in a test: a scratch
+// HOME, a PATH with a fake dialog on it, and the file that fake records into.
+//
+// The dialog is faked rather than mocked away because the thing under test *is*
+// a dialog: what matters is the text someone could select and copy out of it,
+// not that a window opened.
+func launchSandbox(t *testing.T) (home, bin, out string) {
+	t.Helper()
+	home, bin = t.TempDir(), t.TempDir()
+	out = filepath.Join(bin, "zenity.out")
+	fake := "#!/bin/bash\n{ printf 'ARGS: %s\\n' \"$*\"; cat; } > \"$TWIN_TEST_DIALOG_OUT\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "zenity"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return home, bin, out
+}
+
+// runLauncher renders a launcher and runs the file `install` would have
+// written. Every stream is a pipe, which is the whole point: a desktop launch
+// has no terminal either, so the dialog is the only channel left. The script
+// path comes back because the report signs itself with it ($0).
+func runLauncher(t *testing.T, i *inst.Instance, p inst.Paths, rt Runtime,
+	home, bin, out string, display bool) (sysx.Result, string) {
+	t.Helper()
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	plan, err := Build(i, p, rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "launch")
+	if err := os.WriteFile(script, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{
+		"HOME=" + home,
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"TWIN_TEST_DIALOG_OUT=" + out,
+	}
+	if display {
+		// A graphical session, and nothing else: no terminal anywhere near it.
+		env = append(env, "DISPLAY=:0.0")
+	}
+	res, err := sysx.RunEnv(env, script)
+	if err != nil {
+		t.Fatalf("启动器跑不起来：%v", err)
+	}
+	return res, script
+}
+
+func readText(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// blockerInstance is a mapping whose source cannot be manufactured: its parent
+// is a regular file, so mount_point's mkdir fails before exec — the failure
+// mode that used to look like a click that did nothing.
+func blockerInstance(t *testing.T, home string) *inst.Instance {
+	t.Helper()
+	blocker := filepath.Join(home, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	i := passthroughInstance()
+	i.Binds = []inst.Bind{{Source: blocker + "/sub", Target: "~/data"}}
+	return i
+}
+
+// A graphical session has no terminal, so the failure has to open a window —
+// and the text in it has to be selectable, because the only thing anyone does
+// with it is paste it into a bug report.
+func TestLauncherShowsTheFailureInAGuiSession(t *testing.T) {
+	home, bin, out := launchSandbox(t)
+	i := blockerInstance(t, home)
+	p := inst.Paths{Home: home}
+	res, script := runLauncher(t, i, p, Runtime{Bwrap: "/usr/bin/bwrap"}, home, bin, out, true)
+
+	if res.Code != 1 {
+		t.Fatalf("mount_point 失败应当以 mkdir 的退出码收场，得到 %d（stderr=%q）", res.Code, res.Stderr)
+	}
+	report := filepath.Join(home, ".local/state/twin/wechat2/launch-error.log")
+	shown := readText(t, out)
+	for _, want := range []string{
+		"twin 微信2（wechat2）：启动失败（退出码 1）",
+		"哪一步没成：建立挂载点失败：" + filepath.Join(home, "blocker", "sub") + " → ~/data",
+		// The captured stderr is the "why": this is the line a user pastes.
+		"mkdir:",
+		"启动器：" + script,
+		"报告文件：" + report,
+	} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("弹窗里缺 %q：\n%s", want, shown)
+		}
+	}
+	// One composition, two readers: the window got byte-for-byte what was
+	// written down. The fake prefixes its own argv, hence dropping one line.
+	_, body, _ := strings.Cut(shown, "\n")
+	if body != strings.TrimSuffix(readText(t, report), "\n") {
+		t.Errorf("弹窗正文与报告文件不一致：\n%q\n%q", body, readText(t, report))
+	}
+}
+
+// exec failing is "the program never started", and it is the one step a failing
+// command cannot report: a non-interactive shell exits on the spot when exec
+// cannot run the command, whatever set -e says.
+func TestLauncherReportsAProgramThatCannotRun(t *testing.T) {
+	home, bin, out := launchSandbox(t)
+	gone := filepath.Join(home, "gone", "wechat")
+	i := &inst.Instance{ID: "wechat2", Name: "微信2", Level: inst.LevelNone, Target: gone}
+	p := inst.Paths{Home: home}
+	res, _ := runLauncher(t, i, p, Runtime{}, home, bin, out, true)
+
+	if res.Code != 127 {
+		t.Fatalf("exec 失败应当保持 127，得到 %d（stderr=%q）", res.Code, res.Stderr)
+	}
+	shown := readText(t, out)
+	for _, want := range []string{
+		"启动失败（退出码 127）",
+		// twin_why reads the disk instead of guessing, which also proves the
+		// path went through $HOME rather than being baked at generation time.
+		"哪一步没成：无法启动程序：" + gone + "（这个文件不在了）",
+	} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("弹窗里缺 %q：\n%s", want, shown)
+		}
+	}
+	// bash's own wording still lands on the real stderr — the journal keeps the
+	//原文 for whoever goes looking afterwards.
+	if !strings.Contains(res.Stderr, gone) {
+		t.Errorf("真 stderr 上应当留着 bash 的说法：%q", res.Stderr)
+	}
+}
+
+// A terminal launch must stay exactly as it was: the same error is already on
+// screen, and a window on top of it would only cover it up.
+func TestLauncherStaysQuietWithoutAGraphicalSession(t *testing.T) {
+	home, bin, out := launchSandbox(t)
+	i := blockerInstance(t, home)
+	p := inst.Paths{Home: home}
+	res, _ := runLauncher(t, i, p, Runtime{Bwrap: "/usr/bin/bwrap"}, home, bin, out, false)
+
+	if res.Code != 1 {
+		t.Fatalf("退出码应当仍是 mkdir 的，得到 %d", res.Code)
+	}
+	if sysx.Exists(out) {
+		t.Error("没有图形会话时不该弹窗")
+	}
+	if sysx.Exists(filepath.Join(home, ".local/state/twin/wechat2/launch-error.log")) {
+		t.Error("终端启动不该写报告文件")
+	}
+	if !strings.Contains(res.Stderr, "mkdir:") {
+		t.Errorf("错误应当原样落在 stderr 上：%q", res.Stderr)
+	}
+}
+
+// The dialog chain is picked for selectable text: xmessage's body is a Label
+// nothing can be copied out of, and a notification is no better. A launcher
+// that grew one of them would pass every other test here and still show the
+// user a window they cannot copy from.
+func TestLauncherOnlyOffersCopyableDialogs(t *testing.T) {
+	i := passthroughInstance()
+	p := inst.Paths{Home: "/home/edwin"}
+	plan, err := Build(i, p, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Comments name the rejected tools on purpose, so the assertions look at
+	// the lines that actually run something.
+	var code strings.Builder
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			code.WriteString(line + "\n")
+		}
+	}
+	got := code.String()
+	for _, want := range []string{
+		`[ ! -t 0 ] && [ ! -t 2 ] && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]`,
+		"zenity --text-info",
+		"--textbox /dev/stdin",
+		"yad --text-info",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("启动器缺 %q：\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"xmessage", "notify-send"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("弹窗链里混进了复制不出来的 %s：\n%s", unwanted, got)
+		}
+	}
+}
+
+// twin never runs the launcher, so a syntax error in it would first surface at
+// the one moment nobody is watching: a click.
+func TestLauncherIsValidBash(t *testing.T) {
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	home := t.TempDir()
+	p := inst.Paths{Home: home}
+	plain := &inst.Instance{ID: "app2", Name: "app", Level: inst.LevelNone, Target: "/opt/app/app"}
+	sandboxed := mountInstance()
+	trampolined := mountInstance()
+	trampolined.Binds = nil
+
+	cases := []struct {
+		name string
+		i    *inst.Instance
+		rt   Runtime
+	}{
+		{"纯身份", plain, Runtime{}},
+		{"沙箱", sandboxed, Runtime{Bwrap: "/usr/bin/bwrap"}},
+		{"跳板", trampolined, Runtime{
+			Bwrap: "/usr/bin/bwrap", Copy: p.BwrapCopy(),
+			Trampoline: "/opt/electron/electron", TrampolineEnv: []string{"ELECTRON_RUN_AS_NODE=1"},
+			Bootstrap: p.Bootstrap(),
+		}},
+	}
+	for _, c := range cases {
+		plan, err := Build(c.i, p, c.rt)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		body, err := RenderLauncher(c.i, p, plan)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		script := filepath.Join(t.TempDir(), "launch")
+		if err := os.WriteFile(script, body, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := sysx.Run("bash", "-n", script); err != nil || res.Code != 0 {
+			t.Errorf("%s：bash -n 不认这份启动器：%v %s", c.name, err, res.Stderr)
+		}
 	}
 }

@@ -225,10 +225,16 @@ set -euo pipefail
 : "${HOME:?twin: HOME 未设置，拒绝启动}"
 
 readonly ID='wechat2'
+readonly NAME='微信2'
 readonly STATE="$HOME/.local/state/twin/wechat2"
+
+# ── 启动失败 ── 判 GUI、抓 twin 自己的输出、twin_dialog、twin_fail（见 failHelpers）
+# ── 挂载点 ──   mount_point / mount_pair，每一条命令后面都跟着它自己的 twin_fail
+exec … 2>&3
+twin_fail "$?" '无法启动 bwrap' '/usr/bin/bwrap'
 ```
 
-三个刻意的选择：
+六个刻意的选择：
 
 - **`exec` 而非 `wait`**：`exec` 之后进程表里不留下包装器的痕迹 —— 这正是"薄"的意义。
 - **纯 shell 而非编译启动器**：够用，且生成物可读、可审。
@@ -236,6 +242,21 @@ readonly STATE="$HOME/.local/state/twin/wechat2"
   往 `/root` 建目录 —— 那是**数据丢失**级别的默认值。`twin` 在这一点上选择硬失败。
 - **路径折叠成 `$HOME/...`**：启动器跑在生成之后很久，把生成时刻的 HOME 烤进去会让它在任何
   其他 HOME 下静默错误（也会让上面那行守卫变成装饰）。
+- **失败必须自己开口**（`failHelpers`）：桌面项启动的进程没有终端，脚本死在 `exec` 之前，在
+  用户眼里就是"点了没反应"——而这正是 `verify`/`doctor` 补不回来的一种失败（等到能跑它们的
+  时候，用户早忘了刚才点过什么）。所以**每一步都带一句自己的说法**（`… || twin_fail "$?" …`），
+  图形会话里把它弹成一个窗口，并写进 `$STATE/launch-error.log`。判据是"这一刻是不是图形会话"
+  （没有控制终端 ＋ 有显示），所以判在脚本里；终端里跑的时候一句都不多说 —— 那份错误本来就在
+  用户眼前。弹窗链按**正文能选中复制**挑（`zenity --text-info` → `kdialog --textbox` →
+  `yad --text-info`），`xmessage` 与 `notify-send` 因此不在链里。
+- **`exec` 之前与之后的输出是两个 fd**：报告文件只装 twin 自己的话（`2>"$LOG"`），程序自己的
+  stderr 在 `exec` 时用 `2>&3` 原样还回去 —— 那份文件没人轮转，接下一整个程序的输出是另一回事。
+  `exec` 还得单独关掉两件默认行为：非交互 shell 里它失败会**直接退出**（与 `set -e` 无关），
+  所以最后一段是 `shopt -s execfail` ＋ `set +e`，它后面那行 `twin_fail` 才是"程序没能启动"的
+  唯一出口。
+
+> 这一层只管"**程序根本没启起来**"（启动器自己那几步 ＋ `exec` 本身）。程序跑起来之后退出码非零
+> 不算启动失败：`bootstrap.js` 特意逐字转发它，把"退出应用"报成"启动失败"才是错的。
 
 ### 5.3 `<id>.desktop`
 

@@ -190,11 +190,25 @@ style → {}    ← 只有标准库
     install 里是 `sandbox.EnsureMountPoints`（落盘时判一次，否则一个被造成目录的私有副本会一直
     留着 —— 启动器不碰已经存在的路径）。**改一处必须改两处**。
 15. **`/tmp` 两条路都必须可写。** `--ro-bind / /` 把宿主的 `/tmp` 变成**只读**，而没被
-    `isolation.tmpfs` 盖住的 `/tmp` 恰好落在这个状态：建不出临时目录的程序会在跟 twin 无关的
-    地方炸（Chromium 的单实例 socket → `process_singleton_posix.cc: Failed to create socket
-    directory`，Electron 实测）。所以 `sandbox.Build` 在不 tmpfs 时补 `--bind /tmp /tmp` ——
-    X11 那一路要的正是宿主那个 `/tmp`（tmpfs 会把 `/tmp/.X11-unix/X0` 一起带走）。往
-    `isolation.tmpfs` 加新目录之前先问：去掉它之后这里还写得进去吗。
+   `isolation.tmpfs` 盖住的 `/tmp` 恰好落在这个状态：建不出临时目录的程序会在跟 twin 无关的
+   地方炸（Chromium 的单实例 socket → `process_singleton_posix.cc: Failed to create socket
+   directory`，Electron 实测）。所以 `sandbox.Build` 在不 tmpfs 时补 `--bind /tmp /tmp` ——
+   X11 那一路要的正是宿主那个 `/tmp`（tmpfs 会把 `/tmp/.X11-unix/X0` 一起带走）。往
+   `isolation.tmpfs` 加新目录之前先问：去掉它之后这里还写得进去吗。
+16. **启动器里每一步失败都要自己说一句话。** 桌面项启动的进程没有终端，脚本死在 `exec` 之前
+   在用户眼里就是"点了没反应"，而这是 `verify`/`doctor` 补不回来的（等到能跑它们的时候，用户
+   早忘了刚才点过什么）。所以 `mount_point` / `mount_pair` / `exec` 后面都跟着
+   `|| twin_fail "$?" …`（`sandbox.failHelpers`），**加新的前置步骤就得加它的那一句**：生成物里
+   没有兜底的 ERR trap —— bash 要 `set -E` 才让 trap 进函数，而那时报出来的是函数内部的一行，
+   不是"哪条映射"。三条容易踩空的地方：
+   - 弹窗链只收**正文能选中复制**的工具（`xmessage` / `notify-send` 不算）：复制不出来，这个
+     窗口就白弹了；
+   - 调用方写的是 `mount_pair … || twin_fail …`，而 `set -e` 在**被当作 `||` 左侧调用的函数**
+     体内是关掉的（bash 的规矩）⇒ `mount_pair` 里第一个 `mount_point` 后面必须跟 `|| return 1`，
+     否则源端建不出来的失败会被目标端的成功盖掉，最后由 bwrap 报一句跟真因无关的话；
+   - 只在**这一刻确实是图形会话**时才弹（没有控制终端 ＋ 有显示），终端里跑的时候一句都不多说。
+   报告落在 `$STATE/launch-error.log`，弹窗正文与它逐字相同（一次拼好、两处使用）。
+
 
 ## 5. 常见任务怎么做
 

@@ -47,6 +47,34 @@ chmod +x ~/.local/share/twin/<id>/launch   # 临时修；根治用 twin reinstal
 update-desktop-database ~/.local/share/applications
 ```
 
+### A4. 点了图标没反应
+
+**根因**：启动器在 `exec` 之前就死了，而桌面项启动的进程**没有终端** —— 它的 stderr 归 journal
+或 `/dev/null`，于是"启动失败"看起来和"什么都没发生"一模一样。
+
+从图形会话启动（没有控制终端 ＋ 有 `DISPLAY`/`WAYLAND_DISPLAY`）时，启动器会**自己弹一个窗口**
+说明哪一步没成，并把这段文字同时写到：
+
+```bash
+~/.local/state/twin/<id>/launch-error.log
+```
+
+窗口里的正文是**可以选中复制**的（弹窗工具按这个能力挑：`zenity --text-info` →
+`kdialog --textbox` → `yad --text-info`，`xmessage` 和 `notify-send` 不在链里，它们的正文选不中）——
+就是为了让这段字能直接贴进 bug 报告。三个工具一个都没有时不会弹窗：报告仍在上面那个文件里，
+journal 里留了一行它的路径。
+
+在终端里直接跑启动器时**不弹窗**：同一份错误已经在眼前，再糊一个窗口上去只会挡住它。那时看
+stderr 就行：
+
+```bash
+bash -x ~/.local/share/twin/<id>/launch     # 真跑一次，看它到底怎么起
+```
+
+⚠️ 这一层只管"**程序根本没启起来**"：启动器自己那几步（挂载点、状态目录）和 `exec` 本身失败了
+才会弹。程序**跑起来之后**退出码非零不算启动失败 —— 那是程序自己的事，`bootstrap.js` 特意逐字
+转发它的退出码，把"退出应用"报成"启动失败"才是错的。
+
 ---
 
 ## B. 托盘图标不对

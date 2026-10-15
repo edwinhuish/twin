@@ -228,9 +228,22 @@ WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 `--ro-bind / /` 之后的只读根）。想单独跑那一段（不起程序、不动 bwrap）：
 
 ```bash
-# 把 exec 及其参数行截掉，只跑前半段（就是那份脚本自己的字节）
-HOME=/tmp/scratch-home bash <(sed '/^exec /,$d' ~/.local/share/twin/<id>/launch)
+# 从最后那段（shopt -s execfail）往后截掉，只跑前半段（就是那份脚本自己的字节）
+HOME=/tmp/scratch-home bash <(sed '/^shopt -s execfail/,$d' ~/.local/share/twin/<id>/launch)
 echo "退出码=$?"    # 0 = 挂载点这步没问题
+```
+
+### 看/验失败报告（`failHelpers` 那一半）
+
+失败的输出有两个去处（弹窗 ＋ `~/.local/state/twin/<id>/launch-error.log`），弹窗那半可以用一个
+假工具顶掉 —— 不弹窗，正文直接出现在终端上：
+
+```bash
+mkdir -p /tmp/fakebin
+printf '#!/bin/bash\ncat\n' > /tmp/fakebin/zenity && chmod +x /tmp/fakebin/zenity
+# stdin 与 stderr 都必须不是终端（判据要求），所以两条都重定向
+PATH=/tmp/fakebin:$PATH HOME=/tmp/scratch-home DISPLAY=:0 \
+  bash ~/.local/share/twin/<id>/launch </dev/null 2>/dev/null
 ```
 
 形态规则（目录还是文件）见 [`architecture.md`](architecture.md) §5，两份实现：
@@ -238,6 +251,11 @@ echo "退出码=$?"    # 0 = 挂载点这步没问题
 `mountKind` / `EnsureMountPoints`（`twin install` 落盘时判一次）。**改一处必须改两处**，
 两边各有一个用例盯着：`TestLauncherRendersOneMountPairPerMapping`、
 `TestMountKindFollowsTheEndOnDisk`、`TestEnsureMountPointsCreatesFilesForFileMappings`。
+
+失败报告那一层（`failHelpers`）的用例是真跑一遍生成的脚本：假弹窗把收到的正文抄下来，断言的是
+**用户屏幕上那一份**（`TestLauncherShowsTheFailureInAGuiSession`、
+`TestLauncherReportsAProgramThatCannotRun`、
+`TestLauncherStaysQuietWithoutAGraphicalSession`、`TestLauncherIsValidBash`）。
 
 ---
 
