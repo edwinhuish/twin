@@ -807,12 +807,6 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		lead = title("🔍 将要写出配置（--dry-run，未写盘）")
 	}
 	fmt.Printf("%s %s\n", lead, outStyle.Bold(outPath))
-	// The directory and the file name each get a line of their own. The full
-	// path above is one string, and the two things anyone does next — `cd` to
-	// it, or name the file to another program — each need exactly one half of
-	// it; gen ends here, so this is the last place either half can be said.
-	fmt.Printf("  目录 %s\n", filepath.Dir(outPath))
-	fmt.Printf("  文件 %s\n", filepath.Base(outPath))
 	if explain {
 		printDerived(der)
 		// "This instance" is the definition the user is holding, and gen has

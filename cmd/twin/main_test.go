@@ -348,11 +348,10 @@ func TestInstallCommandNamesTheInstanceWhenItCan(t *testing.T) {
 	}
 }
 
-// `twin gen` says where the configuration landed — the directory and the file
-// name as well as the full path — and what to type next; nothing else. The path
-// maps are the longest block in the report and the file being written explains
-// every key of them; saying it here too would be a second place that can
-// disagree with the file (see AGENTS.md §4.9).
+// `twin gen` says where the configuration landed and what to type next; nothing
+// else. The path maps are the longest block in the report and the file being
+// written explains every key of them; saying it here too would be a second
+// place that can disagree with the file (see AGENTS.md §4.9).
 func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo", Binds: []inst.Bind{{Source: "~/a", Target: "~/b"}}}
@@ -368,15 +367,6 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	if !strings.Contains(short, "已写出配置") || !strings.Contains(short, "下一步") {
 		t.Errorf("gen 的默认输出应当只有「已写出配置」与「下一步」：\n%s", short)
 	}
-	// The two halves of the path are what the reader acts on (`cd` to it, or
-	// name the file to another command), and the full path alone makes both of
-	// them cut the string by hand.
-	for _, want := range []string{"目录 /nonexistent-twin-home/.local/share/twin/demo", "文件 " + inst.ProfileName} {
-		if !strings.Contains(short, want) {
-			t.Errorf("gen 应当报出 %q：\n%s", want, short)
-		}
-	}
-
 	long := captureStdout(t, func() {
 		printGenResult(p, it, insp, work, false, true, nil)
 	})

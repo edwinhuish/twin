@@ -141,16 +141,11 @@ Keywords   微信;wechat;
 ```console
 $ twin gen wechat
 ✅ 已写出配置 /home/you/.local/share/twin/wechat2/profile.yml
-  目录 /home/you/.local/share/twin/wechat2
-  文件 profile.yml
 
 👉 下一步
   1. 改 /home/you/.local/share/twin/wechat2/profile.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
   2. 安装：twin install wechat2
 ```
-
-落点拆成三行是有意的：完整路径给眼睛看一眼，目录给要 `cd` 过去的人，文件名给要把它递给另一个程序
-的人 —— 后两者都得自己从完整路径里切，而 `gen` 到这一步就说完了。
 
 `gen` 的输出刻意短：它只做两件事 —— **只写一个文件**（桌面项、图标、启动器、私有状态目录都等
 `install`），并且**把落点指出来**。逐键的说明、`bind` 的语义、`rules.d` 的存在，全都写在**那份文件
@@ -162,8 +157,6 @@ $ twin gen wechat
 ```console
 $ twin gen foo
 ✅ 已写出配置 /home/you/.local/share/twin/foo2/profile.yml
-  目录 /home/you/.local/share/twin/foo2
-  文件 profile.yml
   ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bind
 
 👉 下一步

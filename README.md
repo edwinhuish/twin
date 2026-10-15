@@ -54,7 +54,7 @@ twin doctor
 twin inspect wechat
 
 # 2. 写定义：~/.local/share/twin/wechat2/profile.yml；每个键的说明都写在文件里的注释里
-#    （命令结束时会报出它的目录、文件名，以及下一步敲哪条命令）
+#    （命令结束时报出这个路径与下一步敲哪条命令）
 twin gen wechat
 
 # 3. 改定义（可选）：`bind` 那一节最容易猜错，每个键的说明都写在文件里的注释里
@@ -136,7 +136,7 @@ twin gen wechat                  ← 前半段：只配置
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
       ├─ 4. 从内置规则 / rules.d 算出路径映射
       └─ 5. 写出 profile.yml 到实例自己的目录（~/.local/share/twin/<id>/，唯一一个文件），
-            报出目录与文件名、下一步敲什么
+            报出它的路径与下一步敲什么
 
 twin install <id>                ← 后半段：按那份定义安装（reinstall 也走这条路）
       │
