@@ -159,7 +159,7 @@ twin install <id>                ← 后半段：按那份定义安装（reinsta
 #!/bin/bash
 set -euo pipefail
 : "${HOME:?twin: HOME 未设置，拒绝启动}"
-readonly ID='wechat2'
+readonly ID=wechat2
 readonly STATE="$HOME/.local/state/twin/wechat2"
 
 # 挂载点：两端都得先在宿主机上存在，形态按磁盘上已有的那一端（见下面第 4 条）
@@ -168,21 +168,21 @@ mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat"
 mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files"
 mount_pair "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users"
 
-exec '/usr/bin/bwrap' \
-  '--dev-bind' '/' '/' \
-  '--die-with-parent' \
-  '--proc' '/proc' \
-  '--tmpfs' '/dev/shm' \
-  '--tmpfs' '/tmp' \
-  '--overlay-src' '/opt/wechat' \
-  '--tmp-overlay' '/opt/wechat' \
-  '--ro-bind' '/opt/wechat/wechat' '/opt/wechat/wechat2' \
-  '--bind' "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" \
-  '--bind' "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" \
-  '--bind' "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users" \
-  '--setenv' 'TWIN_INSTANCE' 'wechat2' \
+exec /usr/bin/bwrap \
+  --dev-bind / / \
+  --die-with-parent \
+  --proc /proc \
+  --tmpfs /dev/shm \
+  --tmpfs /tmp \
+  --overlay-src /opt/wechat \
+  --tmp-overlay /opt/wechat \
+  --ro-bind /opt/wechat/wechat /opt/wechat/wechat2 \
+  --bind "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" \
+  --bind "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" \
+  --bind "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users" \
+  --setenv TWIN_INSTANCE wechat2 \
   -- \
-  '/opt/wechat/wechat2' "$@"
+  /opt/wechat/wechat2 "$@"
 ```
 
 （上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
@@ -212,6 +212,10 @@ exec '/usr/bin/bwrap' \
    `--bind /tmp /tmp`（宿主那个，可写 —— 它排在根挂载之后，只读的根也压不住它）。只读的 `/tmp`
    是最糟的一种 —— 建不出临时目录的程序会在别处报错：Chromium 会打印
    `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。
+6. token 只在**非加不可**时才加引号（`sandbox.Sh`）：会被 $HOME 折叠的那几个、含空格或 shell
+   元字符的（例如 `twin_fail` 那句带 `→` 的说明）、以及空串。全量加引号不是"更保险"，是给读这份
+   脚本的人加负担 —— 它正是在出问题时被打开的那份文件，而 `'--dev-bind' '/' '/'` 逼着人先剥掉
+   引号才看得见映射。
 
 ## Electron / Chromium 的特殊情况
 

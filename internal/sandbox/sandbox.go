@@ -34,10 +34,30 @@ import (
 	"github.com/edwinhuish/twin/internal/sysx"
 )
 
-// Sh quotes s for safe interpolation into a /bin/sh script.
+// Sh quotes s for safe interpolation into the launcher — and leaves it bare
+// when a bare word already *is* that string.
+//
+// Quoting every token is not the safe side of this choice, it is the unreadable
+// one: the launcher is read exactly when something went wrong, and a wall of
+// `'--dev-bind' '/' '/'` makes the reader strip quotes before they can find the
+// mapping they came for. The quotes stay on the tokens that would mean
+// something else without them — a path with a space is the case that made them
+// necessary — and on the empty string, which as a bare word would vanish
+// instead of arriving as an argument.
 func Sh(s string) string {
+	if s != "" && !strings.ContainsAny(s, shSpecial) {
+		return s
+	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// shSpecial is everything a bare word would be read as instead of itself: the
+// shell's metacharacters, the ones that expand (`$`, backtick, glob characters,
+// and bash's braces — the launcher is bash, `{a,b}` would split into two words)
+// and the quoting characters themselves. desk.quoteExecArg keeps its own copy of
+// nearly this list for the Exec= line; that import edge does not exist in either
+// direction, so the two are kept equal by hand.
+const shSpecial = " \t\n\"'\\><~|&;$*?#()`[]{}!"
 
 // shHome quotes a token for the launcher, collapsing a path inside the
 // instance's home directory to "$HOME/...".
@@ -45,7 +65,7 @@ func Sh(s string) string {
 // The launcher runs long after it was generated, so baking in the
 // generation-time home would make it silently wrong under any other HOME — and
 // would render the `: "${HOME:?}"` guard decorative. Everything that is not
-// under the home directory is quoted normally.
+// under the home directory goes through Sh, which quotes it only if it has to.
 func shHome(home, tok string) string {
 	if home != "" {
 		if tok == home {

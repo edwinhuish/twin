@@ -19,9 +19,9 @@ func TestShHomeCollapsesHome(t *testing.T) {
 		{"/home/edwin", `"$HOME"`},
 		{"/home/edwin/.xwechat", `"$HOME/.xwechat"`},
 		{"/home/edwin/.local/state/twin/wechat2/xwechat", `"$HOME/.local/state/twin/wechat2/xwechat"`},
-		{"/home/edwin2/x", `'/home/edwin2/x'`},
-		{"/opt/wechat/wechat2", `'/opt/wechat/wechat2'`},
-		{"/opt/wechat", `'/opt/wechat'`},
+		{"/home/edwin2/x", `/home/edwin2/x`},
+		{"/opt/wechat/wechat2", `/opt/wechat/wechat2`},
+		{"/opt/wechat", `/opt/wechat`},
 	}
 	for _, c := range cases {
 		if got := shHome(home, c.in); got != c.want {
@@ -30,9 +30,37 @@ func TestShHomeCollapsesHome(t *testing.T) {
 	}
 }
 
-func TestShHomeWithoutHomeQuotesNormally(t *testing.T) {
-	if got := shHome("", "/x/y"); got != `'/x/y'` {
+func TestShHomeWithoutHomeLeavesTheTokenAlone(t *testing.T) {
+	if got := shHome("", "/x/y"); got != `/x/y` {
 		t.Errorf("shHome = %s", got)
+	}
+}
+
+// A launcher nobody can read is a launcher nobody fixes: the quotes are for the
+// tokens a shell would read as something else, and every other token is written
+// the way it will be handed to bwrap.
+func TestShQuotesOnlyWhatTheShellWouldReadDifferently(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/usr/bin/bwrap", "/usr/bin/bwrap"},
+		{"--dev-bind", "--dev-bind"},
+		{"/", "/"},
+		{"微信2", "微信2"},
+		{"PATH=/a:/b", "PATH=/a:/b"},
+		// The ones the quotes exist for: a space would split one argument into
+		// two, and everything else here would be expanded or re-read.
+		{"", `''`},
+		{"/home/a b/x", `'/home/a b/x'`},
+		{"it's", `'it'\''s'`},
+		{"$HOME/x", `'$HOME/x'`},
+		{"a b", `'a b'`},
+		{"{a,b}", `'{a,b}'`},
+		{"*.png", `'*.png'`},
+		{"x#y", `'x#y'`},
+	}
+	for _, c := range cases {
+		if got := Sh(c.in); got != c.want {
+			t.Errorf("Sh(%q) = %s, want %s", c.in, got, c.want)
+		}
 	}
 }
 
@@ -74,9 +102,12 @@ func TestLauncherRendersOneMountPairPerMapping(t *testing.T) {
 	for _, want := range []string{
 		`mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" || twin_fail "$?" '建立挂载点失败：~/.local/state/twin/wechat2/xwechat → ~/.xwechat'` + "\n",
 		`mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" || twin_fail "$?" '建立挂载点失败：~/Documents/xwechat_files → ~/Documents/xwechat_files'` + "\n",
-		`mount_pair '/usr/share/wechat/theme.conf' "$HOME/.config/wechat/theme.conf" ro || twin_fail "$?"`,
+		`mount_pair /usr/share/wechat/theme.conf "$HOME/.config/wechat/theme.conf" ro || twin_fail "$?"`,
 		// The state root is a mount point like any other, and a file end needs
-		// the helper that can create one.
+		// the helper that can create one. Its message keeps the quotes — it
+		// says `~/…`, and a bare `~` at the start of a word expands — while the
+		// mapping above lost them: quote a token only when it changes meaning
+		// without them.
 		`mount_point dir "$HOME/.local/state/twin/wechat2" || twin_fail "$?" '建立状态目录失败：~/.local/state/twin/wechat2'` + "\n",
 		`touch -- "$2"`,
 	} {
@@ -434,7 +465,7 @@ func TestRenderLauncherCarriesTheOptionListAndSeparator(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(body)
-	for _, want := range []string{"'--dev-bind' '/' '/'", "'--unshare-pid'"} {
+	for _, want := range []string{"  --dev-bind / / \\\n", "--unshare-pid"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("launcher dropped %s from the option list:\n%s", want, got)
 		}
