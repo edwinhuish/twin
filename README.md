@@ -168,21 +168,26 @@ mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files"
 mount_pair "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users"
 
 exec '/usr/bin/bwrap' \
-  '--dev-bind' '/' '/' '--proc' '/proc' '--tmpfs' '/dev/shm' '--tmpfs' '/tmp' '--die-with-parent' '--setenv' 'TWIN_INSTANCE' 'wechat2' \
+  '--dev-bind' '/' '/' '--die-with-parent' \
+  '--proc' '/proc' \
+  '--tmpfs' '/dev/shm' \
+  '--tmpfs' '/tmp' \
   '--overlay-src' '/opt/wechat' \
   '--tmp-overlay' '/opt/wechat' \
   '--ro-bind' '/opt/wechat/wechat' '/opt/wechat/wechat2' \
   '--bind' "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" \
   '--bind' "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" \
   '--bind' "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users" \
+  '--setenv' 'TWIN_INSTANCE' 'wechat2' \
   -- \
   '/opt/wechat/wechat2' "$@"
 ```
 
 （上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
-`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端。第二行那串 token 是一整份**来自
-`profile.yml` 的 `bwrap.args`**：`twin` 不知道任何 bwrap 选项的元数，所以不替它分行 —— 想换根、
-想加减隔离，改的就是那份定义里的这一串。）
+`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端。这些 token 全部**来自 `profile.yml`**：
+排在最前的那一行是它的 `bwrap.args`，其余各条来自同名的键（`bwrap.proc` / `bwrap.tmpfs` /
+`bwrap.bind` / `bwrap.env`）—— `twin` 不知道任何 bwrap 选项的元数，所以除了那份列表，它只按文件里
+的键序发它们。想换根、想加减隔离，改的就是那份定义。）
 
 几处关键点，每一条都对应一次实测：
 

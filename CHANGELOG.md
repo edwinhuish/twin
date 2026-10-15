@@ -94,6 +94,20 @@
 
 ### Changed
 
+- **基座里每条挂载各归自己那个键，`args` 只留没有节点的那些**：`gen` 原先把整个基座平铺进
+  `bwrap.args`，于是文件里既有 `bwrap.proc` / `bwrap.tmpfs` / `bwrap.env` 这些键，又有同样几件事
+  以 token 形式躺在选项列表里 —— 想说出 `--tmpfs /dev/shm` 是"盖成空目录"还是"挂一个映射"，
+  读者得先背下 bwrap 的选项表。现在 `--proc /proc` → `bwrap.proc`、`--tmpfs /dev/shm` 与私有的
+  `/tmp` → `bwrap.tmpfs`、`--setenv TWIN_INSTANCE <id>` → `bwrap.env`。
+  留在 `args` 的恰好是最该留在原处的几条：根挂载（必须排在所有挂载之前 —— 排在 overlay 别名之后
+  会把程序的真名还回来）、宿主 `/tmp` 那一支的 `--bind /tmp /tmp`、以及 `--die-with-parent`（没有
+  对应的键）。宿主 `/tmp` 之所以不进 `bwrap.bind`：那条映射的清单是"隔离哪些数据目录"，写进去之后
+  `install` 会把它报成一条路径映射、还建议照抄进这个程序的 `rules.d`（实测）。
+  ⚠️ 有自己节点的那几条由 `Build` 发在 `args` **之后**，所以 `--` 透传区里写一条同目标的挂载压不住
+  它们；想改就改那个键。旧定义照旧工作 —— `Build` 逐字发 `args` 里的 token。`level none` 的定义
+  不再留下一句永远不会执行的 `/tmp` 决定：那份列表被 `SessionWarning` 读着，X11 会话里会给一个
+  根本没有沙箱的实例报警。
+
 - **`profile.yml` 的 `bind` 搬进 `bwrap` 节点（现在叫 `bwrap.bind`）**：它和 `bwrap.args` 是同一次
   调用的两半 —— 先是选项列表，然后是这些挂载 —— 所以写在同一个节点里，读的人不必跨半个文件把
   "这条映射会变成哪条 bwrap 选项"拼出来。写法一个字没变（`源:目标[:ro|:dev]`）。**顶层 `bind` 指名

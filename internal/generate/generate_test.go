@@ -797,7 +797,7 @@ func TestSessionWarning(t *testing.T) {
 	neither := &inst.Instance{ID: "x", Target: "/bin/true",
 		Args: []string{"--dev-bind", "/", "/", "--bind", "/tmp", "/tmp"}}
 
-	for name, it := range map[string]*inst.Instance{"bwrap.args": fromArgs, "isolation.tmpfs": fromTmpfs} {
+	for name, it := range map[string]*inst.Instance{"bwrap.args": fromArgs, "bwrap.tmpfs": fromTmpfs} {
 		t.Setenv("WAYLAND_DISPLAY", "")
 		if SessionWarning(it) == "" {
 			t.Errorf("%s 里有 tmpfs /tmp 而会话没有 WAYLAND_DISPLAY，应当警告", name)

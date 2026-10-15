@@ -76,7 +76,7 @@ internal/
   generate/             inspect / plan / materialize / unwrap / refresh
     traits.go           从二进制字符串扫出工具箱特征（Wayland/Qt/多合一/嵌套 ns）
     runtime.go          bwrap 副本同步 ＋ 跳板脚本
-  sandbox/              bwrap 调用构建（含 BaseArgs：gen 写进 profile.yml 的沙箱基座）、
+  sandbox/              bwrap 调用构建（含 BaseFor：gen 写进 profile.yml 的沙箱基座）、
                         token lint、Runtime.Resolve（降级链）、挂载点形态
                         （mountHelpers 写进启动器 ＋ EnsureMountPoints 供 install 调用）
   icon/                 纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）

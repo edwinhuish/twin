@@ -191,21 +191,23 @@ twin doctor | grep -A2 userns
 
 ### C2. X11 程序报 `cannot open display` / `No protocol specified`
 
-**根因**：基座那一行的 `--tmpfs /tmp` 把 `/tmp/.X11-unix/X0` 一起砍掉了。
+**根因**：定义里给 `/tmp` 盖了空 tmpfs（`bwrap.tmpfs` 里的 `/tmp`；旧定义则写在 `bwrap.args`
+里）—— `/tmp/.X11-unix/X0` 一起被砍掉了。
 
 ```bash
-# 改那一行（它是这份定义里的文本，不是 twin 的常量）
-$EDITOR ~/.local/share/twin/<id>/profile.yml      # --tmpfs /tmp → --bind /tmp /tmp
+$EDITOR ~/.local/share/twin/<id>/profile.yml
+#   把 bwrap.tmpfs 里的 /tmp 去掉，改成在 bwrap.args 里写一条 --bind /tmp /tmp
+#   （它是这份定义里的文本，不是 twin 的常量）
 twin reinstall <id>
 # 或者重新推导一次：twin gen <source> --no-tmpfs && twin install
 ```
 
-换成 `--bind /tmp /tmp` 之后 `/tmp` 不是"什么都没有"，而是宿主那个 `/tmp`（**可写**，X11 socket
+换成宿主那个 `/tmp` 之后它不是"什么都没有"，而是宿主那个 `/tmp`（**可写**，X11 socket
 也在里面）—— 所以这一步不会顺带带来另一个问题（见 C5）。
 
 `twin gen --explain` 的 `/tmp 策略` 一节会告诉你这个程序是 Wayland 还是 X11。同时支持两套的
-程序会有一条警告：它今天走 Wayland，但哪天真退到 X11，`--tmpfs /tmp` 就会踩这个坑 ——
-那时改的也是 `bwrap.args` 里那一行。
+程序会有一条警告：它今天走 Wayland，但哪天真退到 X11，私有 `/tmp` 就会踩这个坑 ——
+那时要改的也是那份定义里的 `/tmp` 那一条（`bwrap.tmpfs` 换到 `bwrap.args`）。
 
 ### C3. 程序起不来，报 `Can't create file: Read-only file system`（或 `Can't mkdir …`）
 
@@ -271,10 +273,10 @@ abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 grep -n "tmpfs\|/tmp" ~/.local/share/twin/<id>/profile.yml   # 决定就写在这份定义里
 ```
 
-修复后必定有这两种之一：基座那一行的 `--tmpfs /tmp`（空的私有 `/tmp`）或 `--bind /tmp /tmp`
-（宿主那个 `/tmp`，可写）—— 或者 `bwrap.tmpfs: ["/tmp"]`（它在命令里排在基座之后，所以哪怕基座
-那条是 `--bind`，这几条也会把它盖成空的 tmpfs）。若三条都没有，说明这份定义是旧版本写的
-（那时基座在 twin 里，`bwrap.extra` 只装你追加的 token）—— 重新 `twin gen` 一份。
+修复后必定有这两种之一：`bwrap.tmpfs` 里的 `/tmp`（空的私有 `/tmp`），或 `bwrap.args` 里那条
+`--bind /tmp /tmp`（宿主那个 `/tmp`，可写）。旧定义则把 `--tmpfs /tmp` 写在 `bwrap.args` 里
+（那时基座整段都在那儿），也认。都没有，说明这份定义更旧（那时基座在 twin 里，`bwrap.extra`
+只装你追加的 token）—— 重新 `twin gen` 一份。
 
 ⚠️ 反过来，别用"把 `/tmp` 加进 `bwrap.tmpfs`"来救 X11 的程序：那样连 `/tmp/.X11-unix/X0` 一起
 没了（见 C2）。X11 那一路要的正是宿主那个可写的 `/tmp`。

@@ -74,7 +74,7 @@
 | 厚度 | 内容 | 需要什么 |
 |---|---|---|
 | **T1** | 桌面项 ＋ 图标 ＋（`redirect` 时）L5 规则 | 零特权，`level=none` 时连 bwrap 都不需要 |
-| **T2** | T1 ＋ bwrap 基座（`profile.yml` 里的 `bwrap.args`，含 overlay 别名） | 能建非特权 user namespace |
+| **T2** | T1 ＋ bwrap 基座（`profile.yml` 的 `bwrap` 节点，含 overlay 别名） | 能建非特权 user namespace |
 | **T3** | T2 ＋ 路径映射（`rules.d` / 实例定义）＋ tmpfs | 同上 |
 
 `twin` 默认给 T3；`level=none` 时退到 T1。
@@ -188,23 +188,22 @@ isolation:
   nested_ns: false
 
 bwrap:                 # 这一个节点就是这次调用；键的顺序就是命令里的顺序
-  args:                # 交给 bwrap 的完整选项列表（基座也在这里）
-    - --dev-bind
+  args:                # 交给 bwrap 的完整选项列表；基座里**没有自己节点**的那几条在这里
+    - --dev-bind       # 根挂载（排在最前：所有映射都叠在它上面）
     - /
     - /
-    - --proc
-    - /proc
-    - --tmpfs
-    - /dev/shm
-    - --tmpfs
+    - --bind           # 宿主那个 /tmp，可写（程序走 X11、不要私有 /tmp 时才有这一条）
     - /tmp
-    # … 还有 --die-with-parent 与 --setenv TWIN_INSTANCE wechat2（这里省掉）
-  proc: ""             # 再挂一个 proc；空 = 不挂（基座那条在 args 里）
-  tmpfs: []            # 额外盖成空目录的路径；/tmp 不在其中，它属于基座那一行
+    - /tmp
+    - --die-with-parent
+  proc: /proc          # 挂一个 proc 到这条路径（基座写的就是它）
+  tmpfs:               # 盖成空目录的路径（含基座那两条：/dev/shm 与私有 /tmp）
+    - /dev/shm
   bind:                # 隔离哪个数据目录（映射也是这次调用的一部分）
     - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
   remountRO: []        # 把哪些路径收回只读（只能作用在自己就是一条挂载的路径上）
-  env: []              # 额外注入的环境变量，一条一个 `键:值`
+  env:                 # 注入沙箱的环境变量，一条一个 `键:值`（基座那条 TWIN_INSTANCE 也在里面）
+    - TWIN_INSTANCE:wechat2
 
 tray:
   override: true
@@ -302,23 +301,27 @@ StartupNotify=true
 
 ### 5.4 bwrap 调用（`level=alias` 的基座）
 
-**基座是那份定义里的一段文本，不是 twin 的一个常量。** `twin gen` 把下面这几条写进
-`bwrap.args`（`sandbox.BaseArgs`），`sandbox.Build` 一字不改地照发；twin 不再自己补任何选项，
-所以"最终跑的是哪些参数"在文件里就能整份读到、也能整份改掉。
+**基座是那份定义里的一段文本，不是 twin 的一个常量；而且每条各归自己那个键。** `twin gen`
+（`sandbox.BaseFor`）把它写进定义时按**挂载的种类**分派：有形状的进同名的键，没形状的才留在一个
+扁平列表里。`sandbox.Build` 一字不改地照发；twin 不再自己补任何选项，所以"最终跑的是哪些参数"
+在文件里就能整份读到、也能整份改掉。
 
 ```
-# bwrap.args（gen 写的基座，用户可改）
-  --dev-bind / /                    # 整个宿主根（含设备）挂进来
+# bwrap.proc / bwrap.tmpfs / bwrap.env（gen 写的基座，用户可改）
   --proc /proc
   --tmpfs /dev/shm                  # 空的私有共享内存
-  --tmpfs /tmp | --bind /tmp /tmp   # 空的私有 /tmp，或宿主那个（两条都必须可写，见下）
-  --die-with-parent
+  --tmpfs /tmp                      # 空的私有 /tmp（选了私有那一条时；另一条见下）
   --setenv TWIN_INSTANCE <id>
+
+# bwrap.args（同样由 gen 写，用户可改）：**没有自己节点**的那几条
+  --dev-bind / /                    # 整个宿主根（含设备）挂进来 —— 必须排在最前
+  --bind /tmp /tmp                  # 宿主那个 /tmp，可写（不要私有 /tmp 时才有这一条）
+  --die-with-parent
 ```
 ```
 bwrap
   <bwrap.args 整个列表>             # 原样，排在最前（见上）
-  [--proc <bwrap.proc>]…            # twin 另外发的部分，从这一行往下，顺序照文件里的键
+  [--proc <bwrap.proc>]…            # 其余各条从这一行往下，顺序照文件里的键
   [--tmpfs <bwrap.tmpfs 里的路径>]…
   --overlay-src <targetdir>
   --tmp-overlay <targetdir>         # ⚠️ 必须在创建别名之前
@@ -368,22 +371,28 @@ system`）。建的时候要判形态 —— 一条映射的两端必须是同�
 样子失败。实测的那一例是 Chromium：`process_singleton_posix.cc` 在 `base::GetTempDir()`
 （`$TMPDIR`，否则 `/tmp`）下 `CreateUniqueTempDir()`，`mkdir` 拿到 `EROFS` 就打印
 `[ERROR:chrome/browser/process_singleton_posix.cc] Failed to create socket directory` 并放弃单实例锁
-—— 一条关于 *socket* 的报错，来自一个用户刚刚才包上的程序。所以基座里那条永远是可写的：走 tmpfs
-的程序拿到一个空的私有 `/tmp`，不走 tmpfs 的程序（X11 那一路，tmpfs 会把 `/tmp/.X11-unix/X0`
-一起带走）拿到**宿主的 `/tmp`，可写**。"存在但写不进去的 /tmp" 不是第三种选择。
+—— 一条关于 *socket* 的报错，来自一个用户刚刚才包上的程序。所以两条路都保证它可写：走 tmpfs 的
+程序拿到一个空的私有 `/tmp`（`bwrap.tmpfs` 里的一条），不走 tmpfs 的程序（X11 那一路，tmpfs 会把
+`/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，可写**（`bwrap.args` 里的 `--bind /tmp /tmp`）。
+"存在但写不进去的 /tmp" 不是第三种选择。
 
-这一条写在 `bwrap.args` 里而不是 `bwrap.tmpfs` 里，因为它是"用哪个根"的延伸：在那份定义里，
-`bwrap.tmpfs` 只装**额外**要盖成空目录的路径，而 `/tmp` 的取舍与根写在同一个地方。`twin gen`
-据此把落在 `bwrap.tmpfs` 里的 `/tmp` 归一化到基座那一行上，免得同一处挂载在命令里出现两遍。
+宿主 `/tmp` 那一条留在 `bwrap.args` 而不是进 `bwrap.bind`：它在默认那个可写的根下**什么也不做**
+（整个宿主根本来就带着一个可写的 `/tmp`），它管的是"哪天把根收紧成 `--ro-bind / /` 时 /tmp 仍然
+可写"。而 `bwrap.bind` 是"隔离哪些数据目录"的清单 —— `install` 会把它整段报成路径映射，还会建议
+照抄进这个程序的 `rules.d`，一条 twin 自己的 `/tmp` 混在里面，等于把基座的决定说成用户的数据布局
+（实测：它就是这么被报出来、并被写进那份规则草稿的）。
 
 ## 6. bwrap 选项列表的合并
 
 原则：**传 token，不重新解析**。`twin` 不知道也不想知道任何 bwrap 选项的元数（arity）——
 那是 bwrap 的事，在这里再实现一张表只会随每个 bwrap 版本腐烂。
 
-- `bwrap.args` 是**一份完整的列表**，按位置拼接、低位在前：`gen` 写的基座 → `config.toml`
-  的 `[bwrap] args` → `rules.d` 的 `[bwrap] args` → `gen` 命令行上 `--` 之后那一段。
+- `bwrap.args` 是**一份完整的列表**，按位置拼接、低位在前：`gen` 写的基座（没有自己节点的那些）
+  → `config.toml` 的 `[bwrap] args` → `rules.d` 的 `[bwrap] args` → `gen` 命令行上 `--` 之后那一段。
   后写的遮蔽同目标的前一个挂载，而 twin 不需要拥有任何一条冲突规则 —— bubblewrap 自己就是规则。
+  ⚠️ 基座里**有**自己节点的那几条（`proc` / `tmpfs` / `env`）不在这份列表里、也就不归这几层管：
+  它们由 `sandbox.Build` 发在这个列表**之后**，所以想改就改那个键 —— 在 `--` 里写一条同样目标的
+  挂载压不住它（反被它压住），而两个键描述同一处挂载本来也不是这份定义打算表达的。
 - `--` 之后那一段**是写进文件的一份**，不是每次启动的覆盖：它落在基座与全局/规则层之后，
   于是它在**列表内部**有最终话语权，而列表整体又排在路径映射之前。
 - 这些 token **不享受**三件事（在别处都有的）：挂载点自动补齐（含形态判断）、`~/` 展开、语义校验。
@@ -395,8 +404,9 @@ system`）。建的时候要判形态 —— 一条映射的两端必须是同�
     启动器由桌面环境 exec，手里没有可用的 fd。
 - 校验是 **lint 而不是 transform**：宁可警告，不悄悄改写用户写的东西。
 - 旧键 `bwrap.extra`（以及 `config.toml` / `rules.d` 里的同名键）**指名报错**：它只装用户追加的
-  token，而 `bwrap.args` 连基座一起装，读错会交给 bwrap 一个什么都没挂的命名空间，
-  失败信息里一个字都不会提到 twin。空列表同理 —— 有沙箱就必须有一个根挂载。
+  token，而 `bwrap.args` 装的是交给 bwrap 的完整列表（基座也在里面，只是分节点写），读错会交给
+  bwrap 一个什么都没挂的命名空间，失败信息里一个字都不会提到 twin。空列表同理 —— 有沙箱就必须
+  有一个根挂载。
 
 ## 7. 图标管线
 

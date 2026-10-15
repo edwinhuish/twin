@@ -30,12 +30,16 @@ profile.yml      （你正在编辑的那一份：gen 写，install / reinstall 
 **数组类字段**（`bwrap.args`、`tmpfs`、`bind`）按**低位在前拼接**，同目标由后写的遮蔽：
 
 ```
-最终 bwrap.args = gen 写的基座 ++ config.args ++ rules.args ++ gen 命令行 `--` 那一段
+最终 bwrap.args = gen 写的基座里「没有自己节点」的那些 ++ config.args ++ rules.args ++ gen 命令行 `--` 那一段
 ```
 
 `bwrap.args` 是**交给 bwrap 的完整选项列表**（基座也在里面，见 §4），所以"这个程序拿到哪个根"
 第一次成了这份文件能回答的问题 —— 原先基座硬编码在 twin 里，想换根只有透传区一条路，而透传区
 排在所有映射之后，重新绑一次根会把前面的挂载全盖掉。
+
+⚠️ 基座里有**自己节点**的那几条（`bwrap.proc` / `bwrap.tmpfs` / `bwrap.env`）不在这份列表里：
+它们各写在各键上，由 `Build` 发在这份列表**之后**——所以想改它们就改键，别在 `--` 里写一条同目标
+的挂载指望压住它。
 
 同目标挂载的冲突规则**不需要 twin 实现** —— bubblewrap 自己就是"后挂载遮蔽前者"。
 
@@ -113,7 +117,7 @@ twin config > ~/.config/twin/config.toml
 | `level` | `"alias"` | 默认身份级别。只能是 `none` / `alias` / `redirect` |
 | `icon_size` | `256` | 生成图标的边长（像素）。必须是正数 |
 | `badge_style` | `"corner"` | `corner` \| `number` \| `dot` |
-| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时，新实例的基座里写 `--tmpfs /tmp`（空的私有 `/tmp`）；关掉则写 `--bind /tmp /tmp`（宿主那个，可写，只是与宿主共享）。**在你确信二进制特征扫描判错的机器上关掉它**。两条都必须**可写** —— 只读的 `/tmp` 会让程序在别处报错 |
+| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时，新实例的 `bwrap.tmpfs` 里写 `/tmp`（空的私有 `/tmp`）；关掉则改成在 `bwrap.args` 里写 `--bind /tmp /tmp`（宿主那个，可写，只是与宿主共享）。**在你确信二进制特征扫描判错的机器上关掉它**。两条都必须**可写** —— 只读的 `/tmp` 会让程序在别处报错 |
 | `tray_override` | `true` | 生成实例时是否把宿主的托盘图标覆盖表指向本实例 |
 
 > `tray_override` 是一个**整机**开关，理由很实在：值得关掉它的原因是机器的属性（换一套托盘
@@ -190,7 +194,7 @@ level    = "alias"
 keywords = "wechat;微信;im"
 # categories 留空 ⇒ 继承源桌面项
 
-# 额外要盖成空目录的路径；其中 /tmp 那一条会被归一化到基座那一行上（见 §4）
+# 盖成空目录的路径（bwrap.tmpfs）；写 /tmp 就是那份定义里的私有 /tmp（见 §4）
 tmpfs = ["/tmp"]
 
 # 写法同 Docker Compose 的卷：源:目标[:ro|:dev]。源是数据实际所在，目标是程序看到它的位置
@@ -211,7 +215,7 @@ args = []
 | `level` | 该程序的默认身份级别 |
 | `keywords` | 搜索关键词。规则里的显式值 **>** 任何推导 |
 | `categories` | 留空 ⇒ 继承源桌面项 |
-| `tmpfs` | 数组，**替换**内置；写进实例的 `bwrap.tmpfs`，其中 `/tmp` 那一项落在基座上 |
+| `tmpfs` | 数组，**替换**内置；写进实例的 `bwrap.tmpfs`，`/tmp` 那一项就留在那里（基座自己那条 `/dev/shm` 也在同一处） |
 | `bind` | 字符串数组，**替换**内置。每条是 `源:目标[:ro\|:dev]`；单写一条路径 ⇒ 该路径挂回自己（原地升级可写） |
 | `[bwrap] args` | 数组，**替换**内置；追加到实例 `bwrap.args` 的尾部（基座之后、路径映射之前） |
 
@@ -337,25 +341,29 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 
 | 键 | 对应 | 说明 |
 |---|---|---|
-| `args` | （原样） | 交给 bwrap 的**完整选项列表**：`gen` 写的基座 → config ＋ rules ＋ CLI 的追加，低位在前。它是跑起来那一份，不是一份建议 —— twin 不再自己补任何选项。**总是写**，而且会改名的 level 之下空列表会被拒绝（bwrap 至少要有一个根挂载）。`--dry-run` 印出来的、启动器里 exec 的就是它 |
-| `proc` | `--proc` | 再挂一个 proc 到这条路径。留空 = 不挂：`gen` 写的基座里已经有一条 `--proc /proc` 了（在 `args` 里） |
-| `tmpfs` | `--tmpfs` | **额外**盖成空目录的路径（写后即弃，宿主看不见；代价是那里原本的东西也看不见）。`/tmp` 不在这里：它属于基座那一行（`args` 里的 `--tmpfs /tmp` 或 `--bind /tmp /tmp`），因为"用哪个 `/tmp`"是"用哪个根"的一部分 |
-| `bind` | `--bind` / `--ro-bind` / `--dev-bind` | 隔离哪个数据目录。**总是写**（空时是 `bind: []`）—— "一条映射都没有"本身是一个决定。写法见下 |
+| `args` | （原样） | 交给 bwrap 的**完整选项列表**：`gen` 写的基座里没有自己节点的那些 → config ＋ rules ＋ CLI 的追加，低位在前。它是跑起来那一份，不是一份建议 —— twin 不再自己补任何选项。**总是写**，而且会改名的 level 之下空列表会被拒绝（bwrap 至少要有一个根挂载）。`--dry-run` 印出来的、启动器里 exec 的就是它 |
+| `proc` | `--proc` | 挂一个 proc 到这条路径。`gen` 写的是 `/proc`；留空 = 一个都不挂 |
+| `tmpfs` | `--tmpfs` | 盖成空目录的路径（写后即弃，宿主看不见；代价是那里原本的东西也看不见）。`gen` 写的是 `/dev/shm`（空的私有共享内存）与 `/tmp`（程序走 Wayland 时的私有 `/tmp`）；只走 X11 的程序不能要后者，那时 `gen` 改成在 `args` 里写一条 `--bind /tmp /tmp` 把宿主那个挂回来 |
+| `bind` | `--bind` / `--ro-bind` / `--dev-bind` | 隔离哪个数据目录。**总是写**（空时是 `bind: []`）—— "一条映射都没有"本身是一个决定。写法见下。⚠️ 基座不往这里写东西：宿主 `/tmp` 那条跟着根走，在 `args` 里 |
 | `remountRO` | `--remount-ro` | 把哪些路径**收回只读**，排在所有挂载之后，所以能压住 `bind` 给出的那种可写。⚠️ 只能作用在**自己就是一条挂载**的路径上（`bind` 的目标端、overlay/tmpfs 那条路径、或整个 `/`）：宿主本来就在那一条大根挂载里的路径底下没有单独的挂载，bwrap 会拒绝启动（`Can't remount readonly on …: Unable to find … in mount table`） |
-| `env` | `--setenv` | 额外注入的环境变量，一条一个 `键:值`。冒号只在**第一个**处断开，所以值里可以再有冒号（`PATH:/a:/b`）；值可以为空（写 `键:`），键名不能带冒号、空格或 `=`。留空 = 不额外注入（实例自己的 `TWIN_INSTANCE` 在基座里） |
+| `env` | `--setenv` | 注入沙箱的环境变量，一条一个 `键:值`，后面的同名者胜。冒号只在**第一个**处断开，所以值里可以再有冒号（`PATH:/a:/b`）；值可以为空（写 `键:`），键名不能带冒号、空格或 `=`。`gen` 写的 `TWIN_INSTANCE:<id>` 就在这一条里 |
 
-后四个"为空就是没设置"：空值不发出任何参数，也不会被理解成"要默认的那个" —— 默认的那几条
-写在 `args` 里，是文件里看得见的一段文本。
+为空就是没设置：空值不发出任何参数，也不会被理解成"要默认的那个" —— 默认的那几条是 `gen`
+写在这几个键里的，是文件里看得见的一段文本。
 
-基座（`gen` 写的，可改）：
+基座（`gen` 写的，可改）。**每条挂在它自己那个键里**，只有没有对应键的那几条留在 `args`：
 
 ```
---dev-bind / /        整个宿主根（含设备）挂进来 ⇒ 设备可用、根可写
+# bwrap.proc / bwrap.tmpfs / bwrap.env
 --proc /proc
 --tmpfs /dev/shm      空的私有共享内存
---tmpfs /tmp          空的私有 /tmp；程序只走 X11 时这一条换成 --bind /tmp /tmp（宿主那个，可写）
---die-with-parent
+--tmpfs /tmp          空的私有 /tmp（选了私有那一条时）
 --setenv TWIN_INSTANCE <id>
+
+# bwrap.args：没有自己节点的那几条
+--dev-bind / /        整个宿主根（含设备）挂进来 ⇒ 设备可用、根可写（必须排在最前）
+--bind /tmp /tmp      宿主那个 /tmp，可写（不要私有 /tmp 时才有这一条）
+--die-with-parent
 ```
 
 换成 `--ro-bind / /` 收紧根是允许的，代价是设备与 `/run/user` 要自己补回来
@@ -399,7 +407,7 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 | **源的现状** | `Categories` / `Keywords` / `Icon=`（实例里留空表示"继承"时） | ❌ | 源桌面项可能被系统更新覆盖 ⇒ `install` / `reinstall` 时重读 |
 | **应用知识** | 该程序是否需要嵌套 ns | ✅ | 它跟着程序走，不跟着机器走 |
 | **机器状态** | 用哪个跳板 / 要不要自己装 profile、副本放哪 | ❌ | 留在 `config.toml`，让下一台机器自己决定 |
-| **会话类型** | Wayland / X11 | ⚠️ 部分 | 已固化成基座那一行的 `--tmpfs /tmp`；`reinstall` 时会**警告**它与当前会话不符 |
+| **会话类型** | Wayland / X11 | ⚠️ 部分 | 已固化成基座那条 `/tmp` 的取舍（`bwrap.tmpfs` 里的 `/tmp`，或 `args` 里的 `--bind /tmp /tmp`）；`reinstall` 时会**警告**它与当前会话不符 |
 
 ⇒ 一句话：**"这台机器现在什么样"每次重算；"我要什么"写死在文件里。**
 
