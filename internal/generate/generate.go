@@ -579,19 +579,15 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 		res.Notes = append(res.Notes, "跳板脚本 "+p.Bootstrap())
 	}
 
-	// 1. private state directories. A `:ro` source is skipped: it is somebody
-	//    else's directory, and creating it would turn "you gave the wrong path"
-	//    into an empty read-only mount that looks like it worked.
+	// 1. private state directories. The state root is always a directory; a
+	//    mapping's private side is whatever shape that mapping has (a config
+	//    file stays a file) — sandbox.EnsureMountPoints owns that rule, and the
+	//    launcher repeats it in shell before every start.
 	if err := sysx.EnsureDir(p.StateDir(it.ID)); err != nil {
 		return nil, err
 	}
-	for _, b := range it.Binds {
-		if b.ReadOnly {
-			continue
-		}
-		if err := sysx.EnsureDir(p.Expand(b.Source)); err != nil {
-			return nil, err
-		}
+	if err := sandbox.EnsureMountPoints(it, p); err != nil {
+		return nil, err
 	}
 
 	// 2. the launcher. Written before the desktop entry because GLib validates

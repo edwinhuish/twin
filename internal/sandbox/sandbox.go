@@ -263,15 +263,30 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 		return []byte(b.String()), nil
 	}
 
-	// The target of a bind has to exist on the host: under `--ro-bind / /` its
-	// parent is read-only and the mount point cannot be created later. So does
-	// a writable source, which is twin's own private copy. A `:ro` source is
-	// *not* created — twin did not put it there, and manufacturing an empty
-	// directory would hand the program nothing while looking like success.
-	// When both ends coincide (an in-place rw upgrade) one mkdir suffices, so
-	// the list is de-duplicated.
-	for _, d := range uniqueDirs(sourceDirs(i, p), targetDirs(i, p)) {
-		fmt.Fprintf(&b, "mkdir -p %s\n", shHome(p.Home, d))
+	// Every mount point, both ends of every mapping, has to exist on the host
+	// before bwrap runs: the root it gets is `--ro-bind / /`, so it cannot
+	// create them itself (`Can't mkdir parents …: Read-only file system`).
+	//
+	// The shape, though, is a fact about the disk at *launch* time, so it is
+	// decided in the script rather than while rendering: `mkdir -p` on a file
+	// exits non-zero ("Already exists"), which under `set -e` kills the
+	// launcher before exec — and a mapping whose ends are files (a config file
+	// rather than a config directory) needs the mount point created as an empty
+	// file. install's half of the same rule is mountKind/EnsureMountPoints
+	// below; the two must change together.
+	b.WriteString(mountHelpers)
+	fmt.Fprintf(&b, "mount_point %s %s\n", mountDir, shHome(p.Home, p.StateDir(i.ID)))
+	for _, bind := range i.Binds {
+		// `:ro` travels as the third argument: the **source** of a read-only
+		// mapping is somebody else's path, and manufacturing one would turn
+		// "you gave the wrong path" into an empty mount that looks like success.
+		ro := ""
+		if bind.ReadOnly {
+			ro = " " + mountRO
+		}
+		fmt.Fprintf(&b, "mount_pair %s %s%s\n",
+			shHome(p.Home, p.Expand(bind.Source)),
+			shHome(p.Home, p.Expand(bind.Target)), ro)
 	}
 	b.WriteString("\n")
 
@@ -308,44 +323,88 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	return []byte(b.String()), nil
 }
 
-// sourceDirs are the directories twin has to create before bwrap can bind from
-// them: the instance's own state root plus the private copy of every writable
-// bind. A `:ro` source is deliberately absent — it is somebody else's directory,
-// and a missing one should make bwrap fail rather than turn into an empty mount.
-func sourceDirs(i *inst.Instance, p inst.Paths) []string {
-	out := []string{p.StateDir(i.ID)}
+// Mount shapes. The two ends of a mapping must be the same kind — bwrap refuses
+// to put a file on a directory (`Can't create file at <目录>: Is a directory`)
+// and cannot create the mount point on either end (the root is read-only), so
+// twin has to produce the right kind in advance.
+const (
+	mountDir  = "dir"
+	mountFile = "file"
+	mountRO   = "ro"
+)
+
+// mountKind reports the shape of one mapping's two ends.
+//
+// The only evidence is the disk: whichever end already exists carries the fact
+// (a writable source pointing at a real file, or the program's own path — which
+// is a file when the program keeps its state in a config file). Neither end
+// present means directory: an empty directory reads as "never started", while an
+// empty *file* would read as "your configuration is empty" — a lie twin has no
+// business telling.
+func mountKind(p inst.Paths, b inst.Bind) string {
+	if sysx.IsRegularFile(p.Expand(b.Source)) || sysx.IsRegularFile(p.Expand(b.Target)) {
+		return mountFile
+	}
+	return mountDir
+}
+
+// EnsureMountPoints creates twin's own side of every writable mapping, in the
+// shape that mapping has.
+//
+// It is the install-time half of what mountHelpers does in shell before every
+// start, and both halves are needed: a directory created here would still be
+// there at launch, and the launcher never touches a path that already exists
+// (that path may be the program's own data). A `:ro` source is skipped — twin
+// did not put it there, and creating it would turn "you gave the wrong path"
+// into an empty read-only mount that looks like it worked.
+func EnsureMountPoints(i *inst.Instance, p inst.Paths) error {
 	for _, b := range i.Binds {
 		if b.ReadOnly {
 			continue
 		}
-		out = append(out, p.Expand(b.Source))
-	}
-	return out
-}
-
-// uniqueDirs concatenates the groups, keeping the first occurrence of a path.
-func uniqueDirs(groups ...[]string) []string {
-	var out []string
-	seen := make(map[string]bool)
-	for _, g := range groups {
-		for _, d := range g {
-			if seen[d] {
-				continue
+		if mountKind(p, b) == mountFile {
+			if err := sysx.EnsureFile(p.Expand(b.Source)); err != nil {
+				return err
 			}
-			seen[d] = true
-			out = append(out, d)
+			continue
+		}
+		// A mapping that says "directory" while a file sits there is a
+		// contradiction only its owner can resolve, and MkdirAll reports it
+		// right here — better than a silently skipped step and a bwrap error
+		// at launch.
+		if err := sysx.EnsureDir(p.Expand(b.Source)); err != nil {
+			return err
 		}
 	}
-	return out
+	return nil
 }
 
-func targetDirs(i *inst.Instance, p inst.Paths) []string {
-	out := make([]string, 0, len(i.Binds))
-	for _, b := range i.Binds {
-		out = append(out, p.Expand(b.Target))
-	}
-	return out
+// mountHelpers is the shell half of the mount-point contract, emitted verbatim
+// into every launcher that needs a sandbox. Go side: mountKind, EnsureMountPoints.
+const mountHelpers = `# ── 挂载点 ────────────────────────────────────────────────────────────────
+# 两端都必须先在宿主机上存在：bwrap 建不了挂载点（它看到的是 --ro-bind / / 之后的只读根）。
+# 也不能一律 mkdir -p —— 打在**文件**上它会报 "Already exists" 并以非零退出，而这份脚本
+# 开着 set -e，于是程序根本不会启动。而且一条映射的两端必须同形（文件挂到目录上 bwrap 会
+# 拒绝：Can't create file at <目录>: Is a directory），所以形态由磁盘上已有的那一端决定，
+# 两端都没在时按目录（空目录 = 还没启动过；空文件 = 配置是空的，我们不替它说这句话）。
+# 已经存在的路径一个指头都不碰：那是程序自己的数据，不是我们的挂载点。
+mount_point() {  # <dir|file> <路径>
+  if [ -e "$2" ]; then return 0; fi
+  if [ "$1" = file ]; then
+    mkdir -p -- "$(dirname -- "$2")" && touch -- "$2"
+  else
+    mkdir -p -- "$2"
+  fi
 }
+mount_pair() {  # <源> <目标> [ro]
+  local kind=dir
+  if [ -f "$1" ] || [ -f "$2" ]; then kind=file; fi
+  if [ "${3:-}" != ro ]; then
+    mount_point "$kind" "$1"
+  fi
+  mount_point "$kind" "$2"
+}
+`
 
 func sortedKeys(m map[string]string) []string {
 	out := make([]string, 0, len(m))

@@ -155,7 +155,8 @@ You are trying to start Visual Studio Code as a super user...
 ## 6. 生成的启动器长什么样（路线 B）
 
 ```bash
-mkdir -p "$HOME/.local/state/twin/workbuddy2"
+# 挂载点：形态按磁盘上已有的那一端（见 architecture.md §5）；这里省掉助手的正文
+mount_point dir "$HOME/.local/state/twin/workbuddy2"
 
 exec env ELECTRON_RUN_AS_NODE=1 \
   '/usr/share/code/code' \

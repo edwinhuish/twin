@@ -96,6 +96,15 @@ func Exists(path string) bool {
 	return err == nil
 }
 
+// IsRegularFile reports whether path exists and is a regular file (following
+// symlinks, like the shell's `-f`). It is the probe behind the directory/file
+// distinction in path mappings: a mapping whose two ends are files needs its
+// mount point *created as a file*, which mkdir -p cannot express.
+func IsRegularFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
+}
+
 // IsExecutableFile reports whether path is a regular file with any execute bit.
 //
 // This is the exact condition GLib checks before accepting a desktop entry's
@@ -112,6 +121,23 @@ func IsExecutableFile(path string) bool {
 // EnsureDir creates a directory (and parents) if missing.
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0o755)
+}
+
+// EnsureFile creates an empty file (and its parents) if missing, and leaves an
+// existing file alone — a mapping's file end is the program's own data, and
+// truncating it to "make sure it exists" would throw that data away.
+//
+// It is EnsureDir's counterpart: a mount point that has to exist as a *file* is
+// the one thing MkdirAll cannot produce.
+func EnsureFile(path string) error {
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // WriteFileAtomic writes data to a temp file in the same directory and renames

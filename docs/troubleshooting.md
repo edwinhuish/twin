@@ -171,23 +171,42 @@ twin gen <source> --no-tmpfs && twin install
 `twin inspect` 的 `/tmp 策略` 一节会告诉你这个程序是 Wayland 还是 X11。同时支持两套的
 程序会有一条警告：它今天走 Wayland，但哪天真退到 X11，`--tmpfs /tmp` 就会踩这个坑。
 
-### C3. 程序起不来，报 `Can't create file: Read-only file system`
+### C3. 程序起不来，报 `Can't create file: Read-only file system`（或 `Can't mkdir …`）
 
-**根因**：一条路径映射的**目标**（程序看到那一侧）的**父目录**在沙箱里是只读的（因为基座是
-`--ro-bind / /`）。
+**根因**：一条路径映射的**目标**（程序看到那一侧）在沙箱里不存在，而基座是 `--ro-bind / /` ——
+只读的根里建不出挂载点。
 
-`twin` 会自动 `mkdir -p` 两端，所以正常情况不会遇到。若你在**透传区**手工写了 bind，
-那就踩了透传区"不享受 mkdir 补齐"这条：
+`twin` 会在挂载**两端**都先建出来（`twin install` 建自己那一侧，生成的启动器每次启动前再确认
+一遍），所以正常情况不会遇到。若你在**透传区**手工写了 bind，那就踩了透传区"不享受这套补齐"这条：
 
 ```bash
-# ❌ 透传区不会替你建目录
+# ❌ 透传区不会替你建挂载点
 twin myapp -- --bind /some/new/dir /some/new/dir
 
-# ✅ 写进 bind（享受 mkdir ＋ ~/ 展开）
+# ✅ 写进 bind（享受挂载点补齐 ＋ ~/ 展开）
 #    ~/.config/twin/rules.d/myapp.toml
 #    bind = [ "~/.local/state/twin/myapp2/data:/some/new/dir" ]
 twin rules myapp
 ```
+
+⚠️ 单个**文件**（配置文件，不是目录）也能写进 bind，两端都要写成文件：形态由磁盘上已有的那一端
+决定，两端都没在时按目录。所以"源端是文件、目标端还没建"时，`twin` 会把它建成**空文件** ——
+不会被误建成目录，也不会去动程序已经写好的那份（见 [`development.md`](development.md) 的挂载点一节）。
+
+### C3b. 程序报 `EISDIR` / 配置文件读出来是个目录
+
+**根因**：映射的两端被建成了目录，而程序要的是文件 —— 典型是"把某个配置文件写进了 `bind`"。
+`twin` 现在按形态建（见上一条），所以先确认这次落盘的启动器里是不是 `mount_pair`（而不是裸的
+`mkdir -p`）：
+
+```bash
+grep -n "mount_pair\|mkdir" ~/.local/share/twin/<id>/launch
+```
+
+若那一行还是 `mkdir -p <文件路径>`，说明实例是旧版本落的盘：`twin reinstall <id>`。
+
+⚠️ 两端形态**冲突**时（一端是文件、另一端已经是目录）twin 不让步：bwrap 会以
+`Can't create file at <目录>: Is a directory` 明说，而不是默默挂上一个错的东西。
 
 ### C4. 网络断了，或程序报"已在运行"
 

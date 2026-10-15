@@ -76,7 +76,8 @@ internal/
   generate/             inspect / plan / materialize / unwrap / refresh
     traits.go           从二进制字符串扫出工具箱特征（Wayland/Qt/多合一/嵌套 ns）
     runtime.go          bwrap 副本同步 ＋ 跳板脚本
-  sandbox/              bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）
+  sandbox/              bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）、挂载点形态
+                        （mountHelpers 写进启动器 ＋ EnsureMountPoints 供 install 调用）
   icon/                 纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）
   userns/               userns 限制判定、AppArmor profile 解析、跳板发现
   tray/                 托盘覆盖两条路：宿主表 read-modify-write（tray.go）＋ 中立文件表
@@ -220,6 +221,23 @@ journalctl -f -o cat /usr/bin/gnome-shell | grep twin-tray   # 扩展自己的�
 ```bash
 WAYLAND_DEBUG=1 bash ~/.local/share/twin/<id>/launch 2>&1 | grep set_app_id
 ```
+
+### 看/验挂载点（`mkdir` 那一半）
+
+启动器在 exec 之前只做一件事：把每个映射的**两端**建出来 —— bwrap 建不了（它看到的是
+`--ro-bind / /` 之后的只读根）。想单独跑那一段（不起程序、不动 bwrap）：
+
+```bash
+# 把 exec 及其参数行截掉，只跑前半段（就是那份脚本自己的字节）
+HOME=/tmp/scratch-home bash <(sed '/^exec /,$d' ~/.local/share/twin/<id>/launch)
+echo "退出码=$?"    # 0 = 挂载点这步没问题
+```
+
+形态规则（目录还是文件）见 [`architecture.md`](architecture.md) §5，两份实现：
+`internal/sandbox/sandbox.go` 的 `mountHelpers`（写进脚本，每次启动判一次）与
+`mountKind` / `EnsureMountPoints`（`twin install` 落盘时判一次）。**改一处必须改两处**，
+两边各有一个用例盯着：`TestLauncherRendersOneMountPairPerMapping`、
+`TestMountKindFollowsTheEndOnDisk`、`TestEnsureMountPointsCreatesFilesForFileMappings`。
 
 ---
 

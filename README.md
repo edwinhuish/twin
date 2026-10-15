@@ -155,12 +155,11 @@ set -euo pipefail
 readonly ID='wechat2'
 readonly STATE="$HOME/.local/state/twin/wechat2"
 
-mkdir -p "$HOME/.local/state/twin/wechat2" \
-         "$HOME/.local/state/twin/wechat2/xwechat" \
-         "$HOME/.local/state/twin/wechat2/all_users" \
-         "$HOME/.xwechat" \
-         "$HOME/Documents/xwechat_files/all_users"
-mkdir -p "$HOME/Documents/xwechat_files"
+# 挂载点：两端都得先在宿主机上存在，形态按磁盘上已有的那一端（见下面第 4 条）
+mount_point dir "$HOME/.local/state/twin/wechat2"
+mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat"
+mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files"
+mount_pair "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users"
 
 exec '/usr/bin/bwrap' \
   '--ro-bind' '/' '/' \
@@ -181,7 +180,8 @@ exec '/usr/bin/bwrap' \
   '/opt/wechat/wechat2' "$@"
 ```
 
-（上面是删掉重复项、并把 `mkdir -p` 合成两行的等价简化版；生成器逐目录输出一行。）
+（上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
+`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端。）
 
 几处关键点，每一条都对应一次实测：
 
@@ -190,8 +190,12 @@ exec '/usr/bin/bwrap' \
    会话总线、PipeWire 全断；
 3. 程序名写成 `/opt/wechat/wechat2`（别名，只在命名空间里存在）⇒ `/proc/self/exe` 的
    basename 就是 `wechat2`，`argv[0]` 默认也是它 ⇒ **窗口与托盘的 id 天然一致**；
-4. 每个 bind 的**两端**都先 `mkdir -p`：bwrap 要从源端 bind，而目标端的父目录在
-   `--ro-bind / /` 之后是只读的 —— 不先建出来，挂载点就创建不了。
+4. 每个 bind 的**两端**都要先在宿主机上存在 —— bwrap 看到的根是 `--ro-bind / /`，它自己建不了
+   挂载点（`Can't mkdir parents …: Read-only file system`）。但**形态要判**：一条映射的两端必须
+   同形（bwrap：`Can't create file at <目录>: Is a directory`），而 `mkdir -p` 打在**文件**上会报
+   `Already exists` 并让这份脚本死在 `set -e` 上 —— 所以形态按磁盘上**已有的那一端**决定，两端
+   都没在时按目录。这样"源是文件"的映射（单个配置文件，如 `vlcrc`）才走得通，`twin install`
+   也会按同一条规则把私有侧建成文件而不是目录。
 
 ## Electron / Chromium 的特殊情况
 

@@ -93,7 +93,8 @@ internal/
     traits.go           从二进制内字符串扫出特征（Wayland/Qt/多合一/嵌套 ns）
     suggest.go          状态目录探测（目录存在 ＋ 二进制内 ~/ 字面量）＋ rules.d 草稿
     runtime.go          bwrap 私有副本同步 ＋ 跳板脚本
-  sandbox/             bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）
+  sandbox/             bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）、挂载点形态
+                       （mountHelpers 写进启动器 ＋ EnsureMountPoints 供 install 调用）
   icon/                纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）
   userns/              userns 限制判定、AppArmor profile 解析、跳板发现
   tray/                托盘覆盖两条路：宿主表 read-modify-write（tray.go）＋ 中立文件表
@@ -173,6 +174,13 @@ style → {}    ← 只有标准库
     而默认值属于"猜错了一个字都不会有人告诉你"的那类信息。PrintDefaults 打不出来的用法
     （`--` 透传区、"这个动词不接受位置参数"）进 `cmd/twin/main.go` 的 `helpFooter`，也不进文档。
     文档只写**为什么**：这个命令是干什么的、这条边界对应哪次实测。
+14. **挂载点两端同形，形态看磁盘。** bwrap 的根是只读的（`--ro-bind / /`），它建不了挂载点；
+    而一条映射的两端必须是同一种东西（文件挂到目录上 bwrap 直接拒绝），`mkdir -p` 打在文件上
+    还会报 `Already exists` 并让 `set -e` 的启动器在 exec 之前死掉。所以两端都建，形态由**磁盘上
+    已有的那一端**决定，两端都没在时按目录。这条规则有**两份实现**，各管一段时间：生成的
+    启动器里是 `sandbox.mountHelpers` 的 `mount_point` / `mount_pair`（每次启动判一次），
+    install 里是 `sandbox.EnsureMountPoints`（落盘时判一次，否则一个被造成目录的私有副本会一直
+    留着 —— 启动器不碰已经存在的路径）。**改一处必须改两处**。
 
 ## 5. 常见任务怎么做
 

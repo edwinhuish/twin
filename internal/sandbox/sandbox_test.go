@@ -1,10 +1,13 @@
 package sandbox
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/edwinhuish/twin/internal/inst"
+	"github.com/edwinhuish/twin/internal/sysx"
 )
 
 // The launcher has to follow the user, not the machine the instance was
@@ -40,18 +43,128 @@ func TestShHomeEscapesQuotes(t *testing.T) {
 	}
 }
 
-// An in-place rw upgrade has the same path on both ends, so it must not be
-// mkdir'd twice.
-func TestUniqueDirsKeepsFirstOccurrence(t *testing.T) {
-	got := uniqueDirs([]string{"/a", "/b"}, []string{"/b", "/c", "/a"})
-	want := []string{"/a", "/b", "/c"}
-	if len(got) != len(want) {
-		t.Fatalf("uniqueDirs = %q, want %q", got, want)
+// ------------------------------------------------------------- mount points
+
+func mountInstance() *inst.Instance {
+	i := passthroughInstance()
+	i.Binds = []inst.Bind{
+		{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
+		{Source: "~/Documents/xwechat_files", Target: "~/Documents/xwechat_files"},
+		{Source: "/usr/share/wechat/theme.conf", Target: "~/.config/wechat/theme.conf", ReadOnly: true},
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("uniqueDirs = %q, want %q", got, want)
+	return i
+}
+
+// One line per mapping, both ends on it: the launcher has to be readable as the
+// mapping list it is, and the in-place upgrade must render both ends equal
+// rather than being special-cased away.
+func TestLauncherRendersOneMountPairPerMapping(t *testing.T) {
+	i := mountInstance()
+	p := inst.Paths{Home: "/home/edwin"}
+	plan, err := Build(i, p, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+
+	for _, want := range []string{
+		`mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat"` + "\n",
+		`mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files"` + "\n",
+		`mount_pair '/usr/share/wechat/theme.conf' "$HOME/.config/wechat/theme.conf" ro` + "\n",
+		// The state root is a mount point like any other, and a file end needs
+		// the helper that can create one.
+		`mount_point dir "$HOME/.local/state/twin/wechat2"` + "\n",
+		`touch -- "$2"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("launcher is missing %q:\n%s", want, got)
 		}
+	}
+	// The old shape: a bare `mkdir -p` on a mapping path. On a *file* that exits
+	// non-zero, and `set -e` then kills the launcher before exec.
+	if strings.Contains(got, "mkdir -p \"$HOME/.xwechat\"") {
+		t.Errorf("launcher still mkdirs mapping ends directly:\n%s", got)
+	}
+}
+
+// The shape comes from the disk, and from whichever end is on it. Nothing there
+// means directory: an empty file would claim the configuration is empty.
+func TestMountKindFollowsTheEndOnDisk(t *testing.T) {
+	home := t.TempDir()
+	p := inst.Paths{Home: home}
+
+	file := filepath.Join(home, "cfg")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "d")
+	if err := os.MkdirAll(filepath.Join(dir, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(home, "nowhere")
+
+	cases := []struct {
+		name string
+		bind inst.Bind
+		want string
+	}{
+		{"都不在 ⇒ 目录", inst.Bind{Source: missing + "/a", Target: missing + "/b"}, mountDir},
+		{"目标端是文件 ⇒ 文件", inst.Bind{Source: missing + "/a", Target: file}, mountFile},
+		{"源端是文件 ⇒ 文件", inst.Bind{Source: file, Target: missing + "/b"}, mountFile},
+		{"两端都是目录 ⇒ 目录", inst.Bind{Source: dir, Target: dir}, mountDir},
+	}
+	for _, c := range cases {
+		if got := mountKind(p, c.bind); got != c.want {
+			t.Errorf("%s：mountKind = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// install must not create a directory where the mapping is a file: the launcher
+// never touches a path that already exists, so a wrong-shaped private copy made
+// here would survive every later launch.
+func TestEnsureMountPointsCreatesFilesForFileMappings(t *testing.T) {
+	home := t.TempDir()
+	p := inst.Paths{Home: home}
+	real := filepath.Join(home, "vlcrc") // the program's own config file
+	if err := os.WriteFile(real, []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	i := &inst.Instance{ID: "vlc2", Binds: []inst.Bind{
+		{Source: "~/.local/state/twin/vlc2/vlcrc", Target: "~/" + filepath.Base(real)},
+		{Source: "~/.local/state/twin/vlc2/data", Target: "~/data"},
+		{Source: "~/elsewhere", Target: "~/elsewhere2", ReadOnly: true},
+	}}
+	if err := EnsureMountPoints(i, p); err != nil {
+		t.Fatal(err)
+	}
+
+	private := filepath.Join(p.StateDir("vlc2"), "vlcrc")
+	st, err := os.Stat(private)
+	if err != nil {
+		t.Fatalf("私有侧没建出来：%v", err)
+	}
+	if st.IsDir() {
+		t.Errorf("文件型映射的私有侧被建成了目录：%s", private)
+	}
+	if !sysx.IsRegularFile(private) {
+		t.Errorf("文件型映射的私有侧不是普通文件：%s", private)
+	}
+	// The program's own file is left exactly as it was.
+	if body, err := os.ReadFile(real); err != nil || string(body) != "[core]\n" {
+		t.Errorf("碰了程序自己的配置文件：%q %v", body, err)
+	}
+
+	if st, err := os.Stat(filepath.Join(p.StateDir("vlc2"), "data")); err != nil || !st.IsDir() {
+		t.Errorf("目录型映射的私有侧应当是目录：%v %v", st, err)
+	}
+	// A `:ro` source is somebody else's path: twin must not manufacture it.
+	if sysx.Exists(filepath.Join(home, "elsewhere")) {
+		t.Error("只读映射的源不该被创建")
 	}
 }
 
