@@ -32,8 +32,11 @@ func base() *Instance {
 		// Two pairs, and the second one has a colon in its *value*: the file
 		// spelling has to survive that (`PATH:/a:/b` splits at the first colon
 		// and nowhere else).
-		Env:  []EnvVar{{Key: "TWIN_FOO", Value: "bar"}, {Key: "PATH", Value: "/a:/b"}},
-		Args: []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar"},
+		Env: []EnvVar{{Key: "TWIN_FOO", Value: "bar"}, {Key: "PATH", Value: "/a:/b"}},
+		// The old spelling of the root, kept in the fixture on purpose: an
+		// installed definition written before the root moved into `bind` still
+		// has to load and run (see inst.hasRootMount).
+		Extras: []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar"},
 		Binds: []Bind{
 			{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
 		},
@@ -104,8 +107,8 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	if len(out.Tmpfs) != 1 || out.Tmpfs[0] != "/tmp" {
 		t.Errorf("tmpfs lost: %+v", out.Tmpfs)
 	}
-	if strings.Join(out.Args, " ") != strings.Join(in.Args, " ") {
-		t.Errorf("bwrap args lost: %q", out.Args)
+	if strings.Join(out.Extras, " ") != strings.Join(in.Extras, " ") {
+		t.Errorf("bwrap extras lost: %q", out.Extras)
 	}
 	if out.CommentEn != in.CommentEn || out.Keywords != in.Keywords || out.Categories != in.Categories {
 		t.Errorf("desktop overrides lost: comment_en=%q keywords=%q categories=%q",
@@ -192,16 +195,21 @@ func TestRenderWritesBindsAsDockerSpecs(t *testing.T) {
 
 // An instance with an empty option list still has to say so, or a reader cannot
 // tell "there is nothing to pass" from "the key was forgotten".
-func TestRenderAlwaysWritesBwrapArgs(t *testing.T) {
+func TestRenderAlwaysWritesBwrapExtras(t *testing.T) {
 	it := base()
-	it.Args = nil
+	it.Extras = nil
 	it.Level = LevelNone // an empty list is only legitimate without a sandbox
 	data, err := it.Render()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "args: []") {
+	if !strings.Contains(string(data), "extras: []") {
 		t.Errorf("empty option list is not visible in the snapshot:\n%s", data)
+	}
+	// And it is written last in the node, which is the one place its position
+	// does not mean anything (Build emits it right after the root).
+	if i, j := strings.Index(string(data), "\n  extras:"), strings.Index(string(data), "\n  env:"); i < j {
+		t.Errorf("extras 应当写在 bwrap 节点的最后一个键：\n%s", data)
 	}
 	// And it must round-trip as empty, not as a one-element list.
 	dir := t.TempDir()
@@ -213,50 +221,63 @@ func TestRenderAlwaysWritesBwrapArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Args) != 0 {
-		t.Errorf("empty option list came back as %q", out.Args)
+	if len(out.Extras) != 0 {
+		t.Errorf("empty option list came back as %q", out.Extras)
 	}
 }
 
-// twin no longer keeps a sandbox base of its own, so an empty option list is a
-// namespace with nothing mounted: the program would not find itself, and
-// nothing in the failure would name twin. Refusing here is the only place that
-// can say which file to fix.
-func TestCheckRefusesEmptyArgsWithASandbox(t *testing.T) {
-	it := base()
-	it.Args = nil
-	err := it.Check()
-	if err == nil || !strings.Contains(err.Error(), "bwrap.args") {
-		t.Fatalf("空 bwrap.args 必须被拒绝并指名那个键，得到 %v", err)
+// twin keeps no sandbox base of its own, so a definition with no root mount is a
+// namespace with nothing mounted: the program would not find itself, and nothing
+// in the failure would name twin. Refusing here is the only place that can say
+// which file to fix.
+//
+// The root can be said in two places and both count: the `bind` entry `gen`
+// writes, and the `--dev-bind / /` an older definition keeps in `extras`. What
+// is refused is having neither.
+func TestCheckRefusesADefinitionWithoutARootMount(t *testing.T) {
+	noRoot := base() // its `bind` holds a data mapping, not the root
+	noRoot.Extras = nil
+	if err := noRoot.Check(); err == nil || !strings.Contains(err.Error(), "根挂载") {
+		t.Fatalf("没有根挂载必须被拒绝并指名那个键，得到 %v", err)
 	}
-	// Level none runs no bubblewrap at all, so an empty list there is honest.
+	viaBind := base()
+	viaBind.Binds = append([]Bind{{Source: "/", Target: "/", Dev: true}}, viaBind.Binds...)
+	if err := viaBind.Check(); err != nil {
+		t.Errorf("bind 里有 /:/:dev 就该通过：%v", err)
+	}
+	viaExtras := base()
+	viaExtras.Extras = []string{"--dev-bind", "/", "/"}
+	if err := viaExtras.Check(); err != nil {
+		t.Errorf("旧写法的 --dev-bind / / 也该通过：%v", err)
+	}
+	// Level none runs no bubblewrap at all, so it owes no root.
 	plain := base()
 	plain.Level = LevelNone
-	plain.Args = nil
+	plain.Extras = nil
 	if err := plain.Check(); err != nil {
-		t.Errorf("level=none 不过 bwrap，空列表不该是错误：%v", err)
+		t.Errorf("level=none 不过 bwrap，没有根挂载不该是错误：%v", err)
 	}
 }
 
-// `bwrap.extra` was only what the user appended; `bwrap.args` is the whole
-// list, base included. Reading one as the other would hand bwrap a namespace
-// with no root — a launch that fails for reasons that never mention twin.
+// `bwrap.extra` was only what the user appended, while the key that replaced it
+// is the whole merged list. Reading one as the other would hand bwrap a
+// namespace with no root — a launch that fails for reasons that never mention
+// twin.
 func TestLoadRefusesTheOldExtraKey(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ProfileName)
-	body := `id: demo
-exec:
-  target: /opt/demo/demo
-bwrap:
-  extra:
-    - --unshare-pid
-`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(path)
-	if err == nil || !strings.Contains(err.Error(), "bwrap.args") {
-		t.Fatalf("旧写法必须指名报错（它现在是另一个键、另一套语义），得到 %v", err)
+	for key, why := range map[string]string{
+		"extra": "只装用户追加的 token，和现在的键不是一回事",
+		"args":  "同一个键改了名字（现在叫 extras）",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ProfileName)
+		body := "id: demo\nexec:\n  target: /opt/demo/demo\nbwrap:\n  " + key + ":\n    - --unshare-pid\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "bwrap.extras") {
+			t.Errorf("旧键 %s（%s）必须指名报错并给出新名字，得到 %v", key, why, err)
+		}
 	}
 }
 
@@ -367,16 +388,23 @@ func TestCheckRefusesForbiddenPassthrough(t *testing.T) {
 	}
 	for _, c := range cases {
 		it := base()
-		it.Args = []string{c.tok}
-		if err := it.Check(); err == nil {
+		// The root is kept, so the refusal cannot come from "no root mount" and
+		// quietly pass for the wrong reason.
+		it.Extras = []string{"--dev-bind", "/", "/", c.tok}
+		err := it.Check()
+		if err == nil {
 			t.Errorf("CheckBwrapToken(%q) must be refused: %s", c.tok, c.why)
+			continue
+		}
+		if !strings.Contains(err.Error(), "bwrap.extras") {
+			t.Errorf("拒绝 %q 的错误应当点出它在哪：%v", c.tok, err)
 		}
 	}
 }
 
 func TestCheckAcceptsOrdinaryPassthrough(t *testing.T) {
 	it := base()
-	it.Args = []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar", "--chdir", "/tmp"}
+	it.Extras = []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar", "--chdir", "/tmp"}
 	if err := it.Check(); err != nil {
 		t.Fatalf("ordinary bwrap tokens must pass: %v", err)
 	}

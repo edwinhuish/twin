@@ -321,7 +321,8 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 		}
 	}
 	if root.Tree("bwrap").Has("extra") {
-		return nil, fmt.Errorf("%s: [bwrap] extra 现在叫 [bwrap] args（同一个键在实例定义里也改了名）", path)
+		return nil, fmt.Errorf("%s: [bwrap] extra 现在叫 [bwrap] args"+
+			"（实例定义里那个同名的键则叫 bwrap.extras —— 它装的是合并后的完整列表，这里装的只是要追加的 token）", path)
 	}
 	if root.Tree("bwrap").Has("args") {
 		out.Args = root.Tree("bwrap").StrList("args")
@@ -408,9 +409,9 @@ func Sample() string {
 level       = "alias"
 icon_size   = 256
 badge_style = "corner"        # corner | number | dot
-# 程序支持 Wayland 时，新实例的 bwrap.args 里写 --tmpfs /tmp（空的私有 /tmp）；
-# 关掉则写 --bind /tmp /tmp（宿主那个，可写）。两者都必须是**可写**的 —— 只读的
-# /tmp 会让程序在别处报错。**只在二进制特征扫描判错的机器上关掉它。**
+# 程序支持 Wayland 时，新实例的 bwrap.tmpfs 里写 /tmp（空的私有 /tmp）；关掉则改成
+# 在 bwrap.extras 里写 --bind /tmp /tmp（宿主那个，可写）。两者都必须是**可写**的
+# —— 只读的 /tmp 会让程序在别处报错。**只在二进制特征扫描判错的机器上关掉它。**
 tmpfs_unless_x11 = true
 # 生成实例时是否把宿主的托盘图标覆盖表指向本实例的图标。
 # twin 只在真的跑在图形会话里时才写得进去（热重载，立刻生效）；
@@ -448,8 +449,9 @@ trampoline = "auto"
 theme = "hicolor"             # 源 Icon= 是主题名时的查找主题
 
 [bwrap]
-# 追加到每个**新**实例 bwrap 选项列表的尾部：排在那一份的基座之后、路径映射之前，
-# 所以同目标的挂载由这里写的那个胜出。一个元素 = 一个 token，原样拼接、不做替换。
+# 追加到每个**新**实例 bwrap 选项列表（profile.yml 里的 bwrap.extras）的尾部：排在
+# 那一份的基座之后、路径映射之前，所以同目标的挂载由这里写的那个胜出。
+# 一个元素 = 一个 token，原样拼接、不做替换。
 # 写进 profile.yml 之后就不再回读这里了（改这份文件只影响以后新建的实例）。
 args = []
 `

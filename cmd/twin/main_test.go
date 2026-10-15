@@ -630,7 +630,7 @@ func TestInstallWithAnIDReadsThatInstancesDefinition(t *testing.T) {
 	}
 	// The option list is part of the definition now (twin keeps no base of its
 	// own), so a minimal-but-valid one carries a root mount.
-	body := "id: wechat2\nexec:\n  target: /bin/true\nbwrap:\n  args: [--dev-bind, /, /]\n"
+	body := "id: wechat2\nexec:\n  target: /bin/true\nbwrap:\n  extras: [--dev-bind, /, /]\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

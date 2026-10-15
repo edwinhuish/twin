@@ -254,8 +254,8 @@ func usageError(fs *flag.FlagSet, err error) int {
 // 文档会烂：选项表若在别处再抄一份，`-h` 与它迟早各表一套；这里与实现同一次编译。
 var helpFooter = map[string]string{
 	"gen": "\n  twin gen <source> [选项] -- <bwrap 选项…>\n" +
-		"    `--` 之后的 token 原样进配置的 bwrap.args（排在基座与全局/规则层之后 ⇒\n" +
-		"    同目标的挂载由它胜出）。它是**写进文件**的一份，不是每次启动的覆盖。\n" +
+		"    `--` 之后的 token 原样进配置的 bwrap.extras（合并后那份列表的尾部 ⇒ 同目标的挂载\n" +
+		"    由它胜出；有形状的那几个键排在它之后，压不住）。它是**写进文件**的一份，不是每次启动的覆盖。\n" +
 		"    ⚠️ 不享受 ~/ 展开与 mkdir 补齐；再写一个 `--`、写 --argv0、或写需要 fd 的选项都会被拒绝，\n" +
 		"       其余 token 只做 lint（警告），不改写。\n",
 	"install": "\n  twin install <id> | -p <文件> [选项]   （二选一，同时给是用法错误）\n" +
@@ -577,14 +577,14 @@ func cmdInspect(p inst.Paths, args []string) int {
 	case t.Wayland && t.X11:
 		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（空的私有 /tmp）—— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
 		fmt.Printf("  %s 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X；\n"+
-			"     那时把那份定义里 tmpfs 的 /tmp 去掉、改成在 args 里写 --bind /tmp /tmp（生成时用 --no-tmpfs 就是它）。\n",
+			"     那时把那份定义里 tmpfs 的 /tmp 去掉、改成在 extras 里写 --bind /tmp /tmp（生成时用 --no-tmpfs 就是它）。\n",
 			outStyle.Yellow("⚠️"))
 	case t.Wayland && cfg.Defaults.TmpfsUnlessX11:
 		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（该程序走 Wayland）\n")
 	case t.Wayland:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.args 里写 --bind /tmp /tmp（宿主那个，可写；config.toml 关掉了 tmpfs_unless_x11）\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写 --bind /tmp /tmp（宿主那个，可写；config.toml 关掉了 tmpfs_unless_x11）\n")
 	default:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.args 里写 --bind /tmp /tmp（宿主那个，可写），%s\n",
+		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写 --bind /tmp /tmp（宿主那个，可写），%s\n",
 			outStyle.Red("**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）"))
 	}
 
@@ -641,7 +641,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	var shortOutput string
 	fs.StringVar(&shortOutput, "o", "", "配置写到哪（--output 的简写；两个拼写同时给是用法错误）")
 	var tmpfs listFlag
-	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录（空 tmpfs），可重复，写到 bwrap.tmpfs 里（路径享受 ~/ 展开；bwrap.args 里逐字照搬，不展开）")
+	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录（空 tmpfs），可重复，写到 bwrap.tmpfs 里（路径享受 ~/ 展开；bwrap.extras 里逐字照搬，不展开）")
 	// Cut the bwrap passthrough off before twin's own parser runs: tokens
 	// after `--` are not twin's to interpret (设计 §2.2).
 	head, bwrapTokens, err := splitPassthrough(args)

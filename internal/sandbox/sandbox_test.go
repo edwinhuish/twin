@@ -189,11 +189,11 @@ func passthroughInstance(extra ...string) *inst.Instance {
 		// mount's kind — the root mount included. twin adds none of it at launch,
 		// so an instance without it is one bwrap would start with nothing
 		// mounted.
-		Binds: append([]inst.Bind(nil), b.Binds...),
-		Args:  append(b.Args, extra...),
-		Proc:  b.Proc,
-		Tmpfs: b.Tmpfs,
-		Env:   b.Env,
+		Binds:  append([]inst.Bind(nil), b.Binds...),
+		Extras: append(b.Args, extra...),
+		Proc:   b.Proc,
+		Tmpfs:  b.Tmpfs,
+		Env:    b.Env,
 	}
 }
 
@@ -260,8 +260,8 @@ func TestBuildPutsTheRootBeforeEverything(t *testing.T) {
 	if got := strings.Join(plan.Groups[0], " "); got != "--dev-bind / /" {
 		t.Fatalf("第一组应当是根挂载，得到 %q", got)
 	}
-	if got := strings.Join(plan.Groups[1], " "); got != strings.Join(i.Args, " ") {
-		t.Fatalf("第二组应当就是定义里那份选项列表，得到 %q，want %q", got, i.Args)
+	if got := strings.Join(plan.Groups[1], " "); got != strings.Join(i.Extras, " ") {
+		t.Fatalf("第二组应当就是定义里那份选项列表，得到 %q，want %q", got, i.Extras)
 	}
 	// Everything twin derives comes after them, so a mapping can overrule a base
 	// mount the way bwrap promises (the later mount wins) — and the root is not
@@ -344,7 +344,7 @@ func TestBuildMapsEachModeToItsFlag(t *testing.T) {
 // 而 setenv 与顺序无关，收在最后。
 func TestBuildEmitsTheShapedMountsInOrder(t *testing.T) {
 	i := passthroughInstance()
-	i.Args = []string{"--dev-bind", "/", "/"}
+	i.Extras = []string{"--dev-bind", "/", "/"}
 	i.Proc = "/proc"
 	i.Tmpfs = []string{"/var/cache/wechat"}
 	i.RemountRO = []string{"/var/cache/secrets"}
@@ -379,11 +379,12 @@ func TestBuildEmitsTheShapedMountsInOrder(t *testing.T) {
 	}
 }
 
-// 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在 args 里，是文件里
-// 看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其不能再被凭空加回来。
+// 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在定义里（bind / proc /
+// tmpfs / env / extras），是文件里看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其
+// 不能再被凭空加回来。
 func TestBuildEmitsNothingForEmptyShapedMounts(t *testing.T) {
 	i := passthroughInstance()
-	i.Args = []string{"--ro-bind", "/", "/"}
+	i.Extras = []string{"--ro-bind", "/", "/"}
 	i.Proc, i.Tmpfs, i.RemountRO, i.Env = "", nil, nil, nil
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {

@@ -644,13 +644,13 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	}
 	base := sandbox.BaseFor(it.ID, true).Args
 	want := append(append(append([]string(nil), base...), "--from-config"), "--rule-flag", "--from-cli")
-	if strings.Join(it.Args, " ") != strings.Join(want, " ") {
-		t.Fatalf("bwrap.args = %v, want %v", it.Args, want)
+	if strings.Join(it.Extras, " ") != strings.Join(want, " ") {
+		t.Fatalf("bwrap.extras = %v, want %v", it.Extras, want)
 	}
 	// The base's provenance has to be in the derivation log: it is the one part
 	// of this list the user did not write, and the whole point is that they can
 	// see it and change it.
-	if derivationFor(der, "bwrap.args") == "" {
+	if derivationFor(der, "bwrap.extras") == "" {
 		t.Error("基座必须出现在推导来源里")
 	}
 }
@@ -668,8 +668,8 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tok := range []string{"--proc", "--tmpfs", "--setenv", "--dev-bind"} {
-		if containsToken(it.Args, tok) {
-			t.Errorf("bwrap.args 里还留着 %s，它有自己那个节点：%v", tok, it.Args)
+		if containsToken(it.Extras, tok) {
+			t.Errorf("bwrap.extras 里还留着 %s，它有自己那个节点：%v", tok, it.Extras)
 		}
 	}
 	// The root is a mount, so it is written in the node for mounts — as the
@@ -682,8 +682,8 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	// branch — and that one stays in the option list: `/tmp:/tmp` is not the
 	// root, so `bind` would report it as one of the program's data directories
 	// and offer it for copying into the program's rules.d.
-	if !strings.Contains(strings.Join(it.Args, " "), "--bind /tmp /tmp") {
-		t.Errorf("宿主 /tmp 那一支要写在 args 里：%v", it.Args)
+	if !strings.Contains(strings.Join(it.Extras, " "), "--bind /tmp /tmp") {
+		t.Errorf("宿主 /tmp 那一支要写在 extras 里：%v", it.Extras)
 	}
 	if it.Proc != "/proc" {
 		t.Errorf("bwrap.proc = %q, want /proc", it.Proc)
@@ -696,7 +696,7 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	}
 	// Every node the base filled has to name its source: this is the part the
 	// user did not write.
-	for _, key := range []string{"bwrap.bind", "bwrap.args", "bwrap.proc", "bwrap.tmpfs", "bwrap.env"} {
+	for _, key := range []string{"bwrap.bind", "bwrap.proc", "bwrap.tmpfs", "bwrap.env", "bwrap.extras"} {
 		if !hasDerivation(der, key) {
 			t.Errorf("%s 的推导来源没记下来", key)
 		}
@@ -716,9 +716,9 @@ func TestPlanNoneLevelTakesNoTmpDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(it.Args) != 0 || len(it.Tmpfs) != 0 || it.Proc != "" || len(it.Env) != 0 || len(it.Binds) != 0 {
+	if len(it.Extras) != 0 || len(it.Tmpfs) != 0 || it.Proc != "" || len(it.Env) != 0 || len(it.Binds) != 0 {
 		t.Errorf("level none 没有基座：bind=%v args=%v tmpfs=%v proc=%q env=%v",
-			it.Binds, it.Args, it.Tmpfs, it.Proc, it.Env)
+			it.Binds, it.Extras, it.Tmpfs, it.Proc, it.Env)
 	}
 }
 
@@ -772,8 +772,8 @@ func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
 	if it.Categories == "" {
 		t.Error("空的 categories 应当被补上")
 	}
-	if strings.Join(it.Args, " ") != "--from-config --rule-flag" {
-		t.Fatalf("bwrap.args = %v, want config + rule（基座属于定义本身，--refresh 不碰它）", it.Args)
+	if strings.Join(it.Extras, " ") != "--from-config --rule-flag" {
+		t.Fatalf("bwrap.extras = %v, want config + rule（基座属于定义本身，--refresh 不碰它）", it.Extras)
 	}
 	if len(notes) == 0 {
 		t.Error("补了东西就该说出来")
@@ -790,17 +790,17 @@ func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
 }
 
 // Both spellings have to be read: the entry `twin gen` writes into bwrap.tmpfs,
-// and the line an older or hand-written definition keeps in bwrap.args. Missing
+// and the line an older or hand-written definition keeps in bwrap.extras. Missing
 // that second one would let the warning go quiet exactly where it matters — a
 // Wayland instance replayed in an X11 session.
 func TestSessionWarning(t *testing.T) {
-	fromArgs := &inst.Instance{ID: "x", Target: "/bin/true",
-		Args: []string{"--dev-bind", "/", "/", "--tmpfs", "/tmp"}}
+	fromExtras := &inst.Instance{ID: "x", Target: "/bin/true",
+		Extras: []string{"--dev-bind", "/", "/", "--tmpfs", "/tmp"}}
 	fromTmpfs := &inst.Instance{ID: "x", Tmpfs: []string{"/tmp"}, Target: "/bin/true"}
 	neither := &inst.Instance{ID: "x", Target: "/bin/true",
-		Args: []string{"--dev-bind", "/", "/", "--bind", "/tmp", "/tmp"}}
+		Extras: []string{"--dev-bind", "/", "/", "--bind", "/tmp", "/tmp"}}
 
-	for name, it := range map[string]*inst.Instance{"bwrap.args": fromArgs, "bwrap.tmpfs": fromTmpfs} {
+	for name, it := range map[string]*inst.Instance{"bwrap.extras": fromExtras, "bwrap.tmpfs": fromTmpfs} {
 		t.Setenv("WAYLAND_DISPLAY", "")
 		if SessionWarning(it) == "" {
 			t.Errorf("%s 里有 tmpfs /tmp 而会话没有 WAYLAND_DISPLAY，应当警告", name)

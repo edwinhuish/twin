@@ -3,12 +3,14 @@
 //
 // twin owns no sandbox base at launch time: every option comes from the
 // definition, and `twin gen` writes the base into it with BaseFor below — each
-// piece in the node that names its kind (`proc` / `tmpfs` / `bind` / `env`), the
-// rest in `bwrap.args`. What this package still emits is only what those keys
-// ask for — the alias overlay from `exec.alias`, the mappings from `bind`, the
-// shaped mounts and the variables — in the order the file lists them, so the
-// command line a reader can reconstruct from that file is the command line that
-// runs.
+// piece in the node that names its kind (`bind` / `proc` / `tmpfs` / `env`,
+// which is also where the root mount goes), the rest in `bwrap.extras`. What
+// this package still emits is only what those keys ask for — the alias overlay
+// from `exec.alias`, the mappings from `bind`, the shaped mounts and the
+// variables. For those the file's key order is the emission order, so the
+// command line a reader can reconstruct from the file is the command line that
+// runs; the root mount (`bind`, hoisted) and `extras` (written last, emitted
+// straight after the root) are the two positions the file does not decide.
 //
 // Of the argument orders, one was measured and one is structural:
 //
@@ -16,9 +18,10 @@
 //     `--ro-bind ... DIR/alias` that creates the renamed entry point, otherwise
 //     the mount point cannot be created ("Can't create file: Read-only file
 //     system");
-//   - the file's own list is emitted first, so a mapping or an overlay can
-//     shadow a base mount exactly the way bubblewrap promises ("the later
-//     mount wins") instead of being shadowed by it.
+//   - the root and the file's own token list are emitted ahead of every other
+//     mount, so a mapping or an overlay can shadow a base mount exactly the way
+//     bubblewrap promises ("the later mount wins") instead of being shadowed by
+//     it.
 package sandbox
 
 import (
@@ -286,13 +289,15 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 		}
 	}
 
-	// The file's own option list, verbatim, ahead of every shaped mount. One
-	// group rather than one option per line: twin does not know any bwrap
-	// option's arity (设计 §2.1), so it cannot tell an option from its value and
-	// must not invent line breaks.
+	// The file's `extras`, verbatim, ahead of every shaped mount. One group
+	// rather than one option per line: twin does not know any bwrap option's
+	// arity (设计 §2.1), so it cannot tell an option from its value and must not
+	// invent line breaks.
 	//
-	// Nothing but the root is emitted ahead of it. The base — and with it the
-	// answer to "which root does this program get?" — used to be built right
+	// Nothing but the root is emitted ahead of it — where the key sits in the
+	// file is not read: it is written last there because this is the one part of
+	// the invocation whose file position means nothing. The base — and with it
+	// the answer to "which root does this program get?" — used to be built right
 	// here, which made that the one decision the definition could not express: a
 	// program needing `--dev-bind / /` had no way to ask, and asking through the
 	// passthrough region put the new root binding *after* every mapping, where it
@@ -300,8 +305,8 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	// a mount that may in turn shadow it (bubblewrap: the later mount wins). What
 	// is left in this list is exactly what has no node of its own: the host's
 	// /tmp when that is the branch, and --die-with-parent (see BaseFor).
-	if len(i.Args) > 0 {
-		plan.Groups = append(plan.Groups, append([]string(nil), i.Args...))
+	if len(i.Extras) > 0 {
+		plan.Groups = append(plan.Groups, append([]string(nil), i.Extras...))
 	}
 
 	// `--proc`: the definition asks for one. `gen` writes the base's `/proc`

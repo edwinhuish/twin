@@ -279,7 +279,7 @@ type Instance struct {
 	Argv0  string // reserved; empty means "let argv[0] default to the alias"
 
 	// The bwrap mounts that have a shape of their own, as opposed to the raw
-	// token list in Args. They are separate keys because each one is a *kind* of
+	// token list in Extras. They are separate keys because each one is a *kind* of
 	// mount — a proc, a throwaway tmpfs, a path re-tightened to read-only —
 	// which is exactly what `bind`'s `:ro` and `:dev` say for a mapping, and
 	// nothing in a flat token list can say it. Empty means "not asked for": an
@@ -295,26 +295,30 @@ type Instance struct {
 	Env []EnvVar
 
 	Unshare []string
-	// Args is the bubblewrap option list, verbatim, in the order written. twin
-	// adds nothing ahead of it — the sandbox base lives in the file, put there
-	// by `twin gen` and readable, because which root a program needs is a
-	// property of that program. It used to be hard-coded here as `--ro-bind / /`:
-	// a program that has to touch devices then had no way to ask for
-	// `--dev-bind / /`, and asking for it through the old passthrough region put
-	// it *after* every mapping, where binding the root again shadows all of them.
+	// Extras is the bubblewrap option list — everything that names no kind of
+	// mount, and so has no key of its own: the base's leftovers (the host's /tmp
+	// when that is the branch, and --die-with-parent), plus whatever config.toml,
+	// rules.d and `gen`'s `--` region append. It is a *merged* list, not "a few
+	// more options": `twin gen` hands it to bwrap verbatim, and twin adds
+	// nothing of its own anywhere (the base lives in the file too, put there by
+	// `gen` and readable, because which root a program needs is a property of
+	// that program). It used to be hard-coded in Go as `--ro-bind / /`: a program
+	// that has to touch devices then had no way to ask for `--dev-bind / /`, and
+	// asking for it through the old passthrough region put it *after* every
+	// mapping, where binding the root again shadows all of them.
 	//
-	// What is left in it is what has no node of its own: the host's /tmp when
-	// that is the branch, and --die-with-parent. Everything else the base carries
-	// is written into the key that names its kind (Binds / Proc / Tmpfs / Env),
-	// where a reader can see what a mount *is* without knowing bubblewrap's
-	// options. It is still emitted ahead of every shaped mount; the one thing
-	// that goes before it is the root, which is a mapping itself now (see
-	// Bind.IsRootMount).
+	// The base's *shaped* mounts are written into the key that names its kind
+	// (Binds / Proc / Tmpfs / Env), where a reader can see what a mount *is*
+	// without knowing bubblewrap's options. This list is emitted ahead of every
+	// shaped mount; the one thing that goes before it is the root, which is a
+	// mapping itself now (see Bind.IsRootMount). Where it sits in the file says
+	// nothing about that: the key is written last because it is the one part of
+	// the invocation whose file position Build does not read (设计 §2.1).
 	//
 	// twin never parses or rewrites these tokens (设计 §2.1): the arity of a
 	// bwrap option is bwrap's business, and re-deriving it here would be a table
 	// that rots on every bwrap release.
-	Args []string
+	Extras []string
 
 	// Binds is `--bind` / `--ro-bind` / `--dev-bind`, in the order written. The
 	// first entry `twin gen` writes is the root mount (`/:/:dev`); Build emits it
@@ -559,7 +563,7 @@ func (i *Instance) AliasPath() string {
 }
 
 // hasRootMount reports whether anything in the file asks for a root. The `bind`
-// side is exact — `/:/` is the root by shape — while the `args` side can only
+// side is exact — `/:/` is the root by shape — while the `extras` side can only
 // be a proxy, because twin knows no bwrap option's arity and must not start
 // parsing them. Every definition `gen` writes keeps its root in `bind`, so what
 // this really guards is a file that lost its base altogether.
@@ -569,7 +573,7 @@ func (i *Instance) hasRootMount() bool {
 			return true
 		}
 	}
-	return len(i.Args) > 0
+	return len(i.Extras) > 0
 }
 
 // Check performs the semantic validation the generator relies on. Every
@@ -657,17 +661,17 @@ func (i *Instance) Check() error {
 	//
 	// The root can be said in two places, so both are read: the base writes it
 	// into `bind` as `/:/:dev` (a mount belongs in the node for mounts), while a
-	// hand-written or older definition keeps `--dev-bind / /` in `args`. Empty
-	// `args` on its own is therefore fine now — that is exactly what a
+	// hand-written or older definition keeps `--dev-bind / /` in `extras`. Empty
+	// `extras` on its own is therefore fine now — that is exactly what a
 	// definition whose root is in `bind` looks like.
 	if i.Level.Renames() && !i.hasRootMount() {
-		return fmt.Errorf("这份定义没有根挂载：bwrap.bind 里没有 /:/:dev，bwrap.args 也是空的 —— " +
+		return fmt.Errorf("这份定义没有根挂载：bwrap.bind 里没有 /:/:dev，bwrap.extras 也是空的 —— " +
 			"bwrap 至少要有一个根挂载（/:/:dev 或 --dev-bind / /），twin 不再自己补一个；" +
 			"请用 `twin gen` 重新生成，或照它的注释手写一份")
 	}
-	for n, tok := range i.Args {
+	for n, tok := range i.Extras {
 		if err := CheckBwrapToken(tok); err != nil {
-			return fmt.Errorf("bwrap.args[%d]: %w", n, err)
+			return fmt.Errorf("bwrap.extras[%d]: %w", n, err)
 		}
 	}
 	return nil
@@ -808,43 +812,25 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"它跟着程序走；用哪个跳板是机器属性，留在 config.toml 里。")
 	iso.Set("nested_ns", i.NestedNS)
 
-	// The option list, stored in the same flat-token shape the CLI and rules.d
-	// use, so merging stays "concatenate the arrays" rather than "invent a
-	// quoting rule" (设计 §3.2).
-	//
-	// The base is part of the file. What is left of it in this list is what names
-	// no kind of mount and so has no key of its own — the host's /tmp and
-	// --die-with-parent; the rest of it is written under `bind` / `proc` /
-	// `tmpfs` / `env` below, where a reader can tell a throwaway tmpfs from a
+	// The flattened base and the shaped mounts. The base is part of the file:
+	// what names no kind of mount has no key of its own and stays a flat token
+	// list (`extras`, written last, below); the rest is written under `bind` /
+	// `proc` / `tmpfs` / `env`, where a reader can tell a throwaway tmpfs from a
 	// mapping without knowing bubblewrap's options. twin used to keep the whole
-	// base in Go and let this list only *append*, which made the one decision
-	// that actually varies per program — which root the program sees — the one
+	// base in Go and let the list only *append*, which made the one decision that
+	// actually varies per program — which root the program sees — the one
 	// decision the file could not express.
 	bw := t.Ensure("bwrap")
-	bw.SetComment("args", "交给 bwrap 的完整选项列表，逐 token 原样排列；twin 不解析它们（不猜每个选项的元数）。\n"+
-		"它的位置：根挂载（下面 bind 里那条 /:/:dev）之后、其余所有挂载之前 —— 根是底座，必须在它下面；\n"+
-		"而同目标挂载由后写的那个胜出，所以想覆盖它或别的映射，就写进这份列表靠后的位置。\n"+
-		"`twin gen` 写进来的基座只剩下面这几条 —— 根挂载在 bind 里，其余各在下面与自己同类的键里：\n"+
-		"  --bind /tmp /tmp 宿主那个 /tmp（可写）—— 程序走 X11、不要私有 /tmp 时才有这一条；\n"+
-		"                   要私有的那种写法在 bwrap.tmpfs 里。它是「哪个根配哪个 /tmp」的一部分，\n"+
-		"                   不是这个程序的数据映射，所以不写成 bwrap.bind 里的一行\n"+
-		"  --die-with-parent\n"+
-		"这里是合并后的最终列表，低优先级在前：上面这份基座 → config.toml → rules.d → gen 的 -- 透传区；\n"+
-		"手写进来的照旧保留。空列表本身没问题（根挂载在 bind 里）；两种写法里都没有根挂载的定义会被拒绝。")
-	if len(i.Args) == 0 {
-		bw.Set("args", []string{})
-	} else {
-		bw.Set("args", i.Args)
-	}
 
 	// The shaped mounts, in the order Build emits them: the root (out of `bind`,
-	// hoisted), then `args`, then these, then the rest of `bind`, then remountRO
-	// (which has to come after whatever it tightens). The file reads
-	// top-to-bottom like the command line it turns into, which is the only
+	// hoisted), then `extras`, then these, then the rest of `bind`, then remountRO
+	// (which has to come after whatever it tightens). Here the file reads
+	// top-to-bottom like the command line it turns into, and that is the only
 	// reason these have keys of their own at all: each one names a *kind* of
 	// mount that a flat token list cannot name — and that is where the base's own
 	// mounts are written too, so the file says what each of them is (see
-	// sandbox.BaseFor).
+	// sandbox.BaseFor). `extras` is the one key whose file position Build does
+	// not read, so it is written last rather than here.
 	//
 	// All four are written even when empty, so that a reader discovers them
 	// where they belong; an empty one emits no argument, which is what "not
@@ -861,7 +847,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	bw.SetComment("tmpfs", "盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主看不见，\n"+
 		"代价是那里原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0。\n"+
 		"`gen` 写的是 /dev/shm（空的私有共享内存）与 /tmp（程序走 Wayland 时的私有 /tmp）；\n"+
-		"只走 X11 的程序不能要后者，那时 `gen` 改成在 args 里写一条 --bind /tmp /tmp 把宿主那个挂回来\n"+
+		"只走 X11 的程序不能要后者，那时 `gen` 改成在 extras 里写一条 --bind /tmp /tmp 把宿主那个挂回来\n"+
 		"（两条路都保证 /tmp 可写，只读的 /tmp 会让程序在别处报错）。留空 = 不盖。")
 	if len(i.Tmpfs) == 0 {
 		bw.Set("tmpfs", []string{})
@@ -885,7 +871,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"它是底座，不是这个程序的数据目录 —— 所以它不算在「路径映射」那几行里。\n"+
 		"写法同 Docker Compose 的卷：源:目标[:ro|:dev]，源是数据实际所在，目标是程序看到它的位置。\n"+
 		"路径可以绝对、可以 ~/ 开头，也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。\n"+
-		"（同层那个 args 例外：那里逐字照搬，twin 不认、也解析不了里面的路径。）\n"+
+		"（同层那个 extras 例外：那里逐字照搬，twin 不认、也解析不了里面的路径。）\n"+
 		"  源路径:目标路径        ⇒ 私有副本，两个实例互不干扰\n"+
 		"  只写一条路径           ⇒ 该路径挂回自己（数据不搬家）；根挂载是可写的 /:/:dev 时\n"+
 		"                            它不改变什么，把根换成 /:/:ro 之后它才是「把只读升回可写」\n"+
@@ -914,7 +900,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"bind 给出的那种可写。⚠️ 只能作用在「自己就是一条挂载」的路径上：bind 的**目标端**、\n"+
 		"overlay 或 tmpfs 那条路径、或者整个 `/`。宿主本来就属于那一条大根挂载的路径（比如\n"+
 		"~ 底下某个目录）底下没有单独的挂载，bwrap 会拒绝启动：Can't remount readonly on …:\n"+
-		"Unable to find … in mount table（实测）。整根要收紧就把基座那行换成 --ro-bind / /。\n"+
+		"Unable to find … in mount table（实测）。整根要收紧就把 bind 里那条 /:/:dev 换成 /:/:ro。\n"+
 		"留空 = 不收回。路径的基准同 bind（可以 ~/、可以相对这份 profile.yml）。")
 	remount := make([]string, 0, len(i.RemountRO))
 	remount = append(remount, i.RemountRO...)
@@ -928,6 +914,36 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		env = append(env, e.String())
 	}
 	bw.Set("env", env)
+
+	// Last in the file on purpose, and the only key here whose file position
+	// Build ignores: it emits this list right after the root, ahead of every
+	// shaped mount above, for two reasons — a shaped key has to be able to
+	// overrule it, and the base's leftovers in it belong beside the base. Sitting
+	// at the end is what keeps the rest of the file honest: read top-to-bottom,
+	// the shaped keys *are* the command line, and this one is not.
+	//
+	// The list is stored in the same flat-token shape the CLI and rules.d use, so
+	// merging stays "concatenate the arrays" rather than "invent a quoting rule"
+	// (设计 §3.2).
+	bw.SetComment("extras", "没有自己节点的那些 bwrap 选项，逐 token 原样排列；twin 不解析它们（不猜每个选项的元数）。\n"+
+		"它是**合并后的完整列表**，不是「另外再加一点」：这份文件里的基座剩下的两条 → config.toml 的\n"+
+		"[bwrap] args → rules.d 的 [bwrap] args → gen 命令行上 `--` 之后那一段，都并到这里（低优先级在前）。\n"+
+		"extras 这个名字说的是「上面那些有形状的挂载之外的那些」—— bind / proc / tmpfs / remountRO / env\n"+
+		"各自管一种挂载，剩下的全在这份列表里。\n"+
+		"`twin gen` 写进来的基座只剩下面这两条（根挂载在 bind 里，其余各在同类键里）：\n"+
+		"  --bind /tmp /tmp 宿主那个 /tmp（可写）—— 程序走 X11、不要私有 /tmp 时才有这一条；\n"+
+		"                   要私有的那种写法在 bwrap.tmpfs 里。它是「哪个根配哪个 /tmp」的一部分，\n"+
+		"                   不是这个程序的数据映射，所以不写成 bwrap.bind 里的一行\n"+
+		"  --die-with-parent\n"+
+		"⚠️ 它在命令里排在**根挂载之后、上面那几个有形状的键之前**，跟它写在文件的哪一行无关：\n"+
+		"同目标挂载由后写的那个胜出，所以想覆盖根挂载或别的映射，就写进这份列表；而 proc / tmpfs / env\n"+
+		"由 Build 发在它之后，压不住（想改就改那个键）。\n"+
+		"手写进来的照旧保留。空列表本身没问题（根挂载在 bind 里）；两种写法里都没有根挂载的定义会被拒绝。")
+	if len(i.Extras) == 0 {
+		bw.Set("extras", []string{})
+	} else {
+		bw.Set("extras", i.Extras)
+	}
 
 	// Host integration. Written unconditionally: "we did not override the tray"
 	// is a decision worth seeing in the file, and an absent section would make
@@ -1028,18 +1044,24 @@ func Load(path string) (*Instance, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	base := filepath.Dir(path)
-	// The old key is refused by name rather than read as "no option list". The
-	// rename is not a spelling change: `extra` was only what the user appended,
-	// while `args` is the whole list including the sandbox base that twin used
-	// to keep to itself. Reading one as the other would hand bwrap a namespace
-	// with no root mounted and no hint of why — the program would simply not
-	// start, with nothing anywhere naming twin. (Same reasoning as the
+	// The old keys are refused by name rather than read as "no option list".
+	// Neither rename is a spelling change: `extra` was only what the user
+	// appended, and `args` is the whole list including the sandbox base that twin
+	// used to keep to itself. Reading any of them as the other would hand bwrap a
+	// namespace with no root mounted and no hint of why — the program would
+	// simply not start, with nothing anywhere naming twin. (Same reasoning as the
 	// instance.toml error below: an instance twin cannot read is reported, never
 	// silently dropped.)
 	if root.At("bwrap").Has("extra") {
-		return nil, fmt.Errorf("%s: `bwrap.extra` 现在叫 `bwrap.args`，而且语义变了 —— "+
-			"它是交给 bwrap 的**完整**选项列表，基座（--dev-bind / /、--proc /proc、--tmpfs /tmp 等）也在里面，"+
-			"twin 不再自己补。请用 `twin gen` 重新生成一份，再把你原来的 token 补进去", path)
+		return nil, fmt.Errorf("%s: `bwrap.extra` 现在叫 `bwrap.extras`，而且语义变了 —— "+
+			"它是交给 bwrap 的**完整**选项列表（各层合并后的样子），而且名字里的「没有自己节点」"+
+			"指的是有形状的那几条已经各在 bind / proc / tmpfs / env 里。"+
+			"请用 `twin gen` 重新生成一份，再把你原来的 token 补进去", path)
+	}
+	if root.At("bwrap").Has("args") {
+		return nil, fmt.Errorf("%s: `bwrap.args` 现在叫 `bwrap.extras`（同一个键、同一个意思，"+
+			"只是改了名字，并且写在 bwrap 节点的最后一个键的位置上）。把 `args:` 改成 `extras:` 即可"+
+			" —— 它写在哪一行都不影响命令：`twin gen` 发在根挂载之后、其余各条之前", path)
 	}
 	// The entry's text lives under `desktop:`. The spelling that predates the
 	// section — the same keys at the root — is still read: it is not ambiguous
@@ -1074,10 +1096,10 @@ func Load(path string) (*Instance, error) {
 		Argv0:      root.At("exec").Str("argv0"),
 		Unshare:    root.At("isolation").StrList("unshare"),
 		NestedNS:   root.At("isolation").Bool("nested_ns"),
-		Args:       root.At("bwrap").StrList("args"),
+		Extras:     root.At("bwrap").StrList("extras"),
 		// The shaped mounts resolve like every other path in this file: they are
 		// known to *be* paths, which is exactly what cannot be said about the
-		// tokens in `args` (hence the passthrough rule).
+		// tokens in `extras` (hence the passthrough rule).
 		Proc:      resolvePath(base, root.At("bwrap").Str("proc")),
 		Tmpfs:     resolvePaths(base, root.At("bwrap").StrList("tmpfs")),
 		RemountRO: resolvePaths(base, root.At("bwrap").StrList("remountRO")),
@@ -1090,7 +1112,7 @@ func Load(path string) (*Instance, error) {
 	// also changed shape (list of `键:值`, not a mapping).
 	if root.At("isolation").Has("tmpfs") {
 		return nil, fmt.Errorf("%s: `isolation.tmpfs` 现在在 `bwrap` 节点里（bwrap.tmpfs）—— "+
-			"它就是 `--tmpfs`，和 bwrap.args 一起决定这次调用；把它缩进到 `bwrap:` 下面即可", path)
+			"它就是 `--tmpfs`，和 bwrap.extras 一起决定这次调用；把它缩进到 `bwrap:` 下面即可", path)
 	}
 	if root.At("exec").Has("env") {
 		return nil, fmt.Errorf("%s: `exec.env` 现在是 `bwrap.env`，而且换成了列表：一条一个 `键:值`"+
@@ -1108,13 +1130,13 @@ func Load(path string) (*Instance, error) {
 		it.Env = append(it.Env, e)
 	}
 	// `bind` lives under `bwrap`: it is one more thing that ends up in the same
-	// invocation as `args`, which is written right there. A top-level `bind` is
+	// invocation as `extras`, which is written right there. A top-level `bind` is
 	// refused rather than ignored — the two readings do not describe the same
 	// instance (one mounts the program's data, the other mounts nothing), and
 	// the failure would surface as "the program cannot see its files" long after
 	// the edit.
 	if root.Has("bind") {
-		return nil, fmt.Errorf("%s: `bind` 现在在 `bwrap` 节点里（bwrap.bind）—— 它和 bwrap.args 一起"+
+		return nil, fmt.Errorf("%s: `bind` 现在在 `bwrap` 节点里（bwrap.bind）—— 它和 bwrap.extras 一起"+
 			"决定这次 bwrap 调用拿到什么，所以搬到了同一个节点下；把这一段缩进到 `bwrap:` 下面即可", path)
 	}
 	specs, err := root.At("bwrap").StrListStrict("bind")

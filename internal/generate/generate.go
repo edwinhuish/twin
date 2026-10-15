@@ -463,7 +463,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		})
 	}
 
-	// bwrap.args, low priority first (设计 §3.5 rule two): the base twin writes
+	// bwrap.extras, low priority first (设计 §3.5 rule two): the base twin writes
 	// for this instance, then the global default, then the rule, then the
 	// command line's `--` region. Later tokens shadow earlier mounts on the same
 	// destination, so no conflict-resolution code is owed — and the root is
@@ -482,31 +482,33 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// inside a token list and `tmpfs: [/dev/shm]` are the same mount, but only
 	// one of the two tells the reader what kind of mount it is — and the root
 	// mount is written as `/:/:dev`, a mapping in the node for mappings (设计
-	// §2.1). `args` keeps what has no node of its own: the host's /tmp and
+	// §2.1). `extras` keeps what has no node of its own: the host's /tmp and
 	// --die-with-parent. Base-first inside every node too, so the layers above
-	// can still overrule the base.
+	// can still overrule the base. The notes follow the *file's* order, so the
+	// row for each key sits where a reader will find the key.
 	if level.Renames() {
 		base := sandbox.BaseFor(id, privateTmp)
 		it.Binds = append(base.Binds, it.Binds...)
-		it.Args = append(it.Args, base.Args...)
+		it.Extras = append(it.Extras, base.Args...)
 		it.Proc = base.Proc
 		it.Tmpfs = append(base.Tmpfs, it.Tmpfs...)
 		it.Env = append(base.Env, it.Env...)
 		note("bwrap.bind", base.Binds[0].String(), "gen 写的沙箱基座：根挂载（排在最前，写在第几行都一样）")
-		note("bwrap.args", strings.Join(base.Args, " "), "gen 写的沙箱基座：没有自己节点的那些")
 		note("bwrap.proc", base.Proc, "gen 写的沙箱基座")
 		note("bwrap.tmpfs", strings.Join(base.Tmpfs, " "), "gen 写的沙箱基座")
 		note("bwrap.env", base.Env[0].String(), "gen 写的沙箱基座")
+		note("bwrap.extras", strings.Join(base.Args, " "),
+			"gen 写的沙箱基座：没有自己节点的那些（config.toml / rules.d / `--` 的 token 也并进这一份）")
 	}
-	it.Args = append(it.Args, cfg.Args...)
+	it.Extras = append(it.Extras, cfg.Args...)
 	if rule != nil {
-		it.Args = append(it.Args, rule.Args...)
+		it.Extras = append(it.Extras, rule.Args...)
 	}
-	it.Args = append(it.Args, o.Args...)
-	if len(it.Args) == 0 {
-		it.Args = nil
+	it.Extras = append(it.Extras, o.Args...)
+	if len(it.Extras) == 0 {
+		it.Extras = nil
 	}
-	for _, tok := range it.Args {
+	for _, tok := range it.Extras {
 		if err := inst.CheckBwrapToken(tok); err != nil {
 			return nil, nil, fmt.Errorf("%s：%w", bwrapSource(o, rule, cfg), err)
 		}
@@ -551,7 +553,7 @@ func bwrapSource(o Options, r *config.Rule, c *config.Config) string {
 			return c.Path + " [bwrap] args 里的 " + tok
 		}
 	}
-	return "bwrap.args 里的 token"
+	return "bwrap.extras 里的 token"
 }
 
 // freeID returns the smallest unused name of the form <base><n>, n >= 2.
@@ -1035,14 +1037,14 @@ func Refresh(it *inst.Instance, insp *Inspection, cfg *config.Config) ([]string,
 		want = append(want, rule.Args...)
 	}
 	for _, tok := range want {
-		if containsToken(it.Args, tok) {
+		if containsToken(it.Extras, tok) {
 			continue
 		}
 		if err := inst.CheckBwrapToken(tok); err != nil {
 			return notes, err
 		}
-		it.Args = append(it.Args, tok)
-		notes = append(notes, "bwrap.args += "+tok)
+		it.Extras = append(it.Extras, tok)
+		notes = append(notes, "bwrap.extras += "+tok)
 	}
 
 	if len(notes) > 0 {
@@ -1068,7 +1070,7 @@ func SessionWarning(it *inst.Instance) string {
 //
 // Two spellings have to be read, because the definition may hold it either way:
 // the entry `twin gen` writes into bwrap.tmpfs, or the line someone wrote into
-// bwrap.args by hand — every definition written before the base was split by
+// bwrap.extras by hand — every definition written before the base was split by
 // node carries it there, and this warning has to keep finding it.
 //
 // Matching one literal pair is not the arity table the passthrough region
@@ -1079,8 +1081,8 @@ func tmpfsHidesTmp(it *inst.Instance) bool {
 	if tmpfsCovers(it.Tmpfs, "/tmp") {
 		return true
 	}
-	for n, tok := range it.Args {
-		if tok == "--tmpfs" && n+1 < len(it.Args) && strings.TrimRight(it.Args[n+1], "/") == "/tmp" {
+	for n, tok := range it.Extras {
+		if tok == "--tmpfs" && n+1 < len(it.Extras) && strings.TrimRight(it.Extras[n+1], "/") == "/tmp" {
 			return true
 		}
 	}
