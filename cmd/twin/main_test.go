@@ -177,7 +177,7 @@ func TestSplitPassthroughRefusesSecondSeparator(t *testing.T) {
 // has to name the command that writes one. "profile.yml: no such file" is true
 // and useless.
 func TestMissingConfigNamesTheCommandThatWritesOne(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), DefaultProfileName)
+	missing := filepath.Join(t.TempDir(), inst.ProfileName)
 	_, err := loadConfigFile(missing)
 	if err == nil {
 		t.Fatal("读一份不存在的配置必须报错")
@@ -191,7 +191,7 @@ func TestMissingConfigNamesTheCommandThatWritesOne(t *testing.T) {
 // over one that is already there: replacing it silently would throw away the
 // edits that are the only reason the file exists.
 func TestGenRefusesToClobberAWorkingCopy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultProfileName)
+	path := filepath.Join(t.TempDir(), inst.ProfileName)
 	if err := writeConfigFile(path, []byte("first"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -214,13 +214,14 @@ func TestGenRefusesToClobberAWorkingCopy(t *testing.T) {
 // place — a flag package with no aliases makes this the kind of thing that
 // otherwise gets decided independently at each use.
 func TestOneSettingBeatsTheDefault(t *testing.T) {
-	if got := firstNonEmpty("out.yml", "", DefaultProfileName); got != "out.yml" {
+	def := inst.Paths{Home: "/home/someone"}.WorkingCopy()
+	if got := firstNonEmpty("out.yml", "", def); got != "out.yml" {
 		t.Errorf("长选项应当胜过默认值：%q", got)
 	}
-	if got := firstNonEmpty("", "out.yml", DefaultProfileName); got != "out.yml" {
+	if got := firstNonEmpty("", "out.yml", def); got != "out.yml" {
 		t.Errorf("短选项应当胜过默认值：%q", got)
 	}
-	if got := firstNonEmpty("", "", DefaultProfileName); got != DefaultProfileName {
+	if got := firstNonEmpty("", "", def); got != def {
 		t.Errorf("都没给时才落到默认值：%q", got)
 	}
 }
@@ -255,7 +256,7 @@ func TestPathMapsShortFormIsJustTheMap(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo"}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
-	fix := mapFix{file: DefaultProfileName, replay: installCommandFor(DefaultProfileName)}
+	fix := mapFix{file: p.WorkingCopy(), replay: installCommandFor(p, p.WorkingCopy())}
 
 	short := captureStdout(t, func() { printPathMaps(p, it, insp, "", fix, false) })
 	for _, noise := range []string{"照抄下面这份", "twin rules --init", "改：", "💡"} {
@@ -311,17 +312,19 @@ func TestProblemsAreQuietWhenNothingIsWrong(t *testing.T) {
 	}
 }
 
-// `twin gen` says where the configuration landed and what to type next —
-// nothing else. The path maps are the longest block in the report and the file
-// being written explains every key of them; saying it here too would be a
-// second place that can disagree with the file (see AGENTS.md §4.9).
+// `twin gen` says where the configuration landed — the directory and the file
+// name as well as the full path — and what to type next; nothing else. The path
+// maps are the longest block in the report and the file being written explains
+// every key of them; saying it here too would be a second place that can
+// disagree with the file (see AGENTS.md §4.9).
 func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo", Binds: []inst.Bind{{Source: "~/a", Target: "~/b"}}}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
+	work := p.WorkingCopy()
 
 	short := captureStdout(t, func() {
-		printGenResult(p, it, insp, DefaultProfileName, false, false, nil)
+		printGenResult(p, it, insp, work, false, false, nil)
 	})
 	if strings.Contains(short, "路径映射") {
 		t.Errorf("gen 的默认输出不该带路径映射：\n%s", short)
@@ -329,9 +332,17 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	if !strings.Contains(short, "已写出配置") || !strings.Contains(short, "下一步") {
 		t.Errorf("gen 的默认输出应当只有「已写出配置」与「下一步」：\n%s", short)
 	}
+	// The two halves of the path are what the reader acts on (`cd` to it, or
+	// name the file to another command), and the full path alone makes both of
+	// them cut the string by hand.
+	for _, want := range []string{"目录 /nonexistent-twin-home/.local/share/twin", "文件 " + inst.ProfileName} {
+		if !strings.Contains(short, want) {
+			t.Errorf("gen 应当报出 %q：\n%s", want, short)
+		}
+	}
 
 	long := captureStdout(t, func() {
-		printGenResult(p, it, insp, DefaultProfileName, false, true, nil)
+		printGenResult(p, it, insp, work, false, true, nil)
 	})
 	if !strings.Contains(long, "路径映射") {
 		t.Errorf("--explain 应当展开路径映射：\n%s", long)

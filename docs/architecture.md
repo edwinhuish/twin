@@ -131,8 +131,9 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 
 ## 5. 产物与模板
 
-`twin install` 写下面这些。第 0 件（`./profile.yml`）不是它写的 —— `twin gen` 写在**你当前所在的
-目录**里，因为那是这份 wrap 里唯一需要人读一遍的东西，而"当前目录"是用户已经选好的那个位置。
+`twin install` 写下面这些。第 0 件（`~/.local/share/twin/profile.yml`）不是它写的 —— `twin gen`
+写在**机器级那层目录**里：它是这份 wrap 里唯一需要人读一遍的东西，而落点必须从下一个 shell 里还找得到
+（跟 `$HOME` 派生；想放别处用 `-o`）。
 
 | # | 路径 | 内容 | 何时写 |
 |---|---|---|---|

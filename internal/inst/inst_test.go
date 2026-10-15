@@ -306,6 +306,24 @@ func TestCheckAcceptsOrdinaryPassthrough(t *testing.T) {
 	}
 }
 
+// The default working copy has to be findable from the next shell, which the
+// directory the user happens to be standing in is not. It also has to stay a
+// file: List reads that directory and would otherwise try to load it as an
+// instance (see TestListSkipsDirectoriesThatAreNotInstances).
+func TestWorkingCopyFollowsHomeAndIsNotAnInstance(t *testing.T) {
+	p := Paths{Home: "/home/someone"}
+	want := "/home/someone/.local/share/twin/" + ProfileName
+	if got := p.WorkingCopy(); got != want {
+		t.Errorf("WorkingCopy = %q, want %q", got, want)
+	}
+	if dir := filepath.Dir(p.WorkingCopy()); dir != filepath.Dir(p.BinDir()) {
+		t.Errorf("工作副本与实例目录应当同级，得到 %q", dir)
+	}
+	if filepath.Base(p.WorkingCopy()) != ProfileName {
+		t.Errorf("工作副本与存档快照必须同名：%q", filepath.Base(p.WorkingCopy()))
+	}
+}
+
 func TestPathsUseExplicitHome(t *testing.T) {
 	p := Paths{Home: "/home/someone"}
 	if got := p.Desktop("x"); got != "/home/someone/.local/share/applications/x.desktop" {

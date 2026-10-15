@@ -203,6 +203,11 @@ type Instance struct {
 	Binds []Bind
 }
 
+// ProfileName is the file name the working copy and the instance archive both
+// carry. One schema, one word for it: the header line inside the file is what
+// tells the two apart, not the name — they are the same document at two moments.
+const ProfileName = "profile.yml"
+
 // Paths computes every artefact location from an explicit home directory.
 type Paths struct{ Home string }
 
@@ -221,7 +226,20 @@ func (p Paths) Launch(id string) string { return filepath.Join(p.InstanceDir(id)
 // YAML because the schema is nested (identity / exec / isolation / bwrap) and a
 // nested file reads as a hierarchy instead of as a wall of headers.
 func (p Paths) Profile(id string) string {
-	return filepath.Join(p.InstanceDir(id), "profile.yml")
+	return filepath.Join(p.InstanceDir(id), ProfileName)
+}
+
+// WorkingCopy is the configuration `twin gen` writes and `twin install` reads
+// when neither -o nor -p names a file.
+//
+// It sits in the machine-level twin directory rather than in the directory the
+// user happens to be standing in, because it must still be findable from the
+// next shell, the next terminal and the next day — and a path derived from
+// $HOME is the only place that is true. It is deliberately a *file* next to the
+// per-instance directories: `List` skips every entry that is not a directory,
+// so no wrap report can mistake it for an instance.
+func (p Paths) WorkingCopy() string {
+	return filepath.Join(p.Home, ".local/share/twin", ProfileName)
 }
 
 // LegacyProfile is the pre-YAML snapshot name. Nothing reads it any more, but

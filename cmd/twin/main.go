@@ -42,15 +42,15 @@ const (
 	exitHuman = 3
 )
 
-// DefaultProfileName is the profile `twin gen` writes and `twin install` reads
-// when neither -o/--output nor -p/--profile says otherwise.
+// defaultProfileLabel is how the default working copy is spelled wherever twin
+// has to name it in text: the help line of -o/-p, the usage block, and the
+// refusal that a missing configuration produces.
 //
-// It is deliberately a path in the current directory rather than one under
-// $HOME: the file is meant to be read, edited, diffed and committed, and the
-// directory the user is standing in is the one place they already chose. An
-// archive under ~/.local/share/twin/<id>/ carries the same name on purpose:
-// one schema, one word for it, and the header line is what tells the two apart.
-const DefaultProfileName = "profile.yml"
+// It is the ~ form, not the absolute one, for the same reason profile.yml
+// itself stores ~ paths: the machine's home is one machine's answer, while
+// this string has to read the same in a help screen, a bug report and on
+// someone else's box. The real path comes from inst.Paths.WorkingCopy().
+const defaultProfileLabel = "~/.local/share/twin/profile.yml"
 
 // Colour is decided per stream, and decided here rather than at each print
 // site: `twin gen wechat > log` must leave the log plain while the warnings
@@ -111,7 +111,7 @@ func printManual(rep *verify.Report) {
 const usage = `twin —— 程序双开
 
 用法:
-  twin gen <source> [选项]                在当前目录生成一份配置（默认 ./profile.yml）
+  twin gen <source> [选项]                生成一份配置（默认 ` + defaultProfileLabel + `）
   twin install [选项]                     读那份配置并落盘：桌面项 / 图标 / 启动器 / 托盘
   twin install --ext                      装入 shell 侧的托盘扩展（机器级，一次即可）
   twin inspect <source> [--name 显示名]   只看：源程序是什么、身份该怎么做
@@ -623,7 +623,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	// be seen anywhere — and a wrong default is exactly the kind of thing that
 	// says nothing until two instances fight over one lock file.
 	var (
-		output    = fs.String("output", "", "配置写到哪（默认 ./profile.yml；与 -o 是同一个设置）")
+		output    = fs.String("output", "", "配置写到哪（默认 "+defaultProfileLabel+"；与 -o 是同一个设置）")
 		as        = fs.String("as", "", "实例 id，同时是窗口 app_id 与托盘 SNI Id（默认 源基名 ＋ 最小空闲序号，从 2 起）")
 		name      = fs.String("name", "", "显示名（默认 源 Name[当前语言] ＋ 序号）")
 		nameEn    = fs.String("name-en", "", "英文显示名，写 Name[en]（默认 源 Name ＋ 序号；与 --name 相同时不写）")
@@ -670,7 +670,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		fail("同时给了 -o 和 --output：它们是同一个设置，请只留一个")
 		return exitUsage
 	}
-	outPath := firstNonEmpty(*output, shortOutput, DefaultProfileName)
+	outPath := firstNonEmpty(*output, shortOutput, p.WorkingCopy())
 
 	// An empty --level means "let the config layers decide", which is not the
 	// same as passing --level alias: the rules.d entry for the program may know
@@ -778,13 +778,19 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		lead = title("🔍 将要写出配置（--dry-run，未写盘）")
 	}
 	fmt.Printf("%s %s\n", lead, outStyle.Bold(outPath))
+	// The directory and the file name each get a line of their own. The full
+	// path above is one string, and the two things anyone does next — `cd` to
+	// it, or name the file to another program — each need exactly one half of
+	// it; gen ends here, so this is the last place either half can be said.
+	fmt.Printf("  目录 %s\n", filepath.Dir(outPath))
+	fmt.Printf("  文件 %s\n", filepath.Base(outPath))
 	if explain {
 		printDerived(der)
 		// "This instance" is the configuration the user is holding, not a
 		// snapshot: gen has not installed anything, so that snapshot does not
 		// exist yet.
 		printPathMaps(p, it, insp, mapsOrigin(insp.Rule),
-			mapFix{file: outPath, replay: installCommandFor(outPath)}, true)
+			mapFix{file: outPath, replay: installCommandFor(p, outPath)}, true)
 	}
 	// Under --explain the map section carries this sentence itself — but only
 	// for a program with no rule at all, so a rule that maps nothing still
@@ -803,7 +809,7 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	}
 	fmt.Printf("\n%s\n", title("👉 下一步"))
 	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也能装）\n", outPath)
-	fmt.Printf("  2. 安装：%s\n", installCommandFor(outPath))
+	fmt.Printf("  2. 安装：%s\n", installCommandFor(p, outPath))
 }
 
 // installRun is one `twin install` invocation: the choices that are about the
@@ -828,7 +834,7 @@ func (r installRun) verbose() bool { return r.dry || r.explain }
 func cmdInstall(p inst.Paths, args []string) int {
 	fs := newFlags("install")
 	var (
-		profilePath = fs.String("profile", "", "读哪一份配置（默认 ./profile.yml；与 -p 是同一个设置）")
+		profilePath = fs.String("profile", "", "读哪一份配置（默认 "+defaultProfileLabel+"；与 -p 是同一个设置）")
 		force       = fs.Bool("force", false, "覆盖已存在但不是 twin 生成的桌面项；也允许落盘时遮蔽同名的系统桌面项")
 		dryRun      = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘覆盖这次会走哪条路、托盘扩展的当前状态）")
 		explain     = fs.Bool("explain", false, "打印完整说明（推导值、路径映射的修改粒度、规则模板、候选状态目录、整份自检、手工验证命令）")
@@ -884,7 +890,7 @@ func cmdInstall(p inst.Paths, args []string) int {
 		}
 		return installExt(p, *dryRun)
 	}
-	path := firstNonEmpty(*profilePath, shortProfile, DefaultProfileName)
+	path := firstNonEmpty(*profilePath, shortProfile, p.WorkingCopy())
 
 	it, err := loadConfigFile(path)
 	if err != nil {
@@ -952,7 +958,7 @@ func (r installRun) apply(it *inst.Instance, path string, cfg *config.Config) in
 	report := installReport{
 		lead:    outStyle.Green(style.Glyph(style.LevelOK)+" 已安装") + " " + outStyle.Bold(it.ID),
 		origin:  "配置 " + path,
-		fix:     mapFix{file: path, replay: installCommandFor(path)},
+		fix:     mapFix{file: path, replay: installCommandFor(r.p, path)},
 		verbose: r.verbose(),
 	}
 	if r.dry {
@@ -1153,7 +1159,9 @@ func cmdList(p inst.Paths) int {
 		return exitFail
 	}
 	if len(items) == 0 {
-		fmt.Printf("%s 还没有任何实例（%s 下为空）\n",
+		// "下没有实例目录"而不是"下为空"：那个目录里本来就常驻着工作副本
+		// （Paths.WorkingCopy）和共享的 bin/，把"空"说出口就是把一个文件说成不存在。
+		fmt.Printf("%s 还没有任何实例（%s 下没有实例目录）\n",
 			outStyle.Mark(style.LevelSkip), filepath.Join(p.Home, ".local/share/twin"))
 		fmt.Printf("   做第一个：twin gen wechat && twin install\n")
 		return exitOK
@@ -1403,10 +1411,11 @@ type mapFix struct {
 }
 
 // installCommandFor spells the command that installs a given configuration,
-// with -p only when it is not the default name: `twin install` reads
-// ./profile.yml, and saying `-p ./profile.yml` would suggest otherwise.
-func installCommandFor(path string) string {
-	if path == DefaultProfileName {
+// with -p only when it is not the default one: a bare `twin install` reads the
+// working copy, and printing `-p ~/.local/share/twin/profile.yml` under it
+// would suggest the default lives somewhere else.
+func installCommandFor(p inst.Paths, path string) string {
+	if path == p.WorkingCopy() {
 		return "twin install"
 	}
 	return "twin install -p " + path

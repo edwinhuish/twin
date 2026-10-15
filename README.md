@@ -8,7 +8,7 @@
 （两个账号、两套配置、两个任务栏图标）。
 
 ```console
-$ twin gen wechat       # 在当前目录写出 profile.yml：独立窗口名、独立托盘图标、独立账号状态
+$ twin gen wechat       # 写出一份 profile.yml（~/.local/share/twin/）：独立窗口名、托盘图标、账号状态
 $ twin install          # 读它，落盘，然后自检这条身份链路的每一环
 ```
 
@@ -53,11 +53,11 @@ twin doctor
 # 1. 只看不写：这个程序会被包成什么样
 twin inspect wechat
 
-# 2. 写配置：当前目录多一个 profile.yml；每个键的说明都写在文件里的注释里
+# 2. 写配置：~/.local/share/twin/profile.yml；每个键的说明都写在文件里的注释里（命令结束时会报出行目录与文件名）
 twin gen wechat
 
 # 3. 改配置（可选）：`bind` 那一节最容易猜错，每个键的说明都写在文件里的注释里
-$EDITOR profile.yml
+$EDITOR ~/.local/share/twin/profile.yml
 
 # 4. 安装 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
 twin install
@@ -73,8 +73,9 @@ twin install -p ~/wraps/wx-work.yml
 
 **为什么是两步**：一次 wrap 里唯一随程序而变、又猜错了不出声的，是"隔离哪些数据目录"。所以先把它
 落成一份能读能改的 `profile.yml`，再安装 —— 而不是先装好、再在一屏输出里让你事后发现映射是错的。
-放在**当前目录**是同一个道理：它是这份 wrap 里唯一需要人读一遍的东西，放在你**已经选好的**那个
-目录里，才能 diff、提交、拷到另一台机器。
+默认落点是 `~/.local/share/twin/` 下的同一份文件，理由的另一半是**找得回来**：它是这份 wrap 里唯一
+需要人读一遍的东西，而"当前目录"只是你这次站的地方 —— 换个 shell 就找不到了。想并排放好几份
+（diff、提交进仓库、拷到另一台机器）就用 `-o`。
 
 安装后你会发现多了这些东西：
 
@@ -132,7 +133,7 @@ twin gen wechat                  ← 前半段：只配置
       ├─ 2. 推导默认值   → id=wechat2  name=微信2  badge=2  keywords=微信;wechat;
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
       ├─ 4. 从内置规则 / rules.d 算出路径映射
-      └─ 5. 写出 profile.yml（当前目录，唯一一个文件），并打印"下一步敲什么"
+      └─ 5. 写出 profile.yml（~/.local/share/twin/，唯一一个文件），报出行目录与文件名、下一步敲什么
 
 twin install                     ← 后半段：按配置安装（reinstall 也走这条路）
       │
@@ -232,7 +233,7 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 
 | 命令 | 作用 |
 |---|---|
-| `twin gen <source>` | **最常用**：在当前目录写出一份配置（`profile.yml`）；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin gen <source>` | **最常用**：写出一份配置（`profile.yml`，默认在 `~/.local/share/twin/`，`-o` 可换地方）；id / 名字 / 角标 / 状态路径全部推导 |
 | `twin install` | **最常用**：读那份配置，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。需要 AppArmor profile 时用 `sudo` 装；托盘覆盖走哪条路由它当场决定并打印；托盘扩展本身只**检查**，缺了会给出下面那条命令 |
 | `twin install --ext` | 装入 **shell 侧的托盘扩展**（机器级，一份服务所有实例，装一次即可；装完要注销重登一次才启用得上，之后各实例的托盘图标由它画，下次 install / reinstall 才改走那条路）。`twin reinstall --ext` 是同一个动作 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
@@ -258,7 +259,7 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 三层，越具体越优先：
 
 ```
-./profile.yml（或 -p 指的那份）              你正在编辑的那一份
+~/.local/share/twin/profile.yml（或 -p 指的那份）   你正在编辑的那一份
   > ~/.config/twin/rules.d/<app>.toml      应用知识（支持 {id} 占位）
     > ~/.config/twin/config.toml           这台机器的环境
       > 编译进二进制里的内置默认

@@ -69,7 +69,7 @@ go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o t
 
 ```bash
 mkdir -p /tmp/scratch-home/.config/twin /tmp/scratch-work
-cd /tmp/scratch-work                      # gen 默认往**当前目录**写 profile.yml
+cd /tmp/scratch-work                      # gen 默认写到 $HOME/.local/share/twin/profile.yml
 HOME=/tmp/scratch-home /path/to/twin gen wechat --dry-run
 HOME=/tmp/scratch-home /path/to/twin gen wechat
 HOME=/tmp/scratch-home /path/to/twin install --dry-run
@@ -148,12 +148,14 @@ style → {}    ← 只有标准库
    把整份 "Usage of gen:" 或 `usage` 常量倒在笔误下面，会把真正有用的那一行顶出屏幕。
 7. **产物路径一律从 `$HOME` 派生**，且写进实例定义的一律用 `~/` 相对形式
    （`RelStateDir`）—— 那份文件要能搬到另一台机器重放。启动器里则统一折叠成 `$HOME/...`，
-   绝不把生成时刻的 HOME 烤进去。唯一的例外是 `gen` 的输出文件：它在**当前目录**，那是用户的
-   选择，不是机器的属性。
+   绝不把生成时刻的 HOME 烤进去。`gen` 的默认落点（`Paths.WorkingCopy()`）同样如此：这份配置
+   要在下一个 shell、明天、别人的 bug 报告里都还找得到，而"当前目录"只是这次站的地方 ——
+   想写到别处就显式 `-o`。
 8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
    stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
    （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
-9. **默认输出是给人读的，不是给人查的。** `twin gen` 只打印文件路径与下一步；逐键说明用
+9. **默认输出是给人读的，不是给人查的。** `twin gen` 只打印落点与下一步 —— 落点拆成完整路径、
+   所在目录、文件名三行（要 `cd` 过去的人和要把文件名递给另一个程序的人，各只用到一半）；逐键说明用
    `yamlz.SetComment` 写在那份配置里，人读到它的那一刻正在编辑它 —— 同一件事在终端和
    文件里各说一遍，就是两处将来会各表一套。唯一的例外是"一条映射都没有"的警告：它描述的是
    别处不会再报的后果，所以留在终端上。`twin install` 打印产物、路径映射、下一步；自检**只在
@@ -216,17 +218,17 @@ style → {}    ← 只有标准库
 
 ### 两段式（`twin gen` / `twin install`）
 - 前半段（`twin gen`）只有一个写点：`it.Render()` ＋ `writeConfigFile`，写的是**工作副本**
-  （`inst.RoleConfig`），默认落在**当前目录**的 `profile.yml`（`DefaultProfileName`）——
-  那是用户的选择，不是机器的属性
-  （§4.7）。它拒绝覆盖已存在的文件，除非 `--force`：这份文件正是接下来要被人读、被人改的那一份。
+  （`inst.RoleConfig`），默认落在 `~/.local/share/twin/profile.yml`（`Paths.WorkingCopy()`，跟
+  `$HOME` 派生，见 §4.7）；`-o` 可以写到任何地方。它拒绝覆盖已存在的文件，除非 `--force`：
+  这份文件正是接下来要被人读、被人改的那一份。
 - 后半段（`twin install`）读那份配置、按 `inst.RoleSnapshot` 重新渲染一份写进
   `~/.local/share/twin/<id>/profile.yml`，再由 `Materialize` 落盘。两半的字节**本来就该不同**：
   header 要说明这份文件是"被 `reinstall` 重放的存档"还是"被 `install` 读的工作副本"，
   这就是 `Role` 这层存在的全部理由。
 - 配置里的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
   **丢掉**注释 —— 手改进来的说明不会被下一次 `gen` 带偏，也所以往返必须是逐字节稳定的。
-- 前后两半不靠重新推导 id 相认，而靠**显式指名的那份文件**（`install -p <文件>`，默认
-  `./profile.yml`）：一次 `gen` 只写一份配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到
+- 前后两半不靠重新推导 id 相认，而靠**显式指名的那份文件**（`install -p <文件>`，默认就是 `gen`
+  写下的那份工作副本）：一次 `gen` 只写一份配置，那个 id 就被那份文件占住了，重新推导只会悄悄挪到
   `wechat3`。
 - `install` 不接受位置参数（`len(pos) > 0` 直接报错）：要装哪份配置用 `-p` 说，要包哪个程序是
   `gen` 那一步说过的。留一条重新推导的路，就是给"同一个问题两处答案"留机会。

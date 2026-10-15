@@ -7,12 +7,13 @@
 |---|---|---|---|
 | 环境 | `~/.config/twin/config.toml` | **这台机器** | 换机器、换桌面会话 |
 | 应用知识 | `~/.config/twin/rules.d/<app>.toml` | **某个程序** | 你了解了一个新程序的习惯 |
-| 实例 | `./profile.yml`（`gen` 写、`install` 读） | **这一个实例** | 你想改这一个实例 |
+| 实例 | `~/.local/share/twin/profile.yml`（`gen` 写、`install` 读；`-o` 可换地方） | **这一个实例** | 你想改这一个实例 |
 | 存档 | `~/.local/share/twin/<id>/profile.yml` | 同一个实例的安装记录（`reinstall` 读） | 想按存档重来一次时 |
 | 内置 | （编译进二进制） | 出厂默认 | 永不 |
 
-前两层是"知识"，后两层是"意图"。后两层是**同一个名字、同一套键**的两份文件：你手上那份在工作
-目录（`gen` 写、`install` 读），`install` 按它渲染出来的**存档**在实例目录（`reinstall` 读）。区别
+前两层是"知识"，后两层是"意图"。后两层是**同一个名字、同一套键**的两份文件：你手上那份在
+`~/.local/share/twin/` 下（`gen` 写、`install` 读），`install` 按它渲染出来的**存档**在实例目录
+（`reinstall` 读）。区别
 只剩头注释里那句"改完敲哪个命令" —— 文件名不再承担这个区分，所以那句必须写准。
 
 ---
@@ -218,8 +219,9 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 
 ## 4. 实例定义（`profile.yml`：工作副本与存档）
 
-**一份 schema，两处落点，同一个名字。** `twin gen` 把它写进当前目录的 `profile.yml`（工作副本，
-`twin install` 读它）；`twin install` 把**同一份键**渲染进 `~/.local/share/twin/<id>/profile.yml`
+**一份 schema，两处落点，同一个名字。** `twin gen` 把它写进 `~/.local/share/twin/profile.yml`
+（工作副本，`twin install` 读它；要放别处用 `-o`）；`twin install` 把**同一份键**渲染进
+`~/.local/share/twin/<id>/profile.yml`
 （存档快照，`twin reinstall` 读它）。名字相同是故意的：读者只要记住一个词，而"现在是哪一份"由
 头注释回答 —— 一个文件不该对着读者指一条会静默忽略它的命令。
 
@@ -344,7 +346,7 @@ twin rules --init myapp
 $EDITOR ~/.config/twin/rules.d/myapp.toml
 
 # 改一个实例（两条路，改哪份文件就用哪个命令）
-$EDITOR profile.yml && twin install
+$EDITOR ~/.local/share/twin/profile.yml && twin install
 $EDITOR ~/.local/share/twin/wechat2/profile.yml && twin reinstall wechat2
 ```
 
