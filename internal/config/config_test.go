@@ -210,6 +210,24 @@ bind = [
 	}
 }
 
+// rules.d 里的相对路径被指名拒绝：`profile.yml` 是唯一有"自己所在目录"这个基准的文件
+// （inst.Load 按那份文件算），而规则是给这个程序的所有实例用的共享知识 —— 它的相对路径
+// 该相对规则目录还是相对每个实例，没有答案。猜一个，就等于把一条 bwrap 按启动器工作目录
+// 解析的路径塞进去，而包好的东西看起来一切正常。
+func TestRuleFileRefusesRelativePaths(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	write(t, p.Home, ".config/twin/rules.d/demo.toml", `
+bind = ["state/demo:~/.demo"]
+`)
+	_, _, err := FindRule(p, "demo")
+	if err == nil {
+		t.Fatal("rules.d 里的相对路径必须报错，而不是塞进 bwrap 由它按工作目录解析")
+	}
+	if !strings.Contains(err.Error(), "相对路径") || !strings.Contains(err.Error(), "state/demo") {
+		t.Errorf("报错要说清是哪一条、为什么：%v", err)
+	}
+}
+
 // The pre-string-list spelling is refused by name. Reading `[[bind]]` as "no
 // mappings" would turn a file that says where the data is into a file that says
 // the data is shared.

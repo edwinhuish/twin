@@ -314,6 +314,9 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 	if root.Tree("bwrap").Has("extra") {
 		out.Bwrap = root.Tree("bwrap").StrList("extra")
 	}
+	if err := checkRulePaths(path, out); err != nil {
+		return nil, err
+	}
 
 	if out.Level != "" {
 		lvl, err := inst.ParseLevel(out.Level)
@@ -325,6 +328,38 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 		}
 	}
 	return out, nil
+}
+
+// checkRulePaths refuses relative paths in a rules.d file, by name and with a
+// reason.
+//
+// profile.yml is the one file where "relative" has a definition: relative to the
+// file itself (inst.Load resolves them there). A rule has no such base — it is
+// shared knowledge about a program, and it serves every instance of it, so the
+// only candidate bases are "next to the rule" (where no data lives) and "next to
+// each instance" (a different answer per instance). Guessing either one would
+// put a path into bwrap that resolves against the launcher's working directory
+// instead, which is nobody's intent and looks like a working wrap until the
+// program cannot find its data.
+func checkRulePaths(path string, r *Rule) error {
+	bad := func(field, s string) error {
+		return fmt.Errorf("%s: %s = %q 是相对路径，而相对路径只有 profile.yml 里有基准（相对那份文件算）—— "+
+			"规则文件是给这个程序的所有实例用的，这里请写 ~/ 或绝对路径", path, field, s)
+	}
+	for n, b := range r.Binds {
+		if !inst.IsResolvablePath(b.Source) {
+			return bad(fmt.Sprintf("bind[%d] 源", n), b.Source)
+		}
+		if !inst.IsResolvablePath(b.Target) {
+			return bad(fmt.Sprintf("bind[%d] 目标", n), b.Target)
+		}
+	}
+	for n, t := range r.Tmpfs {
+		if !inst.IsResolvablePath(t) {
+			return bad(fmt.Sprintf("tmpfs[%d]", n), t)
+		}
+	}
+	return nil
 }
 
 // BuiltinRules is the small knowledge base of state paths that ships with

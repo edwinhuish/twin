@@ -325,8 +325,47 @@ func (p Paths) SystemDesktopDirs() []string {
 	}
 }
 
+// resolvePath is the other half of Expand, and the base is a different one on
+// purpose: Expand answers "which home is this ~ about" and runs at use time on
+// this machine, while resolvePath answers "which directory is this relative path
+// about" and runs once, when the definition is read — the directory the
+// definition file itself lives in.
+//
+// Absolute paths are already an answer and `~` is deliberately left spelled that
+// way: it is turned into a home by Expand, which is what keeps one definition
+// replayable on another machine. Everything else is relative, including the
+// empty string, and only the non-empty ones are joined.
+func resolvePath(base, s string) string {
+	if s == "" || IsResolvablePath(s) {
+		return s
+	}
+	return filepath.Join(base, s)
+}
+
+// IsResolvablePath reports whether a path carries its own meaning — absolute, or
+// rooted at `~`. Anything else is relative, and a relative path needs a base:
+// profile.yml has one (the file's own directory, see Load), a rules.d file does
+// not, which is why config refuses them there rather than picking a base.
+func IsResolvablePath(s string) bool {
+	return filepath.IsAbs(s) || s == "~" || strings.HasPrefix(s, "~/")
+}
+
+// resolvePaths is resolvePath over a list, preserving nil (nil means "no list",
+// and [] means "an empty one" — the two are different answers in profile.yml).
+func resolvePaths(base string, list []string) []string {
+	if list == nil {
+		return nil
+	}
+	out := make([]string, len(list))
+	for n, s := range list {
+		out[n] = resolvePath(base, s)
+	}
+	return out
+}
+
 // Expand turns a leading ~/ into an absolute path. Anything else is returned
-// unchanged; the sandbox never re-resolves it.
+// unchanged; the sandbox never re-resolves it (a relative path was already
+// resolved against its definition's directory by Load).
 func (p Paths) Expand(s string) string {
 	switch {
 	case s == "~":
@@ -535,7 +574,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	id.Set("notify", i.Notify)
 
 	ic := t.Ensure("icon")
-	ic.SetComment("source", "源图标。")
+	ic.SetComment("source", "源图标：png/jpeg/svg 路径，或图标主题里的名字。路径可以绝对、可以 ~/ 开头，\n"+
+		"也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。")
 	if i.IconSource != "" {
 		ic.Set("source", i.IconSource)
 	}
@@ -547,7 +587,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	ic.Set("style", i.BadgeStyle)
 
 	ex := t.Ensure("exec")
-	ex.SetComment("target", "真实程序的绝对路径。")
+	ex.SetComment("target", "真实程序的路径。可以绝对、可以 ~/ 开头，也可以相对 ——\n"+
+		"相对的话基准是这份 profile.yml 自己所在的目录（下同：icon.source、bind 两侧、isolation.tmpfs）。")
 	ex.Set("target", i.Target)
 	ex.SetComment("alias", "沙箱内建在 target 同目录下的别名文件名。窗口 app_id 取自真实路径名，\n"+
 		"托盘 SNI Id 取自 argv[0]，两者都等于它 —— 让它们分叉，就有一个找不到桌面项。")
@@ -568,8 +609,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	ex.Set("env", envT)
 
 	iso := t.Ensure("isolation")
-	iso.SetComment("tmpfs", "在沙箱内被盖成空目录的路径（写后即弃，宿主看不见；代价是 /tmp 里"+
-		"原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0）。\n"+
+	iso.SetComment("tmpfs", "在沙箱内被盖成空目录的路径（相对路径的基准是这份 profile.yml 所在的目录）。\n"+
+		"写后即弃，宿主看不见；代价是 /tmp 里"+
+		"原本的东西也一并看不见 —— 比如 X11 的 /tmp/.X11-unix/X0。\n"+
 		"不写 /tmp 不等于什么都没有：程序看到的是宿主那个 /tmp，可写、也与宿主共享。")
 	if len(i.Tmpfs) == 0 {
 		iso.Set("tmpfs", []string{})
@@ -616,6 +658,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// so the key has to be there even when there is nothing to list.
 	t.SetComment("bind", "隔离哪个数据目录。整段替换内置规则（不是追加）。\n"+
 		"写法同 Docker Compose 的卷：源:目标[:ro]，源是数据实际所在，目标是程序看到它的位置。\n"+
+		"路径可以绝对、可以 ~/ 开头，也可以相对 —— 相对的话基准是这份 profile.yml 自己所在的目录。\n"+
+		"（透传区 bwrap.extra 例外：那里逐字照搬，twin 不认、也解析不了里面的路径。）\n"+
 		"  源路径:目标路径        ⇒ 私有副本，两个实例互不干扰\n"+
 		"  只写一条路径           ⇒ 该路径挂回自己，只把只读升回可写（数据不搬家）\n"+
 		"  源路径:目标路径:ro     ⇒ 只读挂载，程序看得见但改不动\n"+
@@ -693,6 +737,18 @@ func (i *Instance) render(role Role, elsewhere string) ([]byte, error) {
 }
 
 // Load reads an instance definition from disk.
+//
+// Paths written in the file may be relative, and they are resolved here — once,
+// against the directory the file itself is in. One base, resolved at the single
+// point where the file meets the machine, so that every reader downstream
+// (bwrap arguments, mount-point creation, icon lookup, verify) sees the same
+// absolute path and none of them can invent a base of its own: a *reader* that
+// resolved relative paths would be resolving them against whatever directory
+// the user happened to run the command from.
+//
+// The file is never written back in the resolved form: what stays on disk is the
+// spelling the user chose, which is what lets a bundle (the definition, the
+// program and its state side by side) be moved or committed as a unit.
 func Load(path string) (*Instance, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -702,6 +758,7 @@ func Load(path string) (*Instance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	base := filepath.Dir(path)
 	// The entry's text lives under `desktop:`. The spelling that predates the
 	// section — the same keys at the root — is still read: it is not ambiguous
 	// (there is nowhere else a root-level `name` could have belonged), and a
@@ -727,13 +784,13 @@ func Load(path string) (*Instance, error) {
 		Level:      Level(root.At("identity").Str("level")),
 		WMClass:    root.At("identity").Str("wm_class"),
 		Notify:     root.At("identity").Bool("notify"),
-		IconSource: root.At("icon").Str("source"),
+		IconSource: resolvePath(base, root.At("icon").Str("source")),
 		Badge:      root.At("icon").Str("badge"),
 		BadgeStyle: root.At("icon").Str("style"),
-		Target:     root.At("exec").Str("target"),
+		Target:     resolvePath(base, root.At("exec").Str("target")),
 		Alias:      root.At("exec").Str("alias"),
 		Argv0:      root.At("exec").Str("argv0"),
-		Tmpfs:      root.At("isolation").StrList("tmpfs"),
+		Tmpfs:      resolvePaths(base, root.At("isolation").StrList("tmpfs")),
 		Unshare:    root.At("isolation").StrList("unshare"),
 		NestedNS:   root.At("isolation").Bool("nested_ns"),
 		Bwrap:      root.At("bwrap").StrList("extra"),
@@ -752,6 +809,14 @@ func Load(path string) (*Instance, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+		// Both sides take the same base. The right side is a path in the
+		// sandbox, and a relative one lands next to the definition like any
+		// other — which is coherent, since `~` on that side is likewise turned
+		// into a path under the user's home and not into something bwrap would
+		// interpret on its own (bwrap resolves a relative argument against the
+		// *launcher's* working directory, an answer nobody chose).
+		b.Source = resolvePath(base, b.Source)
+		b.Target = resolvePath(base, b.Target)
 		it.Binds = append(it.Binds, b)
 	}
 	if it.BadgeStyle == "" {

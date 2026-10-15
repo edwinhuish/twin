@@ -320,6 +320,83 @@ func TestProfileIsTheDefinitionInsideTheInstanceDirectory(t *testing.T) {
 	}
 }
 
+// 相对路径按"那份定义自己所在的目录"算，而且算在 Load 这一步：下游那些读路径的人
+// （bwrap 参数、建挂载点、图标解析、verify）拿到的是同一个绝对路径，谁也编不出第二个
+// 基准 —— 在读者那一侧解析，等于按"用户当时站在哪个目录"解析。定义文件本身保持你写的
+// 那个相对形式，一个 bundle（配置 + 程序 + 状态目录并排）才能整体搬走。
+func TestRelativePathsResolveAgainstTheDefinitionDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProfileName)
+	body := `id: demo
+exec:
+  target: ./bin/demo
+icon:
+  source: assets/demo.png
+isolation:
+  tmpfs:
+    - cache
+    - /tmp
+bind:
+  - ./state/demo:~/.demo
+  - /abs/data:~/abs
+  - ~/data:~/data-in-home
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "bin/demo"); it.Target != want {
+		t.Errorf("exec.target = %q, want %q", it.Target, want)
+	}
+	if want := filepath.Join(dir, "assets/demo.png"); it.IconSource != want {
+		t.Errorf("icon.source = %q, want %q", it.IconSource, want)
+	}
+	if len(it.Tmpfs) != 2 || it.Tmpfs[0] != filepath.Join(dir, "cache") || it.Tmpfs[1] != "/tmp" {
+		t.Errorf("isolation.tmpfs = %v（/tmp 这类绝对路径不该被动）", it.Tmpfs)
+	}
+	if len(it.Binds) != 3 {
+		t.Fatalf("binds = %v", it.Binds)
+	}
+	if want := filepath.Join(dir, "state/demo"); it.Binds[0].Source != want {
+		t.Errorf("bind 源 = %q, want %q", it.Binds[0].Source, want)
+	}
+	// 目标那一侧同样有基准：它是沙箱里那个路径，`~` 那一侧本来就由 twin 折叠成
+	// $HOME 下的路径，相对的一侧落在定义旁边是一样的道理。
+	if it.Binds[0].Target != "~/.demo" {
+		t.Errorf("bind 目标 = %q，~ 形式必须原样留着（它在用的时候才折叠成本机的 home）", it.Binds[0].Target)
+	}
+	if it.Binds[1].Source != "/abs/data" || it.Binds[2].Source != "~/data" {
+		t.Errorf("绝对路径与 ~ 形式都不该被动：%v", it.Binds)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != body {
+		t.Errorf("Load 不得改写那份定义（相对形式要留在盘上）：\n%s", after)
+	}
+}
+
+// 没有路径的字段（空字符串）不能被解析成一个目录：那会让一份没写 icon.source 的
+// 定义得到 "<定义目录>" 这个"图标"。
+func TestResolvePathLeavesEmptyAndAnchoredPaths(t *testing.T) {
+	if got := resolvePath("/base", ""); got != "" {
+		t.Errorf("空字符串不该变成路径：%q", got)
+	}
+	for _, s := range []string{"/abs", "~", "~/x"} {
+		if got := resolvePath("/base", s); got != s {
+			t.Errorf("resolvePath(%q) = %q，应当原样返回", s, got)
+		}
+	}
+	if got := resolvePath("/base", "rel/x"); got != "/base/rel/x" {
+		t.Errorf("resolvePath = %q", got)
+	}
+}
+
 func TestPathsUseExplicitHome(t *testing.T) {
 	p := Paths{Home: "/home/someone"}
 	if got := p.Desktop("x"); got != "/home/someone/.local/share/applications/x.desktop" {
