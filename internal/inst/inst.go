@@ -265,6 +265,23 @@ func (p Paths) RuleFile(id string) string {
 	return filepath.Join(p.RulesDir(), id+".json")
 }
 
+// TrayTableDir holds the neutral tray table: one small JSON file per instance,
+// read by the shell-side helper (see internal/tray/table.go).
+//
+// It lives with the other per-instance artefacts and not in ~/.config because
+// it is generated, not configured: `twin remove` deletes the row with the
+// instance, and nothing hand-edits it.
+func (p Paths) TrayTableDir() string {
+	return filepath.Join(p.Home, ".local/share/twin/tray.d")
+}
+
+// TrayTable is the file the helper reads this instance's override from. The
+// name is the instance id, which — for an instance that renamed the program —
+// is also the StatusNotifierItem id it matches on.
+func (p Paths) TrayTable(id string) string {
+	return filepath.Join(p.TrayTableDir(), id+".json")
+}
+
 // BinDir holds the shared, machine-wide helpers twin needs at run time.
 //
 // They live outside any instance directory on purpose: neither carries

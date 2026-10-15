@@ -96,7 +96,8 @@ internal/
   sandbox/             bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）
   icon/                纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）
   userns/              userns 限制判定、AppArmor profile 解析、跳板发现
-  tray/                托盘覆盖表的 read-modify-write ＋ 宿主侧尺寸助手（ext.go ＋ 内嵌的 ext/）
+  tray/                托盘覆盖两条路：宿主表 read-modify-write（tray.go）＋ 中立文件表
+                       （table.go，扩展读它画图标）＋ 扩展的装入/状态与内嵌的 ext/（ext.go）
   verify/              回读自证
   doctor/              环境自检
   style/               终端着色判定（TTY / NO_COLOR）与状态字形
@@ -239,6 +240,11 @@ style → {}    ← 只有标准库
   `app_id` 与托盘 `SNI Id` 同名"的不变量）。
 - ❌ 不要让 `isolation.unshare` 接受 `net`。
 - ❌ 不要写会动真实 `$HOME` 的自动化测试。
+- ❌ 不要让托盘覆盖**同时**走两条路（扩展读的文件表 ＋ 宿主 `custom-icons` 表）。一次只走一条，
+  判据只有 `tray.ExtState.Usable()` 一个，而它被四处读（`applyTray` 的选路、预演、`verify`、
+  `doctor`）—— 改判据要四处一起改，改出的措辞由 `ExtState.ShortWhy()` 统一供。
+- ❌ 不要为了让托盘那条路"更结实"顺手把扩展改成写 `custom-icons`（那是把两条路合回一条 dconf 键，
+  选路就白做了）；也不要让扩展 import 宿主的模块 —— 补丁只碰被补的那个函数本来就在用的三个名字。
 - ❌ 不要"顺手"重排无关代码、改注释风格、或把中文文档翻译成英文 —— diff 要能一眼看明白。
 
 ## 7. Git 约定

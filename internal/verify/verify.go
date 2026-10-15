@@ -195,8 +195,8 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 		add("私有状态目录", StatusWarn, state+" 不存在（首次启动会自动建）", "")
 	}
 
-	// ---- 6. the tray override: the host table, and the shell-side size fix -----
-	rep.Findings = append(rep.Findings, TrayFinding(i, iconPath))
+	// ---- 6. the tray override: whichever of the two mechanisms is in force ----
+	rep.Findings = append(rep.Findings, TrayFinding(p, i, iconPath))
 	rep.Findings = append(rep.Findings, TrayExtFinding(p, i))
 
 	// ---- 7. the L5 rule (only for level=redirect) -----------------------------
@@ -371,26 +371,44 @@ func PNGSize(path string) (int, int, error) {
 	return img.Width, img.Height, nil
 }
 
-// TrayFinding reports on the host's tray icon override table.
+// TrayFinding reports how this instance's tray icon is being drawn.
 //
-// twin writes this table itself while wrapping, so on the normal path the
-// check simply confirms what the same run just did. It stays Manual — and
-// therefore exit 3 — because the write needs the session bus: run from an
-// installer, a script or a headless session the table does not change, and the
-// honest answer is "not done yet, here is the command" rather than a FAIL that
-// reads like a broken instance.
+// There are two mechanisms and the install picked one of them, so the check
+// has to read the *same* switch (tray.ExtState.Usable) and then look at what
+// that mechanism actually holds. It reports both directions, like the L5 rule
+// check: a row that should not be there is as much of a finding as a row that
+// is missing, because it means two mechanisms are claiming one tray item.
+//
+// It stays Manual — and therefore exit 3 — because the fallback's write needs
+// the session bus: run from an installer, a script or a headless session the
+// host table does not change, and the honest answer is "not done yet, here is
+// the command" rather than a FAIL that reads like a broken instance.
 //
 // It is a separate function because every branch here is a decision about what
 // the user is told, and getting one wrong means either a false FAIL or a task
 // nobody knows is still outstanding.
-func TrayFinding(i *inst.Instance, iconPath string) Finding {
-	f := Finding{Name: "托盘图标覆盖表", Status: StatusOK}
+func TrayFinding(p inst.Paths, i *inst.Instance, iconPath string) Finding {
+	f := Finding{Name: "托盘图标", Status: StatusOK}
 	if !i.TrayOverride {
 		f.Detail = "按设置跳过（tray.override = false）"
 		return f
 	}
-	f.Fix = fmt.Sprintf(`gsettings set %s %s "[('%s', '%s', '%s')]"`,
-		tray.Schema, tray.Key, i.ID, iconPath, iconPath)
+	// A replay is the one command that fixes every branch below: it re-takes
+	// the switch and re-writes whichever side it lands on.
+	replay := fmt.Sprintf("twin reinstall %s", i.ID)
+
+	st := tray.CheckExt(p)
+	if st.Usable() {
+		return trayFileFinding(p, i, iconPath, replay)
+	}
+
+	// The fix is a replay rather than a hand-typed gsettings line: the write is
+	// a read-modify-write of a global key (tray.Ensure), so a literal `set`
+	// copied out of here would replace the whole table — someone else's rows
+	// included. One command that does it right beats a shorter one that does
+	// the wrong thing.
+	f.Fix = replay
+	why := st.ShortWhy()
 
 	cur, err := tray.Snapshot()
 	if err != nil {
@@ -408,57 +426,107 @@ func TrayFinding(i *inst.Instance, iconPath string) Finding {
 	switch e, found := cur.Find(i.ID); {
 	case !found:
 		f.Status, f.Manual = StatusWarn, true
-		f.Detail = fmt.Sprintf("%s 里没有 %q 的条目（托盘会继续显示应用自己的图标）", tray.Key, i.ID)
+		f.Detail = fmt.Sprintf("%s 里没有 %q 的条目（托盘会继续显示应用自己的图标；%s）",
+			tray.Key, i.ID, why)
 	case e.Normal != iconPath:
 		f.Status, f.Manual = StatusWarn, true
 		f.Detail = fmt.Sprintf("%s 里 %q 指向 %s，不是本实例的图标", tray.Key, i.ID, e.Normal)
 	default:
-		f.Detail = fmt.Sprintf("%s → %s", i.ID, iconPath)
+		f.Detail = fmt.Sprintf("%s → %s（%s；比面板图标小一圈是这条路线的上限）", tray.Key, i.ID, why)
 	}
+	return f
+}
+
+// trayFileFinding is the helper's branch of TrayFinding: the row the extension
+// reads, and the host-table row that must no longer be there.
+func trayFileFinding(p inst.Paths, i *inst.Instance, iconPath, replay string) Finding {
+	f := Finding{Name: "托盘图标", Status: StatusOK}
+	table := p.TrayTable(i.ID)
+
+	row, found, err := tray.ReadOverride(p, i.ID)
+	switch {
+	case err != nil:
+		return warnFinding(f, table+" 读不了："+err.Error(), replay)
+	case !found:
+		return warnFinding(f, table+" 不存在：助手扩展没有图标可画，托盘会显示应用自己的图标", replay)
+	case row.ID != i.ID || row.Icon != iconPath:
+		return warnFinding(f, fmt.Sprintf("%s 里是 %s → %s，不是本实例的图标", table, row.ID, row.Icon), replay)
+	}
+
+	// A row left in the host's table is not a second icon, it is a second
+	// *source*. Both point at the same file today, which is why this is a WARN
+	// and not a FAIL — but it is the row that keeps pointing at an icon after
+	// the instance is gone, and it is why the install deletes it.
+	if cur, err := tray.Snapshot(); err == nil {
+		if _, found := cur.Find(i.ID); found {
+			return warnFinding(f, fmt.Sprintf(
+				"宿主表 %s 里还留着 %q 的一行（助手扩展已经在画这个图标了；同一个图标不留两个来源）",
+				tray.Key, i.ID), replay)
+		}
+	}
+	f.Detail = "助手扩展读 " + table + " → " + iconPath
+	return f
+}
+
+// warnFinding is the shape every not-OK branch of the tray checks has: WARN,
+// Manual (hence exit 3 — something here may need a human), and the command
+// that fixes it.
+func warnFinding(f Finding, detail, fix string) Finding {
+	f.Status, f.Manual = StatusWarn, true
+	f.Detail, f.Fix = detail, fix
 	return f
 }
 
 // TrayExtFinding checks the shell-side half of the tray override.
 //
-// Two facts, and both have to hold before a twin icon follows the panel icon
-// size: the helper's files are in the user extension directory, and the shell
-// has the uuid in its enable list. The second is why this is Manual — the shell
-// scans extension directories once, at startup, so right after a first install
-// no command can enable the helper and the only honest answer is "log out
-// once". It stays a WARN rather than a FAIL because the override itself does
-// work without it; the icon is just drawn at the theme's size.
+// It answers one question — is the tray icon being drawn by the helper, or by
+// the host's table — because that is the same question the install answered,
+// and the two have to agree. Three facts have to hold for the helper: the files
+// are in the user extension directory, the shell has the uuid in its enable
+// list, and the shell has not refused it. The first of those is why this can be
+// Manual — the shell scans extension directories once, at startup, so right
+// after a first install no command can enable the helper and the only honest
+// answer is "log out once".
+//
+// It stays a WARN rather than a FAIL: the fallback path draws the icon fine, it
+// is just pinned to the theme's size.
 func TrayExtFinding(p inst.Paths, i *inst.Instance) Finding {
-	f := Finding{Name: "托盘尺寸扩展", Status: StatusOK}
+	f := Finding{Name: "托盘扩展", Status: StatusOK}
 	if !i.TrayOverride {
 		f.Detail = "按设置跳过（tray.override = false）"
 		return f
 	}
 	st := tray.CheckExt(p)
 	switch {
+	case st.Usable():
+		f.Detail = tray.ExtUUID + " 已启用 → 托盘图标由它画（" + tray.ExtDir(p) + "）"
 	case !st.Installed:
 		// The files are not there at all, so the command is unambiguous —
-		// whether or not the enable list could be read. Installing the helper
-		// is its own command now: it is machine-wide, so an instance-level
-		// reinstall is the wrong verb for it and no longer does it.
+		// whether or not the extension lists could be read. Installing the
+		// helper is its own command now: it is machine-wide, so an
+		// instance-level reinstall is the wrong verb for it.
 		f.Status, f.Manual = StatusWarn, true
-		f.Detail = tray.ExtUUID + " 不在 " + tray.ExtDir(p) + "（自定义图标会比面板图标小一圈）"
+		f.Detail = tray.ExtUUID + " 不在 " + tray.ExtDir(p) + "：托盘图标走宿主表兜底（比面板图标小一圈）"
 		if st.Why != "" {
-			f.Detail += "；启用列表也读不到：" + st.Why
+			f.Detail += "；扩展列表也读不到：" + st.Why
 		}
 		f.Fix = "twin install --ext"
-	case !st.Enabled && st.Why == "":
-		f.Status, f.Manual = StatusWarn, true
-		f.Detail = tray.ExtUUID + " 已装入但未启用（自定义图标仍按主题的 16px 画）"
-		f.Fix = tray.EnableHint()
-	case !st.Enabled:
-		// Installed, but the list itself could not be read. Saying "not
+	case st.Why != "":
+		// Installed, but the lists themselves could not be read. Saying "not
 		// enabled" here would send the reader to fix the wrong thing — the
-		// enable list is unreadable, which is a session-bus question.
+		// lists are unreadable, which is a session-bus question.
 		f.Status, f.Manual = StatusWarn, true
-		f.Detail = tray.ExtUUID + " 已装入，但读不到 shell 的启用列表：" + st.Why
+		f.Detail = tray.ExtUUID + " 已装入，但读不到 shell 的扩展列表：" + st.Why +
+			"（现在托盘图标走宿主表兜底）"
 		f.Fix = "在图形会话的终端里跑一次 twin install --ext（它会重新问一遍 shell）"
+	case st.Blocked:
+		f.Status, f.Manual = StatusWarn, true
+		f.Detail = tray.ExtUUID + " 在 shell 的禁用列表里（被关掉过，shell 不会加载它）：托盘图标走宿主表兜底"
+		f.Fix = "twin install --ext"
 	default:
-		f.Detail = tray.ExtUUID + " 已启用 → " + tray.ExtDir(p)
+		f.Status, f.Manual = StatusWarn, true
+		f.Detail = tray.ExtUUID + " 已装入但未启用：托盘图标走宿主表兜底（比面板图标小一圈）"
+		f.Fix = tray.EnableHint()
 	}
 	return f
 }

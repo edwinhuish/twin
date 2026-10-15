@@ -1,8 +1,8 @@
 {
   "uuid": "twin-tray@edwinhuish.github.io",
   "name": "twin tray",
-  "description": "让 twin 的自定义托盘图标跟随面板图标尺寸。宿主把图标框钉死在 16px，所以 custom-icons 指向的文件永远比程序自己的位图小一圈。",
+  "description": "读出 twin 写的托盘图标表（~/.local/share/twin/tray.d）并把那些图标画到托盘上，同时让它们跟随面板图标尺寸（宿主把图标框钉死在 16px，自定义图标因此永远比程序自己的位图小一圈）。不写宿主扩展的 dconf 键，不改宿主的代码。",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/edwinhuish/twin",
-  "version": 1
+  "version": 2
 }

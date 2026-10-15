@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/edwinhuish/twin/internal/inst"
+	"github.com/edwinhuish/twin/internal/tray"
 )
 
 // stubGSettings puts a stand-in `gsettings` on PATH. mode: "ok" reads and
@@ -39,11 +40,58 @@ func iconInstance() *inst.Instance {
 	return &inst.Instance{ID: "wechat2", TrayOverride: true}
 }
 
+// trayPaths is the home the tray checks read. A scratch one, so the check
+// answers about the temp directory rather than about the machine running it.
+func trayPaths(t *testing.T) inst.Paths {
+	t.Helper()
+	return inst.Paths{Home: t.TempDir()}
+}
+
+// installHelper puts the helper's files where CheckExt looks for them — that
+// and the shell's two extension lists are the whole switch between the two
+// mechanisms, so a test that wants the helper's path needs all three.
+func installHelper(t *testing.T, p inst.Paths) {
+	t.Helper()
+	dir := tray.ExtDir(p)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range tray.ExtFiles() {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("// stub\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// stubShell answers the four questions the tray checks ask — the host's table,
+// and both extension lists — each with its own value. Routing on the key is
+// enough: no two of them share a name.
+func stubShell(t *testing.T, hostTable, enabled, blocked string) {
+	t.Helper()
+	dir := t.TempDir()
+	table := filepath.Join(dir, "icons")
+	if err := os.WriteFile(table, []byte(hostTable), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+case "$3" in
+custom-icons) cat "` + table + `" ;;
+enabled-extensions) echo "` + enabled + `" ;;
+disabled-extensions) echo "` + blocked + `" ;;
+*) echo "unsupported key: $3" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "gsettings"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 const iconPath = "/home/e/.local/share/appicons/wechat2.png"
 
 func TestTrayFindingWhenTheRowIsThere(t *testing.T) {
 	stubGSettings(t, "ok", "[('wechat2', '"+iconPath+"', '"+iconPath+"')]")
-	f := TrayFinding(iconInstance(), iconPath)
+	f := TrayFinding(trayPaths(t), iconInstance(), iconPath)
 	if f.Status != StatusOK || f.Manual {
 		t.Errorf("表里已经有正确的条目，不该报问题：%+v", f)
 	}
@@ -51,7 +99,7 @@ func TestTrayFindingWhenTheRowIsThere(t *testing.T) {
 
 func TestTrayFindingWhenTheRowIsMissing(t *testing.T) {
 	stubGSettings(t, "ok", "[]")
-	f := TrayFinding(iconInstance(), iconPath)
+	f := TrayFinding(trayPaths(t), iconInstance(), iconPath)
 	if f.Status != StatusWarn || !f.Manual {
 		t.Fatalf("缺条目应当是 WARN + Manual（退出码 3）：%+v", f)
 	}
@@ -63,11 +111,21 @@ func TestTrayFindingWhenTheRowIsMissing(t *testing.T) {
 	}
 }
 
+// 走兜底那条路要说清为什么走了兜底：托盘图标比面板图标小一圈是那条路的上限，
+// 一个没有解释的现象会被当成新的 bug 去查。
+func TestTrayFindingOnTheFallbackSaysWhyItIsTheFallback(t *testing.T) {
+	stubGSettings(t, "ok", "[('wechat2', '"+iconPath+"', '"+iconPath+"')]")
+	f := TrayFinding(trayPaths(t), iconInstance(), iconPath)
+	if !strings.Contains(f.Detail, "助手扩展") {
+		t.Errorf("要说清这一行是兜底、以及谁不在：%q", f.Detail)
+	}
+}
+
 // 图标换了位置（regen 后换过图标目录）时，「有这条但指错」要说清指的是哪儿，
 // 不能笼统地说「没有条目」。
 func TestTrayFindingWhenTheRowPointsElsewhere(t *testing.T) {
 	stubGSettings(t, "ok", "[('wechat2', '/old/other.png', '/old/other.png')]")
-	f := TrayFinding(iconInstance(), iconPath)
+	f := TrayFinding(trayPaths(t), iconInstance(), iconPath)
 	if f.Status != StatusWarn || !f.Manual {
 		t.Fatalf("指错也要报出来：%+v", f)
 	}
@@ -79,7 +137,7 @@ func TestTrayFindingWhenTheRowPointsElsewhere(t *testing.T) {
 // 没有托盘宿主的机器不是故障：这不是 WARN，更不是 FAIL，也不该进「下一步」。
 func TestTrayFindingOnAMachineWithoutATrayHost(t *testing.T) {
 	stubGSettings(t, "noschema", "")
-	f := TrayFinding(iconInstance(), iconPath)
+	f := TrayFinding(trayPaths(t), iconInstance(), iconPath)
 	if f.Status != StatusOK {
 		t.Errorf("没有托盘宿主不该算问题：%+v", f)
 	}
@@ -96,12 +154,83 @@ func TestTrayFindingHonoursTheOptOut(t *testing.T) {
 	stubGSettings(t, "ok", "[]")
 	it := iconInstance()
 	it.TrayOverride = false
-	f := TrayFinding(it, iconPath)
+	f := TrayFinding(trayPaths(t), it, iconPath)
 	if f.Status != StatusOK || f.Manual {
 		t.Errorf("显式关掉不该报问题：%+v", f)
 	}
 	if !strings.Contains(f.Detail, "tray.override") {
 		t.Errorf("要说清是按设置跳过的：%q", f.Detail)
+	}
+}
+
+// 助手扩展被 shell 加载时，托盘图标由它的文件表决定：自检看的就是那个文件，
+// 而不是宿主那张 dconf 表 —— 两条路只走一条，检查也得跟着换，否则两个半张表
+// 会各说各话。
+func TestTrayFindingOnTheHelperPath(t *testing.T) {
+	p := trayPaths(t)
+	installHelper(t, p)
+	stubShell(t, "[]", "['"+tray.ExtUUID+"']", "[]")
+	if _, err := tray.EnsureOverride(p, tray.NewOverride("wechat2", iconPath)); err != nil {
+		t.Fatal(err)
+	}
+
+	f := TrayFinding(p, iconInstance(), iconPath)
+	if f.Status != StatusOK || f.Manual {
+		t.Errorf("文件表里就是本实例的图标，不该报问题：%+v", f)
+	}
+	if !strings.Contains(f.Detail, p.TrayTable("wechat2")) {
+		t.Errorf("要说清是哪个文件在起作用：%q", f.Detail)
+	}
+}
+
+// 扩展在位却没有可读的表：屏幕上会退回程序自己的图标。这条要报出来，因为
+// twin 已经不再写宿主表了 —— 兜底那一行本来能救它。
+func TestTrayFindingOnTheHelperPathWithoutTheFile(t *testing.T) {
+	p := trayPaths(t)
+	installHelper(t, p)
+	stubShell(t, "[]", "['"+tray.ExtUUID+"']", "[]")
+
+	f := TrayFinding(p, iconInstance(), iconPath)
+	if f.Status != StatusWarn || !f.Manual {
+		t.Fatalf("没有图标可画应当报出来：%+v", f)
+	}
+	if !strings.Contains(f.Fix, "reinstall") {
+		t.Errorf("要给一条能把它补上的命令：%q", f.Fix)
+	}
+}
+
+// 走了扩展这条路，宿主表里那一行就该删掉：同一个图标不留两个来源，
+// 而留在那儿的那一行正是 twin remove 之后还会指着图标的那一行。
+func TestTrayFindingCatchesTheRowTheHelperReplaced(t *testing.T) {
+	p := trayPaths(t)
+	installHelper(t, p)
+	stubShell(t, "[('wechat2', '"+iconPath+"', '"+iconPath+"')]", "['"+tray.ExtUUID+"']", "[]")
+	if _, err := tray.EnsureOverride(p, tray.NewOverride("wechat2", iconPath)); err != nil {
+		t.Fatal(err)
+	}
+
+	f := TrayFinding(p, iconInstance(), iconPath)
+	if f.Status != StatusWarn || !f.Manual {
+		t.Fatalf("宿主表里那一行还在，应当报出来：%+v", f)
+	}
+	if !strings.Contains(f.Fix, "reinstall") {
+		t.Errorf("要给一条能把它收掉的命令：%q", f.Fix)
+	}
+}
+
+// 被 shell 拒过的扩展不算可用：这条路一选错，实例就一个图标都没有了 ——
+// 所以自检必须把托盘图标这条结论落在兜底那条路上，并说清为什么。
+func TestTrayExtFindingOnARefusedHelper(t *testing.T) {
+	p := trayPaths(t)
+	installHelper(t, p)
+	stubShell(t, "[]", "['"+tray.ExtUUID+"']", "['"+tray.ExtUUID+"']")
+
+	f := TrayExtFinding(p, iconInstance())
+	if f.Status != StatusWarn || !f.Manual {
+		t.Fatalf("被拒的扩展应当报出来：%+v", f)
+	}
+	if !strings.Contains(f.Detail, "禁用列表") {
+		t.Errorf("要说清是禁用列表挡住的：%q", f.Detail)
 	}
 }
 
@@ -258,7 +387,7 @@ func TestTrampolineInLauncher(t *testing.T) {
 // 退出码 3 只由 Manual 驱动，这里顺带把这个约定钉住。
 func TestManualDrivesExitCodeThree(t *testing.T) {
 	stubGSettings(t, "ok", "[]")
-	rep := &Report{Findings: []Finding{TrayFinding(iconInstance(), iconPath)}}
+	rep := &Report{Findings: []Finding{TrayFinding(trayPaths(t), iconInstance(), iconPath)}}
 	if !rep.NeedsHuman() {
 		t.Error("缺条目 ⇒ 必须有一步人工，wrap 才会退出 3")
 	}
@@ -267,7 +396,7 @@ func TestManualDrivesExitCodeThree(t *testing.T) {
 	}
 
 	stubGSettings(t, "ok", "[('wechat2', '"+iconPath+"', '"+iconPath+"')]")
-	rep = &Report{Findings: []Finding{TrayFinding(iconInstance(), iconPath)}}
+	rep = &Report{Findings: []Finding{TrayFinding(trayPaths(t), iconInstance(), iconPath)}}
 	if rep.NeedsHuman() {
 		t.Error("写好了就不该再要求人工步骤")
 	}

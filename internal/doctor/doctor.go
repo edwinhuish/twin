@@ -264,31 +264,36 @@ func Run(p inst.Paths) *Report {
 	}
 
 	// 9. the shell-side half of the tray override: are the helper's files in
-	//    place, and has the shell been told to load them? It is machine-wide
-	//    and optional — it only changes how big a custom tray icon is drawn —
-	//    so a machine that never wants it can stay this way. Not installed and
-	//    installed-but-not-enabled are both worth naming with the command that
-	//    fixes them, because neither one is a state twin will leave on its own.
+	//    place, and has the shell been told to load them? This is also the
+	//    machine-level answer to "which of the two mechanisms draws twin's tray
+	//    icons" (see tray.ExtState.Usable), so it is worth naming every state
+	//    that pushes an install onto the fallback path — with the command that
+	//    fixes it, because none of them is a state twin leaves on its own.
 	st := tray.CheckExt(p)
 	const installExt = "twin install --ext"
 	switch {
+	case st.Usable():
+		add("托盘扩展", KindOK, tray.ExtUUID+" 已启用（托盘图标由它画）", "")
 	case !st.Installed:
 		why := ""
 		if st.Why != "" {
-			why = "；启用列表也读不到：" + st.Why
+			why = "；扩展列表也读不到：" + st.Why
 		}
-		add("托盘尺寸扩展", KindWarn,
-			"未安装（自定义图标会比面板图标小一圈）"+why, installExt)
-	case !st.Enabled && st.Why == "":
-		add("托盘尺寸扩展", KindWarn,
-			tray.ExtUUID+" 已装入但未启用（自定义图标按主题的 16px 画）",
-			tray.EnableHint())
-	case !st.Enabled:
-		add("托盘尺寸扩展", KindWarn,
-			tray.ExtUUID+" 已装入，但读不到 shell 的启用列表："+st.Why,
+		add("托盘扩展", KindWarn,
+			"未安装（托盘图标走宿主表兜底，比面板图标小一圈）"+why, installExt)
+	case st.Why != "":
+		add("托盘扩展", KindWarn,
+			tray.ExtUUID+" 已装入，但读不到 shell 的扩展列表："+st.Why+
+				"（托盘图标走宿主表兜底）",
 			"在图形会话的终端里跑一次 "+installExt)
+	case st.Blocked:
+		add("托盘扩展", KindWarn,
+			tray.ExtUUID+" 在 shell 的禁用列表里（被关掉过）：托盘图标走宿主表兜底",
+			installExt)
 	default:
-		add("托盘尺寸扩展", KindOK, tray.ExtUUID+" 已启用", "")
+		add("托盘扩展", KindWarn,
+			tray.ExtUUID+" 已装入但未启用（托盘图标走宿主表兜底）",
+			tray.EnableHint())
 	}
 
 	// 10. session bus — the write channel. A failure here is exactly the

@@ -891,7 +891,10 @@ func Unwrap(p inst.Paths, id string, purge bool) (*Removed, error) {
 		return nil, err
 	}
 	out := &Removed{}
-	for _, f := range []string{p.Desktop(id), p.Icon(id), p.InstanceDir(id), p.RuleFile(id)} {
+	// The tray table row goes with the instance: it is a claim about a program
+	// that is about to stop existing, and the helper reads it every time it
+	// draws an icon.
+	for _, f := range []string{p.Desktop(id), p.Icon(id), p.InstanceDir(id), p.RuleFile(id), p.TrayTable(id)} {
 		if !sysx.Exists(f) {
 			continue
 		}

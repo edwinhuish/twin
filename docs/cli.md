@@ -117,8 +117,8 @@ Keywords   微信;wechat;
 |---|---|
 | `twin gen wechat` | 在当前目录写 `profile.yml`（id、显示名、路径映射全部推导出来写进去），然后说清下一步敲什么 |
 | `$EDITOR profile.yml` | 改 `bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
-| `twin install` | 读那份配置：写实例快照 → 落盘（桌面项 / 图标 / 启动器 / 宿主托盘）＋ 检查托盘尺寸扩展 ＋ 自检 |
-| `twin install --ext` | 装入 shell 侧的托盘尺寸助手扩展（机器级；`install` / `reinstall` 只检查它）。`twin reinstall --ext` 是同一个动作的另一个入口 |
+| `twin install` | 读那份配置：写实例快照 → 落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 检查托盘扩展 ＋ 自检 |
+| `twin install --ext` | 装入 shell 侧的托盘扩展（机器级；`install` / `reinstall` 只检查它）。`twin reinstall --ext` 是同一个动作的另一个入口 |
 
 **配置为什么在当前目录？** 它是这份 wrap 里唯一需要人读一遍的东西，所以放在人**已经选好的**那个
 目录里：能 diff、能提交、能拷到另一台机器、能同时留好几份。实例目录下的
@@ -170,8 +170,8 @@ $ twin install
   图标     /home/you/.local/share/appicons/wechat2.png
   启动器   /home/you/.local/share/twin/wechat2/launch
   实例定义 /home/you/.local/share/twin/wechat2/profile.yml
-  托盘覆盖 已写入 custom-icons（该表热重载，立刻生效）
-  托盘尺寸扩展 twin-tray@edwinhuish.github.io 已启用
+  托盘覆盖 已写入 /home/you/.local/share/twin/tray.d/wechat2.json（助手扩展读它画图标，不再写宿主表）
+  托盘扩展 twin-tray@edwinhuish.github.io 已启用 —— 托盘图标由它接管
 
 📁 路径映射
   3 条，来源：配置 profile.yml
@@ -188,13 +188,19 @@ $ twin install
 预演 —— 桌面项正文、`profile.yml` 正文、bwrap 调用、托盘将写入的那一行全都在，而且由真实落盘用的
 **同一份代码**渲染。
 
-`twin install` / `twin reinstall` 还会**检查**一份助手扩展（用户扩展目录下的
-`twin-tray@edwinhuish.github.io/`），但**不写它** —— 那一件是机器级的，见本节末尾那条命令。理由不是
-"顺手多写个文件"：宿主的托盘覆盖表只决定**画哪张图**，自定义图标的**尺寸**由宿主在 JS 里写死的 actor 框
-决定（`PANEL_ICON_SIZE` 在 gnome-shell 49 已删 ⇒ 恒 16px），外面没有任何接口能补 —— 只能在 shell 里面同步。
-写入它是幂等的（逐字节比对后才写，因为 shell 只看 mtime），**启用它**却要等 shell 下次扫扩展目录
-（注销重登一次）；那一步连同原因一起打印，并以退出码 3 收尾。机制见
-[`architecture.md`](architecture.md) §7.1。
+托盘那半段是个**二选一**，判据只有一个：用户扩展目录下的
+`twin-tray@edwinhuish.github.io/` 是否**在 shell 的启用列表里、且不在它的禁用列表里**（两个列表都读得到
+才算数）。在 ⇒ 写扩展读的那份文件表（`~/.local/share/twin/tray.d/<id>.json`），并把宿主覆盖表里本实例的
+那一行删掉；不在（未装 / 未启用 / 被禁用列表挡住 / 读不到列表）⇒ 写宿主覆盖表兜底。两条路**只写一条**，
+而**走了哪条每次都打印**：同一个图标不留两个来源，也不该让人靠猜。这就是那句"回退到 custom-icons"
+的全部含义 —— 兜底仍是它，首选换成了扩展自己画。
+
+`twin install` / `twin reinstall` **只检查**那份扩展，**不写它** —— 那一件是机器级的，见本节末尾那条命令。
+理由不是"顺手多写个文件"：一份扩展服务所有实例、比实例活得久，挂到实例安装上就成了"包一个实例"的副作用，
+每次重放快照还会重做一遍。写入它是幂等的（逐字节比对后才写，因为 shell 只看 mtime），**启用它**却要等
+shell 下次扫扩展目录（注销重登一次）；那一步连同原因一起打印，并以退出码 3 收尾。装完扩展**不会**让已有
+实例自动搬家：它们在下一次 `install` / `reinstall` 时才改走扩展那条路（否则屏幕上那个"小一圈"的图标会
+像个新 bug）。机制见 [`architecture.md`](architecture.md) §7.1。
 
 
 **自检只在有问题时才开口。** 那几条 `✅` 确认的正是这一次刚刚写下的文件，把它们列出来是产物清单
@@ -202,8 +208,8 @@ $ twin install
 
 ```console
 🔍 自检
-⚠️ 托盘图标覆盖表                custom-icons 里没有 "wechat2" 的条目（托盘会继续显示应用自己的图标）
-                          → gsettings set org.gnome.shell.extensions.appindicator custom-icons "..."
+⚠️ 托盘图标                      custom-icons 里没有 "wechat2" 的条目（托盘会继续显示应用自己的图标；助手扩展已装入但未启用）
+                          → twin reinstall wechat2
 ```
 
 `--explain` 是唯一的例外：那里要的就是完整报告，于是整份自检（和 `twin verify` 一样的那些行）
@@ -309,7 +315,7 @@ $ twin install
 
 #### 机器级的那一份：`--ext`（`install` 与 `reinstall` 同形）
 
-托盘尺寸助手扩展**不是**一件实例产物：一份服务所有实例，而且比任何一个实例活得久。所以它**不由
+托盘扩展**不是**一件实例产物：一份服务所有实例，而且比任何一个实例活得久。所以它**不由
 `twin install` 写入** —— 否则"包一个实例"这个动作会顺手改掉一个与它无关的东西，而且每重放一次快照
 就重做一遍。它归 `install` 的一个开关 —— 而 `reinstall` 也认这个开关，因为「装一份配置」与
 「重放它写下的快照」本来就是同一件事的两个入口（两者共用 `installAndCheck`）：机器级那一半若只在一边
@@ -317,22 +323,26 @@ $ twin install
 
 ```console
 $ twin install --ext        # 或 twin reinstall --ext —— 同一段代码
-✅ 托盘尺寸扩展 twin-tray@edwinhuish.github.io
+✅ 托盘扩展 twin-tray@edwinhuish.github.io
   文件     /home/you/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io（本次写入／更新）
-  作用     让指向自定义图标的托盘项跟着面板图标大小缩放（不动宿主扩展）
+  作用     托盘图标由它自己画（读 twin 写的那份表，不写宿主扩展的 dconf 键）
   启用     还没有 —— 在装的当下做不到（扩展"twin-tray@edwinhuish.github.io"不存在）
 
 ✋ 还差一步（脚本里写不了 —— 这就是退出码 3 的含义）
   1. 注销重登一次：shell 只在启动时扫一遍扩展目录，它现在还不认识这个 uuid。
   2. gnome-extensions enable twin-tray@edwinhuish.github.io
-  在此之前，自定义图标仍按主题的 16px 画 —— 覆盖表本身已经生效，只是画得小。
+  在此之前，各实例仍走宿主覆盖表兜底 —— 图标是对的，只是比面板图标小一圈。
+  3. 重登之后，让已装的实例改走这条路：twin reinstall <id>（一条命令一个实例）。
 ```
 
 `install` / `reinstall` 那边只**检查**它：缺了就打印一条 ⚠️ 警告并把它写进"还差一步"的清单
 （因此它们照样以退出码 3 收尾 —— 那一步确实要人做）。再装一次是幂等的：文件逐字节比对，内容一样就
 整个跳过（shell 只看 mtime，白碰它反而像是有新版）。`--dry-run` 只报会写到哪几个文件。
 
-这个开关**只**管尺寸那一件事：覆盖表仍然写在宿主那个 dconf 键里，"写不进去要会话总线"没有变化。
+这个开关**换掉的是首选路径，不是唯一路径**：装了扩展并且 shell 加载了它，实例的托盘覆盖走扩展读的那份
+文件表（不需要会话总线）；没装 / 没启用 / 被 shell 的禁用列表挡住 / 列表读不到，就还是写宿主那个 dconf 键
+—— 也就是"写不进去要会话总线"那条老路。判据、两条路的产出与"装了之后为什么图标还是小的"都在上面
+`twin install` 那一节。
 
 ### `twin verify <id>`
 
@@ -355,8 +365,8 @@ $ twin install --ext        # 或 twin reinstall --ext —— 同一段代码
 | 图标存在 / 可解码 | 图标没生成或坏了 |
 | 启动器存在 / 可执行 | 同上，GLib 会因此丢弃整个桌面项 |
 | 私有状态目录 | 不存在（首次启动会自动建，只报 WARN） |
-| 托盘图标覆盖表 | 表里那一条是否真的指向本实例（写入被关掉时报告"按设置跳过"） |
-| 托盘尺寸扩展 | 助手扩展装了没 / 启用了没（缺了 ⇒ 自定义图标停在主题的 16px，其余照常；修法永远是 `twin install --ext` —— 它不属于某一个实例） |
+| 托盘图标 | **按 install 用过的同一个判据**只查那条路：扩展被加载 ⇒ 查它读的那份文件表（条目在不在、指得对不对、宿主表里那一行删没删）；没加载 ⇒ 查宿主表。两个方向都报，因为"多了一条"和"少了一条"同样是两个来源在抢一个托盘项 |
+| 托盘扩展 | 装了没 / 启用了没 / 有没有被 shell 的禁用列表挡住（这三条决定上一条查的是哪半边；修法永远是 `twin install --ext` —— 它不属于某一个实例） |
 | L5 规则文件 | `level=redirect` 时缺文件或 JSON 非法 |
 | 嵌套 user namespace | 副本／跳板链路不完整（**双向查**：该有的没有 ⇒ FAIL；不该有却有 ⇒ WARN） |
 
@@ -410,8 +420,9 @@ foo3             alias      foo3     foo                      foo3.desktop  ← 
   `-h` 里。
 - 安装没走完的实例也照删 —— 快照本来就写在那儿，撤销它就是把那个目录清掉。
 - 私有状态目录默认保留（那是唯一不可逆的部分），保留的那份下次同名重建会接着用。
-- 会顺带移除宿主托盘表里该 `id` 的条目：表是全局的，而这条是"一个即将不存在的程序"的声明，
-  留着会继续把托盘指向刚被删掉的图标。
+- 会顺带移除**两处**托盘声明：宿主表里该 `id` 的条目（表是全局的），以及扩展读的那份文件表
+  （`~/.local/share/twin/tray.d/<id>.json`）。两条都是"一个即将不存在的程序"的声明 —— 留着会继续
+  把托盘指向刚被删掉的图标，也就会让扩展每次重读都拿到一张不存在的图。
 
 ### `twin config`
 
@@ -516,10 +527,10 @@ $ twin reinstall -h    # 重放存档的那一个开关
 
 | 码 | 含义 |
 |---|---|
-| `0` | 成功。**包括事实性跳过**：`--no-tray` / 整机 `tray_override = false` / 这台机器根本没有托盘宿主（`tray_override = false` 时助手扩展也一并跳过） |
+| `0` | 成功。**包括事实性跳过**：`--no-tray` / 整机 `tray_override = false` / 这台机器根本没有托盘宿主（`tray_override = false` 时托盘扩展也一并跳过） |
 | `1` | 失败，或自检里有 ❌ |
 | `2` | 用法错误（未知子命令、未知选项、非法 `--level`、`--` 之后不是 bwrap 选项、`-o` 与 `--output` 同时给出、`HOME` 未设置…） |
-| `3` | **身份已经成立，但还差一步必须由人执行。** 目前三个来源：<br>① 托盘覆盖表写不进去（无会话总线 —— 安装脚本、无图形会话）<br>② 内核限制 `userns` 而机器上既没有跳板、`install` 也没法装 profile（没有 `sudo`，或标准输入不是终端、问不了密码）⇒ profile 全文已经打印给你<br>③ 托盘尺寸助手扩展还差一次**人**的动作：`twin install --ext` 把文件装好了、shell 却还没扫到它（shell 只在启动时扫扩展目录）⇒ 注销重登一次，再 `gnome-extensions enable twin-tray@edwinhuish.github.io`。同一件事也会以 ⚠️ 警告出现在 `install` / `reinstall` / `verify` / `doctor` 里 |
+| `3` | **身份已经成立，但还差一步必须由人执行。** 目前三个来源：<br>① 托盘覆盖走宿主表那条路而表写不进去（无会话总线 —— 安装脚本、无图形会话；走托盘扩展那条路时不需要它，扩展读的是一份文件）<br>② 内核限制 `userns` 而机器上既没有跳板、`install` 也没法装 profile（没有 `sudo`，或标准输入不是终端、问不了密码）⇒ profile 全文已经打印给你<br>③ 托盘扩展还差一次**人**的动作：`twin install --ext` 把文件装好了、shell 却还没扫到它（shell 只在启动时扫扩展目录）⇒ 注销重登一次，再 `gnome-extensions enable twin-tray@edwinhuish.github.io`。同一件事也会以 ⚠️ 警告出现在 `install` / `reinstall` / `verify` / `doctor` 里 |
 
 用法错误**只打印那一行错误**，不复述整份帮助：帮助的出口是 `twin --help`，某个命令的选项表是
 `twin <命令> -h`（退出码 `0`，那是提问不是犯错）。把一份 `usage` 倒在一处笔误下面，只会把真正
@@ -544,7 +555,8 @@ $ twin reinstall -h    # 重放存档的那一个开关
 | `~/.local/share/twin/<id>/profile.yml` | 实例存档快照 | 生成器（`twin install` 按配置渲染）；你改，再 `twin reinstall <id>` |
 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本（共享，一台机器一份） | 生成器（仅需要时） |
 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（共享） | 生成器（仅需要时） |
-| `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘图标尺寸助手扩展（宿主托盘那一环的 shell 侧一半，见 architecture.md §7.1）。**机器级**：一份服务所有实例 | 生成器（`twin install --ext` / `twin reinstall --ext`，**不是** `twin install`） |
+| `~/.local/share/twin/tray.d/<id>.json` | 中立托盘文件表：扩展读它画本实例的图标（**首选路径**；扩展不可用时这份文件不写） | 生成器（`twin install` / `twin reinstall`），`twin remove` 删掉 |
+| `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘扩展：画自定义托盘图标（读上面那份表）＋ 让它跟随面板尺寸（宿主把它钉死在 16px，见 architecture.md §7.1）。**机器级**：一份服务所有实例 | 生成器（`twin install --ext` / `twin reinstall --ext`，**不是** `twin install`） |
 | `/etc/apparmor.d/twin-bwrap` | 挂在私有副本上的 profile（要 root） | `twin install` 经 `sudo`（仅需要时） |
 | `~/.local/state/twin/<id>/` | 私有数据（持久） | 运行期 |
 

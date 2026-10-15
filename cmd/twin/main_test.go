@@ -454,7 +454,10 @@ func TestRuleKeyPrefersTheMatchedKey(t *testing.T) {
 func fakeGSettings(t *testing.T, list string) {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\necho \"" + list + "\"\n"
+	// 按 key 分答，像真的那样：给进来的这份是**启用**列表，别的 key（shell 的禁用列表、
+	// 宿主那张图标表）都是空的。一个答案敷衍所有 key 会让"已启用"与"没被拒"变成同一件事，
+	// 而这两条路径的切换恰恰靠它们区分。
+	script := "#!/bin/sh\ncase \"$3\" in\nenabled-extensions) echo \"" + list + "\" ;;\n*) echo \"@as []\" ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(dir, "gsettings"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -584,6 +587,98 @@ func TestCheckTrayExtOnlyChecks(t *testing.T) {
 	}
 	if got := checkTrayExt(p, &inst.Instance{ID: "demo2", TrayOverride: true}); !strings.Contains(got, "已启用") {
 		t.Errorf("文件在、启用列表里也有它时应当报已启用：%q", got)
+	}
+}
+
+// fakeTrayShell answers both halves of the tray session at once: the host's
+// override table (read-modify-write over a state file, so a `set` is really
+// visible to the read-back) and the two shell extension lists. One script for
+// both is what makes the *switch* testable — it depends on both answers, and a
+// stub that answered only one of them could not tell the two paths apart.
+func fakeTrayShell(t *testing.T, hostTable, enabled, blocked string) string {
+	t.Helper()
+	dir := t.TempDir()
+	state := filepath.Join(dir, "host")
+	if err := os.WriteFile(state, []byte(hostTable), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// PATH is this directory and nothing else (like fakeGSettings above, and for
+	// the same reason), so the one external command it uses has to be spelled
+	// out: `cat` is not on this PATH.
+	script := `#!/bin/sh
+case "$1" in
+get)
+  case "$3" in
+  custom-icons) /bin/cat "` + state + `" ;;
+  enabled-extensions) echo "` + enabled + `" ;;
+  disabled-extensions) echo "` + blocked + `" ;;
+  *) echo "@as []" ;;
+  esac ;;
+set)
+  printf '%s' "$4" > "` + state + `" ;;
+*) echo "unsupported: $1" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "gsettings"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	return state
+}
+
+// 助手扩展被 shell 加载时，托盘覆盖走它自己那条路：写 twin 的文件表，并把宿主表里
+// 那一行删掉。删掉那一行是"两条路径只走一条"的可观测形式 —— 它正是 twin remove
+// 之后还会指着图标的那一行。
+func TestApplyTrayPrefersTheHelperWhenTheShellLoadedIt(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	state := fakeTrayShell(t, "[('demo2', '/old/icon.png', '/old/icon.png')]",
+		"['"+tray.ExtUUID+"']", "[]")
+	if _, err := tray.EnsureExt(p); err != nil {
+		t.Fatal(err)
+	}
+
+	got := applyTray(p, &inst.Instance{ID: "demo2", TrayOverride: true, Level: inst.LevelAlias})
+
+	row, found, err := tray.ReadOverride(p, "demo2")
+	if err != nil || !found {
+		t.Fatalf("文件表里应当有这一行：%+v %v %v", row, found, err)
+	}
+	if row.Icon != p.Icon("demo2") {
+		t.Errorf("表里指的应当是本次生成的图标：%q", row.Icon)
+	}
+	if !strings.Contains(got, p.TrayTable("demo2")) {
+		t.Errorf("要说清写到了哪个文件：%q", got)
+	}
+	if body, err := os.ReadFile(state); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(body), "demo2") {
+		t.Errorf("宿主表里那一行没删掉：%s", body)
+	}
+}
+
+// 扩展没被加载（这里是"装了但没启用"）时走宿主表兜底，而且**不写**文件表：
+// 两条路同时开着，就是这次改动要消掉的那件事。
+func TestApplyTrayFallsBackWhenTheHelperIsNotLoaded(t *testing.T) {
+	p := inst.Paths{Home: t.TempDir()}
+	state := fakeTrayShell(t, "[]", "[]", "[]")
+	if _, err := tray.EnsureExt(p); err != nil {
+		t.Fatal(err)
+	}
+
+	got := applyTray(p, &inst.Instance{ID: "demo2", TrayOverride: true, Level: inst.LevelAlias})
+
+	body, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), p.Icon("demo2")) {
+		t.Errorf("兜底这条路要把图标写进宿主表，得到：%s", body)
+	}
+	if _, found, err := tray.ReadOverride(p, "demo2"); err != nil || found {
+		t.Errorf("兜底时不该同时写文件表：%v %v", found, err)
+	}
+	if !strings.Contains(got, "兜底路径") {
+		t.Errorf("要说清这次为什么走兜底：%q", got)
 	}
 }
 

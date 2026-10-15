@@ -89,13 +89,19 @@ twin install -p ~/wraps/wx-work.yml
 **为什么必须重启实例**：桌面项是**后写的**，而 GNOME 不会给一个**已经存在**的窗口重算
 归属。生成完之后要**完全退出**再从这个新桌面项启动一次，才会看到新的图标与名字。
 
-**还多一份托盘尺寸助手扩展**（`~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/`）：
-宿主的托盘覆盖表只决定"画哪张图"，自定义图标的**尺寸**由宿主在 JS 里写死的 actor 框决定（`PANEL_ICON_SIZE`
-在 gnome-shell 49 已删 ⇒ 恒 16px），外面补不了 —— 所以 `twin` 自带一个只做这一件事的小扩展。它**是机器级
-的**（一份服务所有实例、比实例活得久），因此**不由 `twin install` 写入**：`install` / `reinstall` 只检查它，
-缺了就给出那一条命令 —— `twin install --ext`。装它是文件写入（幂等），**启用它**要等 shell 下次扫
-扩展目录，也就是**注销重登一次**；那个命令会把原因一起打印出来，并因此以退出码 3 收尾。机制：
-[`docs/architecture.md`](docs/architecture.md) §7.1。
+**托盘图标走两条路，一次只走一条**。首选是自带的那个小扩展
+（`~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/`）：它被 shell 加载时，`twin`
+把图标写进一份**中立文件表**（`~/.local/share/twin/tray.d/<id>.json`），由扩展在 shell 里画上去 ——
+顺带解决了宿主的尺寸 bug（自定义图标的尺寸由宿主在 JS 里写死的 actor 框决定，`PANEL_ICON_SIZE` 在
+gnome-shell 49 已删 ⇒ 恒 16px，外面补不了）。扩展**没被加载**（未装 / 未启用 / 被 shell 的禁用列表挡住 /
+读不到列表）时回退到**宿主自己的覆盖表**（`custom-icons` 那个 dconf 键），也就是老路子：图标是对的，
+只是比面板图标小一圈。走哪条、为什么，`twin install` 每次都会打印出来；两条**不会同时写**，切过去时
+还会把宿主表里那一行删掉。
+
+那份扩展**是机器级的**（一份服务所有实例、比实例活得久），因此**不由 `twin install` 写入**：
+`install` / `reinstall` 只检查它，缺了就给出那一条命令 —— `twin install --ext`。装它是文件写入（幂等），
+**启用它**要等 shell 下次扫扩展目录，也就是**注销重登一次**；那个命令会把原因一起打印出来，并因此以
+退出码 3 收尾。机制：[`docs/architecture.md`](docs/architecture.md) §7.1。
 
 
 **数据目录也值得看一眼**：`twin install` 会打印一节 `路径映射`，说明这次重定向了哪些目录、这份
@@ -133,9 +139,10 @@ twin install                     ← 后半段：按配置安装（reinstall 也
       ├─ 6. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板。
       │                    两者都没有、而程序又要嵌套 ns 时：用 sudo 装一份 AppArmor profile
       ├─ 7. 落盘 5~7 件产物（幂等），包括按配置渲染的存档快照 profile.yml
-      ├─ 8. 写宿主托盘覆盖表（把自己那行指到本实例图标；热重载，立刻生效）
-      │                    ＋ 检查托盘尺寸助手扩展（shell 侧那一半；缺了会提醒装它：
-      │                       twin install --ext，装完需注销重登一次才启用）
+      ├─ 8. 托盘覆盖：助手扩展被 shell 加载了 ⇒ 写它读的文件表，并删掉宿主表里那一行；
+      │                    没加载 ⇒ 写宿主托盘覆盖表兜底（两条都热生效）
+      │                    ＋ 检查托盘扩展本身（缺了会提醒装它：twin install --ext，
+      │                       装完需注销重登一次才启用）
       └─ 9. 自检身份链路（target/别名/桌面项/图标/启动器/规则/嵌套 ns）
 ```
 
@@ -219,8 +226,8 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 | 命令 | 作用 |
 |---|---|
 | `twin gen <source>` | **最常用**：在当前目录写出一份配置（`profile.yml`）；id / 名字 / 角标 / 状态路径全部推导 |
-| `twin install` | **最常用**：读那份配置，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。需要 AppArmor profile 时用 `sudo` 装；托盘尺寸助手扩展只**检查**，缺了会给出下面那条命令 |
-| `twin install --ext` | 装入 **shell 侧的托盘尺寸助手扩展**（机器级，一份服务所有实例，装一次即可；装完要注销重登一次才启用得上）。`twin reinstall --ext` 是同一个动作 |
+| `twin install` | **最常用**：读那份配置，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。需要 AppArmor profile 时用 `sudo` 装；托盘覆盖走哪条路由它当场决定并打印；托盘扩展本身只**检查**，缺了会给出下面那条命令 |
+| `twin install --ext` | 装入 **shell 侧的托盘扩展**（机器级，一份服务所有实例，装一次即可；装完要注销重登一次才启用得上，之后各实例的托盘图标由它画，下次 install / reinstall 才改走那条路）。`twin reinstall --ext` 是同一个动作 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
 | `twin verify <id>` | 自检一个实例的身份链路 |
 | `twin reinstall <id>` | 按实例目录里那份存档快照重新落盘 |
@@ -303,16 +310,19 @@ go build -ldflags "-X main.version=$(git describe --tags --always)" -o twin ./cm
 而 `desktop-file-validate` 查不出这一点。`twin verify <id>` 会直接报出来。
 
 **Q：托盘图标没变？**
-托盘覆盖表按 **SNI Id 严格相等**匹配。只有 `level=alias|redirect`（真的改名了）才能预测
-这个 id；`level=none` 时 id 由程序自己决定，那一行只是猜测（工具会提醒你）。
+两条路都按 **SNI Id 严格相等**匹配。只有 `level=alias|redirect`（真的改名了）才能预测
+这个 id；`level=none` 时 id 由程序自己决定，那一行只是猜测（工具会提醒你）。先看 `twin verify <id>` 里
+「托盘图标」那一行：它说的是**这次实际走的那条路**（助手扩展读的文件表 / 宿主覆盖表），以及那一条里
+到底有没有本实例的条目。
 
 **Q：自定义托盘图标比程序自己的图标小一圈？**
-自定义图标（`custom-icons` 那一路）由宿主交给 `St.Icon` 按**主题的** 16px 画，而程序自己发的位图跟着
-面板设置里的 `icon-size` 走 —— 这是宿主的一个 bug，补不了在配置里。装一次就行：
-**`twin install --ext`**（机器级，与装哪个实例无关；`twin reinstall --ext` 是同一个动作，`twin install` /
-`twin reinstall` 只检查它，缺了会给这条命令）。它**要等 shell 下次启动才加载**：先看 `twin verify <id>` 里的「托盘尺寸扩展」那一行
-（`twin doctor` 里也有），"已装入但未启用"就注销重登一次，再跑
-`gnome-extensions enable twin-tray@edwinhuish.github.io`。见
+说明这次走的是**宿主覆盖表兜底**这条路：自定义图标由宿主交给 `St.Icon` 按**主题的** 16px 画，而程序
+自己发的位图跟着面板设置里的 `icon-size` 走 —— 这是宿主的一个 bug，补不了在配置里。装一次扩展就换到
+另一条路：**`twin install --ext`**（机器级，与装哪个实例无关；`twin reinstall --ext` 是同一个动作，
+`twin install` / `twin reinstall` 只检查它，缺了会给这条命令）。它**要等 shell 下次启动才加载**：先看
+`twin verify <id>` 里的「托盘扩展」那一行（`twin doctor` 里也有），"已装入但未启用"就注销重登一次，再跑
+`gnome-extensions enable twin-tray@edwinhuish.github.io`；启用之后每个实例再 `twin install` / `twin
+reinstall` 一次，它才改走这条路。见
 [`docs/troubleshooting.md`](docs/troubleshooting.md) B5。
 
 

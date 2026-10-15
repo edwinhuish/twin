@@ -79,7 +79,8 @@ internal/
   sandbox/              bwrap 调用构建、透传 lint、Runtime.Resolve（降级链）
   icon/                 纯 Go 图标合成（解码、缩放、角标蒙版、5×7 点阵字体）
   userns/               userns 限制判定、AppArmor profile 解析、跳板发现
-  tray/                 托盘覆盖表的 read-modify-write ＋ 宿主侧尺寸助手（ext.go ＋ 内嵌的 ext/）
+  tray/                 托盘覆盖两条路：宿主表 read-modify-write（tray.go）＋ 中立文件表
+                        （table.go，扩展读它画图标）＋ 扩展的装入与状态（ext.go ＋ 内嵌的 ext/）
   verify/               回读自证
   doctor/               环境自检
   style/                终端着色判定（TTY / NO_COLOR）与状态字形
@@ -203,6 +204,16 @@ gsettings get org.gnome.shell.extensions.appindicator custom-icons # 这才是�
 
 `dconf` 的**读**走 mmap 直读 `~/.config/dconf/user`（不经总线，永远可用）；
 **写**走会话总线（无总线时会假成功）。
+
+⚠️ 托盘图标如今**首选**不走这个键：助手扩展被 shell 加载时，图标来自
+`~/.local/share/twin/tray.d/<id>.json`（扩展读它，见 architecture.md §7.1）。所以调试托盘问题**先问一句
+"这次该走哪条路"** —— `twin verify <id>` 的「托盘图标」那一行就是这么答的（判据只有一个：
+`tray.ExtState.Usable()`）。
+
+```bash
+cat ~/.local/share/twin/tray.d/<id>.json          # 首选那条路的输入
+journalctl -f -o cat /usr/bin/gnome-shell | grep twin-tray   # 扩展自己的日志（挂不上补丁时会留一行）
+```
 
 ### 抓窗口的 app_id（零特权）
 

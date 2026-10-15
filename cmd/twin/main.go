@@ -113,7 +113,7 @@ const usage = `twin —— 程序双开
 用法:
   twin gen <source> [选项]                在当前目录生成一份配置（默认 ./profile.yml）
   twin install [选项]                     读那份配置并落盘：桌面项 / 图标 / 启动器 / 托盘
-  twin install --ext                      装入 shell 侧的托盘尺寸助手扩展（机器级，一次即可）
+  twin install --ext                      装入 shell 侧的托盘扩展（机器级，一次即可）
   twin inspect <source> [--name 显示名]   只看：源程序是什么、身份该怎么做
   twin verify <id>                        自检一个实例的身份链路
   twin reinstall <id> [--refresh]         按实例快照重新落盘
@@ -274,12 +274,16 @@ var helpFooter = map[string]string{
 	"install": "\n  twin install [选项]\n" +
 		"    不接受位置参数（实例不是位置参数：落盘哪一份配置用 -p 说）。\n" +
 		"    不带 --ext：读一份配置落盘 —— 包哪个程序、隔离哪些目录是 twin gen 那一步\n" +
-		"    决定的（都在那份文件里）。\n" +
-		"    带 --ext：只装入 shell 侧的托盘尺寸助手扩展（机器级、与实例无关，\n" +
+		"    决定的（都在那份文件里）。托盘图标走两条路中的一条：助手扩展被 shell\n" +
+		"    加载了 ⇒ 写它读的那份文件表（~/.local/share/twin/tray.d/<id>.json）；\n" +
+		"    没加载（未装／未启用／被禁用列表挡住／读不到列表）⇒ 写宿主覆盖表兜底。\n" +
+		"    这次走了哪条写在输出里，两种都不需要会话总线以外的东西。\n" +
+		"    带 --ext：只装入 shell 侧的托盘扩展（机器级、与实例无关，\n" +
 		"    只与 --dry-run 同用；装完之后要注销重登一次才启用得上）。\n",
 	"reinstall": "\n  twin reinstall <id> [--refresh] | --ext\n" +
-		"    给 <id>：按快照重新落盘，--refresh 才回读 config.toml / rules.d。\n" +
-		"    带 --ext：只装入 shell 侧的托盘尺寸助手扩展 —— 与 `twin install --ext` 是同一个\n" +
+		"    给 <id>：按快照重新落盘（托盘那半按上面那条规则重新选路），\n" +
+		"    --refresh 才回读 config.toml / rules.d。\n" +
+		"    带 --ext：只装入 shell 侧的托盘扩展 —— 与 `twin install --ext` 是同一个\n" +
 		"    动作（因而也不带 <id>：机器级的东西不属于任何实例），同样只与 --dry-run 同用。\n",
 }
 
@@ -638,7 +642,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（连配置正文一起打印）")
 		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、路径映射的修改粒度、规则模板）")
 		noTmpfs    = fs.Bool("no-tmpfs", false, "完全不要 tmpfs —— X11 程序必须如此（--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0）")
-		noTray     = fs.Bool("no-tray", false, "不要把这个实例的托盘图标指向宿主覆盖表（整机开关见 config.toml 的 defaults.tray_override）")
+		noTray     = fs.Bool("no-tray", false, "不要把这个实例的托盘图标指给 twin（写文件表还是宿主覆盖表见 tray_override 的说明；整机开关在 config.toml 的 defaults.tray_override）")
 	)
 	// Go's flag package has no aliases, so the documented `-o` is a second
 	// variable for the same setting; the two are reconciled before use rather
@@ -826,13 +830,13 @@ func cmdInstall(p inst.Paths, args []string) int {
 	var (
 		profilePath = fs.String("profile", "", "读哪一份配置（默认 ./profile.yml；与 -p 是同一个设置）")
 		force       = fs.Bool("force", false, "覆盖已存在但不是 twin 生成的桌面项；也允许落盘时遮蔽同名的系统桌面项")
-		dryRun      = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘覆盖将写入的行、尺寸扩展的当前状态）")
+		dryRun      = fs.Bool("dry-run", false, "只打印，不落盘（文件清单、桌面项与快照正文、bwrap 调用、托盘覆盖这次会走哪条路、托盘扩展的当前状态）")
 		explain     = fs.Bool("explain", false, "打印完整说明（推导值、路径映射的修改粒度、规则模板、候选状态目录、整份自检、手工验证命令）")
 		// The machine-level half of install is a switch, not an object word:
 		// any bare word would also be a legal instance id (see the comment on
 		// the positional check below), and the object position is the one place
 		// where a reserved word would collide with a name a user can pick.
-		ext = fs.Bool("ext", false, "装入 shell 侧的托盘尺寸助手扩展（机器级，与实例无关；只与 --dry-run 同用）")
+		ext = fs.Bool("ext", false, "装入 shell 侧的托盘扩展（机器级，与实例无关；它被加载之后各实例的托盘图标改由它画；只与 --dry-run 同用）")
 	)
 	var shortProfile string
 	fs.StringVar(&shortProfile, "p", "", "读哪一份配置（--profile 的简写；两个拼写同时给是用法错误）")
@@ -1200,7 +1204,7 @@ func cmdReinstall(p inst.Paths, args []string) int {
 	// through two doors (they share installAndCheck), so the machine-level half
 	// has to be reachable from both — otherwise which commands exist would
 	// depend on which door you happened to come in by.
-	ext := fs.Bool("ext", false, "装入 shell 侧的托盘尺寸助手扩展（机器级，与实例无关；只与 --dry-run 同用）")
+	ext := fs.Bool("ext", false, "装入 shell 侧的托盘扩展（机器级，与实例无关；它被加载之后各实例的托盘图标改由它画；只与 --dry-run 同用）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
@@ -1416,8 +1420,8 @@ func printNextSteps(p inst.Paths, it *inst.Instance, verbose bool) {
 	fmt.Printf("\n%s\n", title("👉 下一步"))
 	if verbose {
 		fmt.Printf("  1. 桌面项是后写的，GNOME 不会给已经存在的窗口重算归属 —— 请**重新启动**这个实例。\n")
-		fmt.Printf("  2. 托盘图标已经写进宿主覆盖表（该表热重载，立刻生效，不用重登）。\n")
-		fmt.Printf("     若上面那条是 WARN，说明这次没写进去：把命令拿到图形会话的终端里跑一次即可。\n")
+		fmt.Printf("  2. 托盘图标已就位：上面「托盘覆盖」那条说了这次走的是哪条路（助手扩展，或宿主表兜底）。\n")
+		fmt.Printf("     两条都是热生效，不用重登；那条若是 WARN，说明有一半没到位，按它给的命令跑一次。\n")
 		fmt.Printf("  3. 想确认身份，看这两个值是否都等于 %q：\n", it.EffectiveAlias())
 		fmt.Printf("     窗口 app_id ：WAYLAND_DEBUG=1 bash %s 2>&1 | grep set_app_id\n", p.Launch(it.ID))
 		fmt.Printf("     托盘 SNI Id ：busctl --user list | grep -i statusnotifier  （名字里带 pid）\n")
@@ -1450,30 +1454,31 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 	}
 	fmt.Printf("\n%s\n  level=%s  app_id / 托盘 Id = %q\n",
 		title("🪪 身份"), it.Level, it.EffectiveAlias())
-	// The tray row is host state, not a file, but it is still part of what a
-	// real run would change — so the rehearsal has to show it too.
+	// The tray override is host state (or the helper's file), not one of the
+	// artefacts above, but it is still part of what a real run would change —
+	// so the rehearsal has to show it, and it has to show *which mechanism*
+	// the real run would use. That is planTray, the very decision applyTray
+	// takes: previewing a different branch than the one that runs would be a
+	// lie about the only part of a wrap that depends on the machine.
 	if !it.TrayOverride {
-		fmt.Printf("\n%s\n  跳过（tray.override = false），不动宿主表；尺寸扩展也不检查（它只为这一半服务）\n",
+		fmt.Printf("\n%s\n  跳过（tray.override = false）：宿主表与助手扩展读的那份表都不写\n",
 			title("🔔 托盘覆盖"))
 	} else {
-		fmt.Printf("\n%s\n  %s\n  将写入 [('%s', '%s', '%s')]（合并，不覆盖别人的条目）\n",
-			title("🔔 托盘覆盖"), tray.Schema+" / "+tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
-		// The rehearsal has to show this too, and it has to show the *check*: the
-		// helper is machine-wide, so a real run looks at it and names the command
-		// that installs it — previewing a file write here would describe a
-		// different command than the one the user is about to run.
-		st := tray.CheckExt(p)
-		state := "已启用"
-		switch {
-		case !st.Installed:
-			state = "未装入（装它：twin install --ext）"
-		case !st.Enabled && st.Why == "":
-			state = "已装入但未启用 —— " + tray.EnableHint()
-		case !st.Enabled:
-			state = "已装入，但读不到启用列表（" + st.Why + "）"
+		plan := planTray(p, it)
+		fmt.Printf("\n%s\n", title("🔔 托盘覆盖"))
+		if plan.File != "" {
+			fmt.Printf("  将写入 %s（助手扩展读它画图标，不写宿主表）\n", plan.File)
+			fmt.Printf("  图标     %s\n", p.Icon(it.ID))
+			fmt.Printf("  并删掉宿主表 %s 里 %q 的那一行（若还在）：同一个图标不留两个来源\n",
+				tray.Key, it.ID)
+		} else {
+			fmt.Printf("  将写入宿主表 %s / %s [('%s', '%s', '%s')]（合并，不覆盖别人的条目）\n",
+				tray.Schema, tray.Key, it.ID, p.Icon(it.ID), p.Icon(it.ID))
 		}
-		fmt.Printf("  尺寸扩展 %s → %s\n  只检查，不写：它是机器级的，与这份配置无关\n",
-			tray.ExtUUID, state)
+		// The helper itself is machine-wide, so this run only *looks* at it —
+		// and says what it found in the same words the real run will print:
+		// checkTrayExt is the one place that sentence lives.
+		fmt.Printf("  %s\n", checkTrayExt(p, it))
 	}
 	printDerived(report.der)
 	printPathMaps(p, it, insp, report.origin, report.fix, report.verbose)
@@ -1682,40 +1687,122 @@ func readConfirmation(in io.Reader) (bool, error) {
 
 // ---------------------------------------------------------------- output
 
-// applyTray points the host's tray override table at this instance, and returns
-// the one line describing what happened.
+// applyTray points the tray at this instance's icon and returns the one line
+// describing what happened.
 //
-// This is the only state twin touches outside the user's home, and twin
-// touches it itself, at wrap time. The alternative — printing a gsettings
-// command for the user to run once, before wrapping — would make a wrapper
-// depend on preparation done by hand on each machine, which is exactly what
-// this tool exists to remove: a copied-over instance is regenerated by running
-// twin again, and that run has to leave the machine in the finished state.
+// Two mechanisms can put a twin icon in the tray, and this function is where
+// the choice between them is made — once, from a fact about the machine
+// (is the shell-side helper loaded? see tray.ExtState.Usable) rather than from
+// anything the user has to remember to pass:
+//
+//   - the helper is loaded ⇒ it reads the neutral file table (tray/table.go)
+//     and applies the icon itself. twin writes that file, and deletes the row
+//     an earlier install may have left in the host's table: two mechanisms
+//     over one tray item is one too many, and the row is pointless once the
+//     helper draws the icon. Nothing here needs the session bus.
+//   - the helper is missing, not enabled, blocked or unreadable ⇒ twin writes
+//     the host's table, as it always has. That write needs the session bus,
+//     so this is the branch that can honestly end in "not done yet".
+//
+// The switch is deliberately conservative: the fallback is the path that works
+// on every machine, so anything short of "loaded, and I could confirm it"
+// takes it. What the run actually did is printed either way; which path is in
+// force never has to be inferred from silence.
+//
+// The tray override is the only state twin touches outside the user's home,
+// and twin touches it itself, at wrap time. The alternative — printing a
+// gsettings command for the user to run once, before wrapping — would make a
+// wrapper depend on preparation done by hand on each machine, which is exactly
+// what this tool exists to remove: a copied-over instance is regenerated by
+// running twin again, and that run has to leave the machine in the finished
+// state.
 //
 // Failure here is not fatal. Without a session bus (an installer, a headless
-// run, a script) the table cannot be written, and the honest answer is the
-// command plus exit code 3, which `verify` supplies.
+// run, a script) the host table cannot be written, and the honest answer is
+// the command plus exit code 3, which `verify` supplies.
 func applyTray(p inst.Paths, it *inst.Instance) string {
 	if !it.TrayOverride {
 		return "托盘覆盖 跳过（tray.override = false）"
 	}
-	oc, err := tray.Ensure(it.ID, p.Icon(it.ID))
 	// level=none does not rename anything, so the program's StatusNotifierItem
 	// id is whatever the program chose — the row is a guess. It is still worth
 	// writing (the desktop basename often coincides) but not worth promising.
+	// Both mechanisms key on that same id, so the caveat is the same either way.
 	vague := ""
 	if !it.Level.Renames() {
-		vague = "（level=none 没有改名：托盘的 SNI Id 由程序自己决定，这一行未必匹配得上）"
+		vague = "（level=none 没有改名：托盘的 SNI Id 由程序自己决定，这一条未必匹配得上）"
 	}
+
+	plan := planTray(p, it)
+	if plan.File == "" {
+		return applyTrayHost(it, p.Icon(it.ID), "兜底路径："+plan.Why, vague)
+	}
+	return applyTrayFile(p, it, plan.File, vague)
+}
+
+// trayPlan is the decision applyTray takes, taken in one place so that the
+// rehearsal and the real run cannot disagree about it.
+//
+// A preview drawn from a second reading of the machine would be a second
+// implementation (see the note on printRehearsal), and the case it would get
+// wrong is exactly the interesting one: a machine whose helper is installed
+// but not loaded.
+type trayPlan struct {
+	// File is the helper's table file, empty when the host's table is the one
+	// in force.
+	File string
+	// Why is the extension state that put this instance on the host's table,
+	// empty on the helper's path.
+	Why string
+}
+
+func planTray(p inst.Paths, it *inst.Instance) trayPlan {
+	st := tray.CheckExt(p)
+	if st.Usable() {
+		return trayPlan{File: p.TrayTable(it.ID)}
+	}
+	return trayPlan{Why: st.ShortWhy()}
+}
+
+// applyTrayHost is the fallback: the host's own override table, read-modified
+// and read back by tray.Ensure (see internal/tray/tray.go for why every one of
+// those three steps is mandatory).
+func applyTrayHost(it *inst.Instance, icon, why, vague string) string {
+	oc, err := tray.Ensure(it.ID, icon)
 	switch {
 	case err != nil:
-		return "托盘覆盖 未写入（" + err.Error() + "）—— 自检里会给出要跑的那条命令"
+		return "托盘覆盖 未写入宿主表（" + err.Error() + "）—— 自检里会给出要跑的那条命令" + vague
 	case oc.Action == tray.ActionNoHost:
-		return "托盘覆盖 跳过（" + oc.Detail + "）"
+		return "托盘覆盖 跳过（" + oc.Detail + "）" + vague
 	case oc.Action == tray.ActionWritten:
-		return "托盘覆盖 已写入 " + tray.Key + "（该表热重载，立刻生效）" + vague
+		return "托盘覆盖 已写入宿主表 " + tray.Key + "（" + why + "；该表热重载，立刻生效）" + vague
 	default:
-		return "托盘覆盖 已是最新" + vague
+		return "托盘覆盖 已是最新（宿主表 " + tray.Key + "；" + why + "）" + vague
+	}
+}
+
+// applyTrayFile is the helper's path: the instance's row in the neutral table,
+// and the removal of whatever the host's table still claims about it.
+func applyTrayFile(p inst.Paths, it *inst.Instance, table, vague string) string {
+	out, err := tray.EnsureOverride(p, tray.NewOverride(it.ID, p.Icon(it.ID)))
+	if err != nil {
+		return "托盘覆盖 未写入 " + table + "（" + err.Error() + "）" + vague
+	}
+	line := "托盘覆盖 已写入 " + table + "（助手扩展读它画图标，不再写宿主表）"
+	if !out.Written {
+		line = "托盘覆盖 已是最新（" + table + "；助手扩展读它画图标）"
+	}
+	// The host table must not also carry a row for this instance. Both would
+	// set the same image, so this is not a visible conflict — it is the "two
+	// sources for one fact" the switch exists to remove, and a row left behind
+	// is the row that keeps pointing at an icon after the instance is gone.
+	switch oc, err := tray.Remove(it.ID); {
+	case err != nil:
+		return line + "；宿主表里那一行没能删掉（" + err.Error() + "）—— 自检里会给出要跑的那条命令"
+	case oc.Action == tray.ActionRemoved:
+		return line + "；并删掉了宿主表里的那一行"
+	default:
+		return line
 	}
 }
 
@@ -1741,6 +1828,7 @@ func installExt(p inst.Paths, dry bool) int {
 		for _, name := range tray.ExtFiles() {
 			fmt.Printf("  %s %s\n", outStyle.Dim("·"), filepath.Join(dir, name))
 		}
+		fmt.Printf("  作用     托盘图标由它自己画（读 twin 写的那份文件表，不写宿主扩展的 dconf 键）\n")
 		fmt.Printf("  然后请 shell 启用它：gnome-extensions enable %s\n", tray.ExtUUID)
 		fmt.Printf("  它是机器级的：装一次就服务所有实例，与 -p 那份配置无关。\n")
 		return exitOK
@@ -1748,11 +1836,11 @@ func installExt(p inst.Paths, dry bool) int {
 
 	oc, err := tray.EnsureExt(p)
 	if err != nil {
-		fail("装入托盘尺寸扩展失败：" + err.Error())
+		fail("装入托盘扩展失败：" + err.Error())
 		return exitFail
 	}
 
-	lead := outStyle.Green(style.Glyph(style.LevelOK)+" 托盘尺寸扩展") + " " + outStyle.Bold(tray.ExtUUID)
+	lead := outStyle.Green(style.Glyph(style.LevelOK)+" 托盘扩展") + " " + outStyle.Bold(tray.ExtUUID)
 	fmt.Printf("%s\n", lead)
 	// Written or already right is the one thing the reader cannot tell from the
 	// exit code, and it is the whole reason ExtOutcome carries a flag for it.
@@ -1761,10 +1849,10 @@ func installExt(p inst.Paths, dry bool) int {
 	} else {
 		fmt.Printf("  文件     %s（与内嵌副本逐字节相同，没碰）\n", dir)
 	}
-	fmt.Printf("  作用     让指向自定义图标的托盘项跟着面板图标大小缩放（不动宿主扩展）\n")
+	fmt.Printf("  作用     托盘图标由它自己画（读 twin 写的那份表，不写宿主扩展的 dconf 键）\n")
 	switch {
 	case oc.Enabled:
-		fmt.Printf("  启用     已启用\n")
+		fmt.Printf("  启用     已启用 —— 之后 install / reinstall 都走这条路\n")
 	case oc.NeedsRelogin:
 		if oc.Detail != "" {
 			fmt.Printf("  启用     还没有 —— 在装的当下做不到（%s）\n", oc.Detail)
@@ -1774,57 +1862,72 @@ func installExt(p inst.Paths, dry bool) int {
 		fmt.Printf("\n%s\n", title(fmt.Sprintf("✋ 还差一步（脚本里写不了 —— 这就是退出码 %d 的含义）", exitHuman)))
 		fmt.Printf("  1. 注销重登一次：shell 只在启动时扫一遍扩展目录，它现在还不认识这个 uuid。\n")
 		fmt.Printf("  2. gnome-extensions enable %s\n", tray.ExtUUID)
-		fmt.Printf("  在此之前，自定义图标仍按主题的 16px 画 —— 覆盖表本身已经生效，只是画得小。\n")
+		fmt.Printf("  在此之前，各实例仍走宿主覆盖表兜底 —— 图标是对的，只是比面板图标小一圈。\n")
+		fmt.Printf("  3. 重登之后，让已装的实例改走这条路：twin reinstall <id>（一条命令一个实例）。\n")
 		return exitHuman
 	default:
 		fmt.Printf("  启用     状态未知\n")
 	}
+	// The instances move over on their own install, not here: rewriting every
+	// instance's table is an action per instance, and this command serves the
+	// machine (see the note above installExt). Saying so is the difference
+	// between "the tray icon is still small" being a bug and being a step the
+	// user has not run yet.
+	fmt.Printf("  已装的实例不会自己搬家：下一次 twin install / reinstall 时它们才改走这条路。\n")
 	return exitOK
 }
 
 // checkTrayExt reports the shell-side half of the tray override, and warns when
 // it is not there.
 //
+// This is the other half of the switch applyTray just took: the tray line says
+// which mechanism drew the icon, this one says what state the helper is in and
+// what to run about it. The two share the same reading of ExtState.Usable, so
+// the block can never claim "the helper draws it" while this line says the
+// helper is missing.
+//
 // It deliberately does not install it: the helper belongs to the machine while
 // the install that calls this belongs to one instance (see installExt above).
 // What is left to do here is exactly what the user asked for at wrap time — say
 // whether it is in place, and if not, name the one command that fixes it.
 //
-// The line is coloured and glyphed rather than quiet because a missing helper is
-// not a file this run forgot: it is a degraded tray icon that nothing else in
-// the output would mention. `verify` and the ✋ block repeat it with the same
-// wording, which is how every other not-OK check in this tool behaves.
+// The line is coloured and glyphed rather than quiet because a helper that is
+// not loaded is not a file this run forgot: without it the tray override goes
+// through the host's table (which works, at the theme's 16px), and nothing else
+// in the output would mention why the icon looks small. `verify` and the ✋
+// block repeat it with the same wording, which is how every other not-OK check
+// in this tool behaves.
 func checkTrayExt(p inst.Paths, it *inst.Instance) string {
 	if !it.TrayOverride {
-		return "托盘尺寸扩展 跳过（tray.override = false）"
+		return "托盘扩展 跳过（tray.override = false）"
 	}
 	st := tray.CheckExt(p)
 	const install = "twin install --ext"
+	warn := func(s string) string { return outStyle.Yellow(style.Glyph(style.LevelWarn) + " " + s) }
 	switch {
+	case st.Usable():
+		// Plain, like every other line in the artefact block: only the not-OK
+		// cases carry a verdict, because they are the ones the reader has to
+		// act on.
+		return "托盘扩展 " + tray.ExtUUID + " 已启用 —— 托盘图标由它接管"
 	case !st.Installed:
 		why := ""
 		if st.Why != "" {
-			why = "；启用列表也读不到：" + st.Why
+			why = "；扩展列表也读不到：" + st.Why
 		}
-		return outStyle.Yellow(style.Glyph(style.LevelWarn) + " 托盘尺寸扩展 未装入 —— " +
-			"自定义图标会比面板图标小一圈（这是它的全部作用，其余照常）" + why +
+		return warn("托盘扩展 未装入 —— 托盘图标走宿主表兜底（图标会比面板图标小一圈）" + why +
 			"；装它：`" + install + "`")
-	case !st.Enabled:
-		if st.Why != "" {
-			return outStyle.Yellow(style.Glyph(style.LevelWarn) + " 托盘尺寸扩展 已装入，" +
-				"但读不到 shell 的启用列表：" + st.Why + "；在图形会话的终端里跑 `" + install + "` 重新问一遍")
-		}
-		return outStyle.Yellow(style.Glyph(style.LevelWarn) + " 托盘尺寸扩展 已装入但未启用 —— " +
-			"自定义图标仍按主题的 16px 画；" + tray.EnableHint())
+	case st.Why != "":
+		return warn("托盘扩展 已装入，但读不到 shell 的扩展列表：" + st.Why +
+			"；在图形会话的终端里跑 `" + install + "` 重新问一遍")
+	case st.Blocked:
+		return warn("托盘扩展 在 shell 的禁用列表里（被关掉过）—— 托盘图标走宿主表兜底；" +
+			"`" + install + "` 会重新请求启用一次")
 	default:
-		// Plain, like every other line in the artefact block: only the two
-		// not-OK cases below carry a verdict, because they are the ones the
-		// reader has to act on.
-		return "托盘尺寸扩展 " + tray.ExtUUID + " 已启用"
+		return warn("托盘扩展 已装入但未启用 —— 托盘图标走宿主表兜底（图标会比面板图标小一圈）；" +
+			tray.EnableHint())
 	}
 }
-
-// applyTray points the host's tray override table at this instance, and returns
 
 // dropTray removes this instance's row from the host table. The table is global
 // and the row is a claim about a program that is about to stop existing, so

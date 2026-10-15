@@ -53,17 +53,21 @@ update-desktop-database ~/.local/share/applications
 
 ### B1. 托盘还是原程序的图标
 
-**根因**：托盘覆盖表（`custom-icons`）按 **SNI `Id` 严格相等**匹配。
+**根因**：两条路都按 **SNI `Id` 严格相等**匹配。
 
 | 情况 | 结论 |
 |---|---|
-| `level=alias` / `redirect` | `Id` 可预测（= 别名）⇒ 应该能命中。检查覆盖表里那一行是否真的写进去了 |
+| `level=alias` / `redirect` | `Id` 可预测（= 别名）⇒ 应该能命中。查 `twin verify <id>` 的「托盘图标」那一行说的**这次走那条路**里的条目在不在 |
 | `level=none` | **没有改名** ⇒ `Id` 由程序自己决定，那一行是**猜测**。工具会明确提醒"未必匹配得上" |
 
 ```bash
-gsettings get org.gnome.shell.extensions.appindicator custom-icons
-twin verify <id>
+twin verify <id>                     # 「托盘图标」那一行说清走的是哪条路、条目在不在
+cat ~/.local/share/twin/tray.d/<id>.json   # 走扩展那条路时，图标就是从这里读的
+gsettings get org.gnome.shell.extensions.appindicator custom-icons   # 走兜底那条路时看这里
 ```
+
+两条路**只走一条**（判据与理由见 [`cli.md`](cli.md) 的 `twin install` 一节）。所以看到哪边是空的，
+先确认**这次该走哪边**：`twin install` 的输出里「托盘覆盖」那一行每次都写明了。
 
 ### B2. `gsettings set` 退出码 0，但什么都没变
 
@@ -73,6 +77,10 @@ twin verify <id>
 **修法**：在**真实图形会话的终端**里执行。`twin doctor` 有一项专门探会话总线可达性。
 
 ⚠️ 所以 `twin` 写完**必须回读** —— 回读才是唯一判据。
+
+⚠️ 这条**只对兜底那条路成立**：托盘扩展被 shell 加载时，图标走的是 `~/.local/share/twin/tray.d/`
+里的一份文件，不需要会话总线（那份文件由 shell 里的扩展读）。所以"没有会话总线"不再是托盘图标的
+必然故障 —— 它只影响兜底路径。
 
 ### B3. 读覆盖表看到 `@a(sss) []`
 
@@ -88,26 +96,47 @@ twin verify <id>
 
 ### B5. 自定义图标比程序自己的图标小一圈
 
-**根因**：托盘覆盖表只决定**画哪张图**，尺寸交给 `St.Icon` 按 actor 的**分配框**算，而那个框在
-`IconActor._init()` 里按 `PANEL_ICON_SIZE || 16` 写死一次（`PANEL_ICON_SIZE` 在 gnome-shell 49 已删）
-⇒ 自定义图标恒定 **16px**；程序自己发的位图那条路显式给了宽高，所以跟着设置里的 `icon-size` 变。
-**这是宿主的 bug，不在你的配置里**，也不在 twin 画的那张 PNG 里（它是满铺的）—— 机制见
-[`architecture.md`](architecture.md) §7.1。
+**根因**：这个实例走的是**兜底那条路**（宿主覆盖表）。那条路只决定**画哪张图**，尺寸交给 `St.Icon`
+按 actor 的**分配框**算，而那个框在 `IconActor._init()` 里按 `PANEL_ICON_SIZE || 16` 写死一次
+（`PANEL_ICON_SIZE` 在 gnome-shell 49 已删）⇒ 自定义图标恒定 **16px**；程序自己发的位图那条路显式
+给了宽高，所以跟着设置里的 `icon-size` 变。**这是宿主的 bug，不在你的配置里**，也不在 twin 画的那张
+PNG 里（它是满铺的）—— 机制见 [`architecture.md`](architecture.md) §7.1。
+
+要换的是**路**，不是配置：装上托盘扩展，让它自己画图标（顺带把框同步对）。
 
 ```bash
-twin verify <id>                     # 看「托盘尺寸扩展」那一行
-twin install --ext                   # 缺了就装它（机器级，装一次；不跟着 twin install 走）
+twin verify <id>                     # 看「托盘扩展」那一行，以及「托盘图标」走的是哪条路
+twin install --ext                   # 装了就走另一条路（机器级，装一次；不跟着 twin install 走）
 gnome-extensions info twin-tray@edwinhuish.github.io
 ```
 
-| 那一行 | 含义 | 做法 |
+| 「托盘扩展」那一行 | 含义 | 做法 |
 |---|---|---|
-| `已启用 → …` | 正常 | — |
+| `已启用 → 托盘图标由它画` | 正常 | — |
 | `已装入但未启用` | shell 还没扫到它（它只在启动时扫扩展目录） | **注销重登一次**（Wayland 无 `Alt+F2 → r`），再 `gnome-extensions enable twin-tray@edwinhuish.github.io` |
+| `在 shell 的禁用列表里` | 被关掉过（shell 不会加载它） | `twin install --ext`（它会重新请求启用一次；shell 还没扫到 uuid 时同样要先注销重登） |
 | `未装入`（不在扩展目录里） | 还没装过 —— 它不跟着 `twin install` 走 | `twin install --ext` |
-| `读不到…启用列表` | 这台机器没有 `gsettings` / 无会话总线 | 事实性跳过，身份链路照常 |
+| `读不到…扩展列表` | 这台机器没有 `gsettings` / 无会话总线 | 事实性跳过，身份链路照常 |
 
-启用之后尺寸就挂在那条 `notify::icon-size` 上了 ⇒ 改 `icon-size` 立刻生效，**不用重启程序**。
+⚠️ 装完扩展**不会让已有实例自动搬家**：它们在下一次 `twin install` / `twin reinstall` 时才改走扩展
+那条路。所以"装了扩展、图标还是小一圈"是预期内的，跑一次 `twin reinstall <id>` 即可。
+
+换过去之后尺寸就挂在那条 `notify::icon-size` 上了 ⇒ 改 `icon-size` 立刻生效，**不用重启程序**。
+
+### B6. 扩展已启用，托盘却还是原程序的图标
+
+**根因**：让扩展把图标画上去要三件事同时对，按这个顺序查 —— 每一件都会留下可读的痕迹。
+
+1. **表里有这个实例那一行吗？** 扩展读的是 `~/.local/share/twin/tray.d/<id>.json`，它不是扩展自己
+   生成的。`twin verify <id>` 的「托盘图标」那一行会直接说"不存在""指向别处"。
+   修法：`twin install <id>`（或 `reinstall`）—— 那次安装会重新选路并写这一行。
+2. **扩展挂上宿主的渲染入口了吗？** 宿主换实现时扩展会**降级**：图标回落成程序自带的那张，并在日志里
+   留一行警告（这就是它不说谎的方式）：
+   ```bash
+   journalctl -f -o cat /usr/bin/gnome-shell | grep twin-tray
+   ```
+   日志里没有那行警告，说明补丁挂上了 —— 那就回到第 1 条查表。
+3. **匹配对得上吗？** `Id` 是严格相等，`level=none` 时那一行只是猜测（见 B1）。
 
 
 ## C. 程序起不来

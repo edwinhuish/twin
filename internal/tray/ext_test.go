@@ -24,6 +24,9 @@ import (
 //	"unknown" enable fails: the shell has never scanned this uuid
 //	"noext"   there is no gnome-extensions command at all
 //	"nolist"  gsettings cannot read the enable list
+//	"refused" the uuid is in the enable list *and* in the shell's disable list:
+//	          enabled on paper, not running — "enable" cannot talk it out of
+//	          that state, which is what makes it the interesting case
 func fakeShell(t *testing.T, mode, initialList string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -39,6 +42,12 @@ enabled-extensions)
   nolist) echo "找不到“org.gnome.shell”的设置架构" >&2; exit 1 ;;
   esac
   cat "` + list + `"
+  ;;
+disabled-extensions)
+  case "` + mode + `" in
+  refused) printf "['%s']" "` + ExtUUID + `" ;;
+  *) echo "[]" ;;
+  esac
   ;;
 *)
   echo "unsupported key: $3" >&2; exit 2 ;;
@@ -212,6 +221,30 @@ func TestCheckExtSaysWhyItCannotReadTheList(t *testing.T) {
 	}
 	if st.Why == "" {
 		t.Error("读不到的原因必须带出来")
+	}
+	if st.Usable() {
+		t.Error("读不到就说不上可用 —— 托盘图标得走宿主表那条兜底路")
+	}
+}
+
+// 「已启用」不等于「在跑」。uuid 同时躺在 shell 的禁用列表里时，shell 不会加载它，
+// 而这条判据决定托盘图标走哪条路：说成可用会让那个实例连图标都没了。
+func TestExtIsNotUsableWhenTheShellRefusesIt(t *testing.T) {
+	fakeShell(t, "refused", "['"+ExtUUID+"']")
+	p := inst.Paths{Home: t.TempDir()}
+
+	if oc, err := EnsureExt(p); err != nil || oc.Enabled {
+		t.Errorf("被 shell 拒过的 uuid 不算启用：%+v %v", oc, err)
+	}
+	st := CheckExt(p)
+	if !st.Installed || !st.Enabled || !st.Blocked {
+		t.Fatalf("应当在位、在启用列表里、也在禁用列表里：%+v", st)
+	}
+	if st.Usable() {
+		t.Error("shell 不会加载它 ⇒ 不可用")
+	}
+	if st.ShortWhy() == "" {
+		t.Error("四个打印点都在用的那句话不能是空的")
 	}
 }
 

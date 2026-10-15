@@ -144,7 +144,8 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 | 6 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
 | 7 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
 | 8 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本 | 同上 |
-| 9 | `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘尺寸助手扩展（`metadata.json` ＋ `extension.js`，shell 侧那一半） | **不是** `twin install`：`twin install --ext`（机器级，一份服务所有实例） |
+| 9 | `~/.local/share/twin/tray.d/<id>.json` | 托盘文件表（扩展读它画图标，§7.1 的**首选路径**） | 每次 install；扩展不可用时**不写**（那份是兜底） |
+| 10 | `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘扩展（`metadata.json` ＋ `extension.js`：读上面那份表画图标 ＋ 同步图标框尺寸） | **不是** `twin install`：`twin install --ext`（机器级，一份服务所有实例） |
 
 ### 5.1 实例定义
 
@@ -329,9 +330,9 @@ bwrap
 | 落点 | 谁读 | 漏了会怎样 |
 |---|---|---|
 | `<id>.desktop` 的 `Icon=` | 启动器 / 面板 / 任务栏 / `Alt+Tab` / 概览 | 齿轮占位图 |
-| GSettings `custom-icons`（`('<id>', '<png>', '<png>')`） | 托盘宿主 `ubuntu-appindicators` | 托盘仍是原程序的图标 |
+| 托盘覆盖（两条路之一：`custom-icons` 那个键，或本文 §7.1 的文件表） | 托盘宿主 `ubuntu-appindicators`，或 §7.1 的助手扩展 | 托盘仍是原程序的图标 |
 
-托盘那条链路的完整优先级是：
+走宿主覆盖表时，托盘那条链路的完整优先级是：
 
 ```
 custom-icons（按 SNI Id 严格匹配；值以 / 开头 ⇒ 当文件路径加载）
@@ -341,19 +342,53 @@ custom-icons（按 SNI Id 严格匹配；值以 / 开头 ⇒ 当文件路径加�
 
 只有**第一级**是外部可控的，而它**优先级最高**：命中后应用的 `IconName` / `IconPixmap`
 被完全忽略。它还是**热重载**的（监听 `changed::custom-icons`）⇒ 当场写、当场生效，不用重登。
+§7.1 的助手扩展把同一级**替换掉**（塞进宿主的自定义图标通道，见那里）：命中后同样忽略程序自己那两样，
+同样是热生效，但那一份表是文件、也不需要会话总线。
 
 ⚠️ 前提是 `Id` 必须唯一 —— 否则两个实例会同时命中同一条规则。这正好由身份层保证
 （overlay 别名 = `argv[0]`）。
 
-⚠️ 这是**全局单键**：写入必须 read-modify-write 整张表，绝不覆盖别人的条目。
+⚠️ 这是**全局单键**：写入必须 read-modify-write 整张表，绝不覆盖别人的条目。§7.1 那份文件表按实例
+一个文件，没有这个约束 —— 这也是它更结实的第二个理由。
 
-### 7.1 尺寸：覆盖表只管"画哪张图"，不管"画多大"
+### 7.1 托盘图标：两条路，一次只走一条
 
-命中覆盖表的那一项被宿主包成 `GIcon`（`_setGicon`）交给 `St.Icon` 画，而**程序自己发**的位图走
-`_setImageContent(content, S, S)` —— 后者显式给 actor 定了宽高，前者只给内容，屏幕上多大由 actor 的
-**分配框**决定（`st-icon.c` 全文件没有一处 `clutter_actor_set_size()`，它只改"纹理加载多大"）。
+`twin` 让托盘显示自己的图标有两条路，**同一个图标不留两个来源**：
 
-那个框在 `IconActor._init()` 里只写一次：
+| | 首选：助手扩展自己画 | 兜底：宿主覆盖表 |
+|---|---|---|
+| 图标从哪来 | `~/.local/share/twin/tray.d/<id>.json`（twin 写的一份**中立文件表**） | `custom-icons` 那个 dconf 键 |
+| 谁把它画上去 | `twin-tray@edwinhuish.github.io` 在 shell 进程内 | 宿主自己（上一节那条链） |
+| 需要会话总线吗 | **不需要**（写文件 ＋ 进程内生效） | 需要（无总线时 `gsettings set` 会假成功） |
+| 尺寸 | 跟随面板 `icon-size`（见下） | 恒主题的 16px（见下） |
+
+选哪条由 `tray.ExtState.Usable()` 在 **install 时**决定一次：扩展的文件在用户扩展目录里 **且**
+uuid 在 shell 的启用列表里 **且** 不在它的禁用列表里 **且** 两个列表都读得到。刻意保守 ——
+拿不准就走兜底，因为兜底是所有机器都能走通的那条，而反过来判错的代价是**那个实例一个图标都没有**，
+屏幕上还没有任何东西解释为什么。走了哪条每次都打印（`twin install` 的输出里那一行），切到扩展这条路时
+还会把宿主表里本实例的那一行**删掉**：两条路都指向同一张图不算冲突，但它就是"一个事实两个来源"，
+而且留着的那一行正是 `twin remove` 之后还会指着图标的那一行。
+
+**扩展怎么把图标画上去。** 复用宿主自己的渲染路径，不重写一遍：
+
+- `IconActor._updateIconByType(iconType, iconSize)` 是宿主**每一次**真正设置图标的入口，它先同步读
+  `this._customIcons`（`SNIconType → 绝对路径` 的 Map），有值就走宿主那条"自定义图标"实现（绝对路径
+  加载、attention 回落、`Gio.EmblemedIcon` 包装……全是上游的代码）。扩展在它之前把值塞进同一个 Map，
+  于是屏幕上画出来的东西与写 dconf 表**逐像素相同**，差别只在谁把它放进去。
+- 判定键是 `this._indicator.id` —— 与宿主自己拿 dconf 表去找那一行用的是同一个键，所以两条路匹配到
+  的托盘项完全一致，换路不会换掉"哪个图标被替换"。（`Main.panel.statusArea` 的 role 后缀是另一个东西
+  —— 那是 `Util.indicatorId()` 拼出来的 `busName@objectPath`，不能当匹配键。）
+- 补丁只碰**被补的那个函数本来就在用的三个名字**：`_updateIconByType`（补丁目标）、`this._customIcons`
+  （注入点）、`this._indicator.id`（判定键）。类原型从状态区里现成的实例上取（`Object.getPrototypeOf`），
+  所以既不 import 宿主的模块、也不去猜它装在哪个目录。宿主把这些名字改名，最坏结果是**判据拿不到
+  ⇒ 一行 `console.warn`、图标回到程序自带的那张**，而不是把托盘画坏。
+- ⚠️ 已知副作用（与走 dconf 那条路完全相同）：`_customIcons` 一非空，`_updateIconByType(OVERLAY, …)`
+  就查不到 overlay 的自定义项、把 overlay 徽标清掉（上游行为）。没有 overlay 图标的程序不受影响。
+
+**尺寸那一半（宿主的一个 bug）。** 命中覆盖表的那一项被宿主包成 `GIcon`（`_setGicon`）交给 `St.Icon`
+画，而**程序自己发**的位图走 `_setImageContent(content, S, S)` —— 后者显式给 actor 定了宽高，前者只给
+内容，屏幕上多大由 actor 的**分配框**决定（`st-icon.c` 全文件没有一处 `clutter_actor_set_size()`，
+它只改"纹理加载多大"）。那个框在 `IconActor._init()` 里只写一次：
 
 ```js
 this.height = iconSize * themeContext.scale_factor;   // iconSize = PANEL_ICON_SIZE || 16
@@ -364,32 +399,32 @@ this.height = iconSize * themeContext.scale_factor;   // iconSize = PANEL_ICON_S
 **漏了框**。于是：设置里 `icon-size` 调到 30，程序自己的位图跟着变 30，twin 的自定义图标仍是 16
 （Yaru 给 `.system-status-icon` 的 1.091em）—— 同一排图标里小一圈。
 
-**这一环只能在 shell 里面补**：框是宿主在 JS 里写的，外面没有任何接口。所以 `twin` 自带一个**小时助手
-扩展**（uuid `twin-tray@edwinhuish.github.io`，随二进制内嵌，由 `twin install --ext` 写进用户扩展
-目录 —— 它是机器级的，所以 `twin install` 只检查、不写），只做一
-件事：把每个 `appindicator-*` 的 `IconActor` 的框同步到它自己的 `icon-size` 属性。
+这一环只能在 shell 里面补（框是宿主在 JS 里写的，外面没有接口），所以扩展还做第二件事：把每个
+`appindicator-*` 的 `IconActor` 的框同步到它自己的 `icon-size` 属性。时机是安全的 —— 同步发生在
+`notify::icon-size`，而图标内容是之后才建的（`_updateWhenFullyReady` 的顺序是 尺寸 → 类名 →
+custom-icons → 内容）⇒ 位图那条路稍后仍会用自己的显式宽高覆盖它，**位图图标不受影响**。
+`icon_size > 0` 这个条件同时排除了主题自己算的那条路（主题走 `st_icon_update_icon_size`，不会让这个
+属性变正）。
 
 几个刻意的选择：
 
 - **不 fork 宿主。** 系统那份在 `/usr/share/gnome-shell/modes/ubuntu.json` 里被列为 **mode extension**，
   用户目录下的同名副本会被 `extensionSystem.js` **静默拒绝**（连 uuid 都不登记）⇒ fork 这条路走不通。
   助手是**一个新 uuid**，与宿主**并排**运行。
-- **不改宿主的代码，也不读它的私有字段。** 判据是 `Main.panel.statusArea` 里以 `appindicator-` 开头的
-  role —— 那是宿主自己注册的名字。宿主哪天改了内部结构，最坏结果是回到 16px（= 装这个扩展之前的样子），
-  **不是**托盘坏掉。
-- **时机是安全的。** 同步发生在 `notify::icon-size`，而图标内容是之后才建的（`_updateWhenFullyReady`
-  的顺序是 尺寸 → 类名 → custom-icons → 内容）⇒ 位图那条路稍后仍会用自己的显式宽高覆盖它，**位图图标
-  不受影响**。`icon_size > 0` 这个条件同时排除了主题自己算的那条路（主题走 `st_icon_update_icon_size`，
-  不会让这个属性变正）。
+- **不做成"写 dconf 的桥"。** 有一条更短的实现：扩展读同一份文件表，再在 shell 进程内把值写进
+  `custom-icons`（进程内写 dconf 不会假成功，也不用管会话总线）。它被换掉的理由是：那样两条路的**产出
+  是同一个全局键**，于是"谁在写"永远说不清，而且仍然浪费在 read-modify-write 与按 SNI Id 严格匹配上
+  —— 扩展既然在 shell 里，就没有理由绕道 dconf。
 - **装是文件写入，启用是会话动作；而且这件事是机器级的，所以它归 `twin install` 的一个开关。** 一份扩展服务所有
   实例，挂到 `twin install` 上就成了"包一个实例"的副作用，重放快照时还会重做一遍 ⇒ 写入归
   `twin install --ext`，`twin install` / `twin reinstall` 只检查并警告。shell **只在启动时**扫一遍
   扩展目录，所以一个它没见过的 uuid **在下次登录前没有任何命令能启用它**。这是 shell 的事实，
   不是这里的缺陷 ⇒ `twin install --ext` 报"注销重登
-  一次"并以**退出码 3** 收尾，而不是反复重试。
-
-⚠️ 它只解决**尺寸**。覆盖表本身仍然写在宿主那个 dconf 键里（见上文），所以"写不进去要会话总线"这件事
-没有变化 —— 助手不是那件事的替代品。
+  一次"并以**退出码 3** 收尾，而不是反复重试。它也不会让已有实例自动搬家：那些实例在下一次
+  `install` / `reinstall` 时才改走这条路（否则屏幕上那个"小一圈"的图标会像个新 bug）。
+- **停用等于没装过。** disable 时补丁被还原、我们塞进去的那两个值当且仅当还是我们塞的值时被删掉、
+  每个图标请宿主重渲染一次（`_invalidateIcon`），文件监视器与所有信号一并断开 —— 屏幕上的图标跟着
+  退回程序自带的那张，而不是留着我们的最后一张图。
 
 
 ## 8. 权限与 AppArmor
@@ -440,3 +475,6 @@ this.height = iconSize * themeContext.scale_factor;   // iconSize = PANEL_ICON_S
 | `custom-icons` 那条路不听 `icon-size`（`_setGicon` ⇒ 主题框），pixmap 那条听（`_setImageContent` ⇒ 显式框） | 从 `/usr/lib/gnome-shell/libshell-18.so` 抽出宿主 JS ＋ 读 `st-icon.c` 源码，再用托盘截图逐像素分类 |
 | `PANEL_ICON_SIZE` 在 gnome-shell ≥ 49 已整条删除（45–48 有但未 export）⇒ `DEFAULT_ICON_SIZE` 恒 16 | `gresource extract /usr/lib/gnome-shell/libshell-18.so /org/gnome/shell/ui/panel.js` 后 grep |
 | 用户目录下与 mode extension 同 uuid 的副本被**静默拒绝**（且不登记 uuid ⇒ 系统版照常加载） | 读 `extensionSystem.js` 的 mode 过滤那一段，并实测一份 fork 副本装上去不生效 |
+| `IconActor._updateIconByType()` 是设置图标的**唯一**入口，且同步读 `this._customIcons`（`SNIconType → 绝对路径字符串`） | 读 `appIndicator.js` 的 `_updateIconByType` / `_updateCustomIcons` / `_setGicon`（上游 `gnome-shell-extension-appindicator`），§7.1 的注入点由此确定 |
+| 状态区 role 后缀**不是** SNI `Id`（是 `Util.indicatorId()` 拼的 `busName@objectPath`），匹配只能靠 `_indicator.id` | 读 `indicatorStatusIcon.js` 的 `addToStatusArea('appindicator-' + uniqueId)` 与 `util.js` 的 `indicatorId()` |
+| 一个 uuid 可以同时躺在 `enabled-extensions` 与 `disabled-extensions` 里；后者跨会话保留，只有 `enableExtension()`（`gnome-extensions enable`）会把它摘掉，而且**只在这个 uuid 已被 shell 扫到**时才摘得掉 | `gresource extract /usr/lib/gnome-shell/libshell-18.so /org/gnome/shell/ui/extensionSystem.js`，读 `enableExtension` / `disableExtension` 两个函数：前者 `filter` 掉禁用列表并检查 `_extensions.has(uuid)`，后者 `push` 进去 |

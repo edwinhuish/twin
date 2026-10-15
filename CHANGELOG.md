@@ -10,6 +10,16 @@
 
 ### Added
 
+- **托盘覆盖改成两条路，一次只走一条**：助手扩展被 shell 加载时**由它自己画图标** —— twin 写一份
+  **中立文件表** `~/.local/share/twin/tray.d/<id>.json`（每实例一个文件，`twin remove` 删掉），扩展读它、
+  在宿主渲染每个托盘项之前把自定义图标塞进宿主自己的"自定义图标"通道（`this._customIcons`）⇒ 画出来的
+  东西与写 dconf 表**逐像素相同**，但**不需要会话总线**、也不必 read-modify-write 一个全局键。
+  扩展不可用（未装 / 未启用 / 在 shell 的禁用列表里 / 列表读不到）时**回退到宿主 `custom-icons` 表**，
+  也就是原来的行为。判据只有 `tray.ExtState.Usable()` 一个，`twin install` 选路、`--dry-run` 预演、
+  `verify`、`doctor` 读的是同一个；走扩展那条路时还会把宿主表里本实例的那一行删掉（同一个图标不留
+  两个来源）。**走了哪条每次都打印**：托盘那条输出明确写出"扩展读的那个文件"或"兜底：为什么"。
+  扩展因此多了第二个职责（画图标），并会读 `disabled-extensions` —— 一个 uuid 可以同时在启用列表与
+  禁用列表里，而后者才是"shell 会不会加载它"的答案。
 - **`twin install --ext`（`twin reinstall --ext` 同形）**：装 shell 侧**托盘尺寸助手扩展**的开关 ——
   `install` 与 `reinstall` 是同一件事的两个入口（共用 `installAndCheck`），机器级那一半只在一边够得着，
   就等于「有哪些命令」取决于你走哪扇门；`reinstall --ext` 因此不接受 `<id>`（它不属于任何实例），
