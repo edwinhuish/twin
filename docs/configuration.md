@@ -27,19 +27,20 @@ profile.yml      （你正在编辑的那一份：gen 写，install / reinstall 
       > 内置默认
 ```
 
-**数组类字段**（`bwrap.extras`、`tmpfs`、`bind`）按**低位在前拼接**，同目标由后写的遮蔽：
+**数组类字段**（`bwrap.extras`、`bwrap.bind`、`tmpfs`）按**低位在前拼接**，同目标由后写的遮蔽：
 
 ```
-最终 bwrap.extras = gen 写的基座里「没有自己节点」的那些 ++ config.args ++ rules.args ++ gen 命令行 `--` 那一段
+最终 bwrap.extras = gen 写的基座那几行 ++ config.args ++ rules.args ++ gen 命令行 `--` 那一段
 ```
 
 `bwrap.extras` 是**交给 bwrap 的完整选项列表**（基座也在里面，见 §4），所以"这个程序拿到哪个根"
 第一次成了这份文件能回答的问题 —— 原先基座硬编码在 twin 里，想换根只有透传区一条路，而透传区
 排在所有映射之后，重新绑一次根会把前面的挂载全盖掉。
 
-⚠️ 基座里有**自己节点**的那几条不在这份列表里，各写在各键上：根挂载在 `bwrap.bind`（`Build` 把它
-发在所有东西**之前**），`bwrap.proc` / `bwrap.tmpfs` / `bwrap.env` 由 `Build` 发在这份列表
-**之后**。所以想改它们就改键，别在 `--` 里写一条同目标的挂载指望压住它们。
+⚠️ 基座里**只有根挂载**不在这份列表里：它是一条挂载，写在 `bwrap.bind`，而 `Build` 把它发在所有
+东西**之前**（写在文件第几行都一样）。其余每一条（`--proc /proc`、`--tmpfs /dev/shm`、宿主 `/tmp`
+那条、`--die-with-parent`）都是这份列表里的一行 —— 想改哪一条就改那一行，**行序就是命令里的顺序**，
+所以"被谁压住"是写在文件里的，不必先去背 bwrap 的选项表。
 
 同目标挂载的冲突规则**不需要 twin 实现** —— bubblewrap 自己就是"后挂载遮蔽前者"。
 
@@ -59,10 +60,10 @@ profile.yml      （你正在编辑的那一份：gen 写，install / reinstall 
 就会"顺手"改掉一排已有实例 —— 那正是最不该发生的静默变更。（`install` 读环境是另一回事：它读的
 是**你刚刚交出来的那份配置**，没有第二份意图能和它冲突。）
 
-`--refresh` 只做**加法与填空**，绝不改写那份定义里已有的值：**为空**的
-`desktop.keywords` / `desktop.categories` 才补（rules.d → 源桌面项），`bwrap.extras` 把 config ＋
-rules 的 token 追加进来（已存在的跳过，所以是幂等的），其余字段（id / name / level / tmpfs / binds）
-一律不动 —— 它们一定已被写满，"空"与"用户就是要空"分不开。基座也不动：它属于那份定义本身。
+`--refresh` 只做**加法**，绝不改写那份定义里已有的值：`bwrap.extras` 把 config ＋ rules 的
+参数行追加进来（已经在里面的跳过，所以是幂等的），其余字段（id / source / override / isolation /
+`bwrap.bind` / `bwrap.env`）一律不动 —— 它们一定已被写满，"空"与"用户就是要空"分不开。基座也不动：
+它属于那份定义本身。**桌面项正文完全不参与** —— 它从第一个字节起就是用户的文档（见 §4）。
 逐字段的行为写在 `twin reinstall -h` 里。
 
 补上的值**只用在这一次落盘上**：那份定义是你的文件，`install` / `reinstall` 都不改写它（改写会丢掉
@@ -73,8 +74,8 @@ rules 的 token 追加进来（已存在的跳过，所以是幂等的），其�
 
 ### 路径怎么写：绝对 / `~` / 相对
 
-这些字段是路径：`bind` 的两侧、`tmpfs`（rules.d 与实例定义都有）、`profile.yml` 里再加
-`exec.target`、`icon.source`、`bwrap.proc`、`bwrap.remountRO`。它们接受三种写法：
+这些字段是路径：`bind` 的两侧、rules.d 里的 `tmpfs`、`profile.yml` 里的 `source.exec`、
+`source.desktop`、`override.desktop`、`override.icon.source`。它们接受三种写法：
 
 | 写法 | 基准 | 什么时候用 |
 |---|---|---|
@@ -89,9 +90,10 @@ rules 的 token 追加进来（已存在的跳过，所以是幂等的），其�
 
 两个例外，都值得记：
 
-- **`bwrap.extras` 不解析**：那是 bwrap 的选项列表，逐 token 原样交给它，twin 不认、也猜不出哪个
-  token 是路径（[`architecture.md`](architecture.md) §2.1）。在那里写相对路径，等于交给 bwrap 按
-  **启动器的工作目录**解析 —— 那个目录没人选过。
+- **`bwrap.extras` 不解析**：那是 bwrap 的选项列表，一行一条、按空格拆开原样交给它，twin 不认、
+  也猜不出哪个 token 是路径（[`architecture.md`](architecture.md) §2.1）。在那里写相对路径，等于
+  交给 bwrap 按**启动器的工作目录**解析 —— 那个目录没人选过。`~` 是例外：它是这一份列表里唯一
+  在发出去之前会展开成 `$HOME` 的东西（规则里的 `--tmpfs ~/.cache/x` 要指向用它的那台机器）。
 - **`rules.d` 里不接受相对路径**（指名报错，退出码 2）：规则是给这个程序**所有实例**用的共享知识，
   它的相对路径该相对规则目录、还是相对每个实例，没有答案。那里写 `~/` 或绝对路径。
 
@@ -117,7 +119,7 @@ twin config > ~/.config/twin/config.toml
 | `level` | `"alias"` | 默认身份级别。只能是 `none` / `alias` / `redirect` |
 | `icon_size` | `256` | 生成图标的边长（像素）。必须是正数 |
 | `badge_style` | `"corner"` | `corner` \| `number` \| `dot` |
-| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时，新实例的 `bwrap.tmpfs` 里写 `/tmp`（空的私有 `/tmp`）；关掉则改成在 `bwrap.bind` 里写一条 `/tmp:/tmp`（宿主那个，原地可写，只是与宿主共享）。**在你确信二进制特征扫描判错的机器上关掉它**。两条都必须**可写** —— 只读的 `/tmp` 会让程序在别处报错 |
+| `tmpfs_unless_x11` | `true` | 程序支持 Wayland 时，新实例的 `bwrap.extras` 里写一行 `--tmpfs /tmp`（空的私有 `/tmp`）；关掉则改成写一行 `--bind /tmp /tmp`（宿主那个，原地可写，只是与宿主共享）。**在你确信二进制特征扫描判错的机器上关掉它**。两条都必须**可写** —— 只读的 `/tmp` 会让程序在别处报错 |
 | `tray_override` | `true` | 生成实例时是否把宿主的托盘图标覆盖表指向本实例 |
 
 > `tray_override` 是一个**整机**开关，理由很实在：值得关掉它的原因是机器的属性（换一套托盘
@@ -147,7 +149,7 @@ twin config > ~/.config/twin/config.toml
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `args` | `[]` | 追加到每个**新**实例 `bwrap.extras` 的尾部（排在它那份基座之后、路径映射之前）。**一个元素 = 一个 token**，原样拼接、不做替换。写进实例定义之后就不再回读这里 —— 改这份文件只影响以后新建的实例 |
+| `args` | `[]` | 追加到每个**新**实例 `bwrap.extras` 的尾部（排在它那份基座之后）。**一个元素 = 一条完整参数**，原样发给 bwrap、不做替换。写进实例定义之后就不再回读这里 —— 改这份文件只影响以后新建的实例 |
 
 ⚠️ 一个文件写坏了会**硬报错**而不是静默回退到内置默认 —— 否则你改了 `config.toml`、什么都没
 发生，而没有任何线索能告诉你为什么。
@@ -194,15 +196,18 @@ level    = "alias"
 keywords = "wechat;微信;im"
 # categories 留空 ⇒ 继承源桌面项
 
-# 盖成空目录的路径（bwrap.tmpfs）；写 /tmp 就是那份定义里的私有 /tmp（见 §4）
+# 盖成空目录的路径：生成实例时各写成 bwrap.extras 里的一行 --tmpfs；
+# 写 /tmp 就是那份定义里的私有 /tmp（见 §4）
 tmpfs = ["/tmp"]
 
-# 写法同 Docker Compose 的卷：源:目标[:ro|:dev]。源是数据实际所在，目标是程序看到它的位置
+# 写法同 Docker Compose 的卷：源:目标[:ro|:rw|:dev][:try]。源是数据实际所在，目标是程序看到它的位置
 # （bwrap 的 --bind 也是这个方向）。
 bind = [
   "~/.local/state/twin/{id}/xwechat:~/.xwechat",
   "~/Documents/xwechat_files",                                # 单写一条路径 ⇒ 原地升回可写，数据不搬家
   "~/.local/state/twin/{id}/all_users:~/Documents/xwechat_files/all_users",
+  # 程序第一次运行才会建的目录加 :try（源不在就整条跳过、不报错）；:try 要跟在写全的模式后面
+  # "~/.config/myapp:~/.config/myapp:ro:try",
 ]
 
 [bwrap]
@@ -215,9 +220,9 @@ args = []
 | `level` | 该程序的默认身份级别 |
 | `keywords` | 搜索关键词。规则里的显式值 **>** 任何推导 |
 | `categories` | 留空 ⇒ 继承源桌面项 |
-| `tmpfs` | 数组，**替换**内置；写进实例的 `bwrap.tmpfs`，`/tmp` 那一项就留在那里（基座自己那条 `/dev/shm` 也在同一处） |
-| `bind` | 字符串数组，**替换**内置。每条是 `源:目标[:ro\|:dev]`；单写一条路径 ⇒ 该路径挂回自己（原地升级可写） |
-| `[bwrap] args` | 数组，**替换**内置；追加到实例 `bwrap.extras` 的尾部（基座之后、路径映射之前） |
+| `tmpfs` | 数组，**替换**内置；生成实例时每项写成 `bwrap.extras` 里的一行 `--tmpfs <路径>`（基座自己那条 `/dev/shm` 也在同一份列表里）。它保持"一串路径"的写法，因为其中 `/tmp` 那一项同时是一个决定（`gen` 会据此挑 `/tmp` 那一支） |
+| `bind` | 字符串数组，**替换**内置。每条是 `源:目标[:ro\|:rw\|:dev][:try]`；单写一条路径 ⇒ 该路径挂回自己（原地升级可写）；`:try` 是"源不在就跳过"（见 §4 的 `bwrap.bind`）。生成时整段替换 `bwrap.bind` |
+| `[bwrap] args` | 数组，**替换**内置；追加到实例 `bwrap.extras` 的尾部（基座与路径映射之后）。一条 = 一条完整参数（`--dev-bind /dev/dri /dev/dri`），与 config.toml 和 `bwrap.extras` 同一个形状 |
 
 ### 合并语义（与内置同名字段）
 
@@ -274,8 +279,8 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 第二份只在定义放别处时出现：`install -p <文件>` 会把**同一份键**渲染进实例目录（存档记录，
 `twin reinstall <id>` 读它）—— 那时实例目录里那份的头注释指向 `reinstall`，你手上那份指向 `install`。
 
-文件是 YAML：下面每个小节是一个键，表里的键名要拼成点号路径 —— `identity.level`
-指的就是 `identity:` 缩进块里的 `level:`。缩进只能用空格。
+文件是 YAML：下面每个小节是一个键，表里的键名要拼成点号路径 —— `isolation.level`
+指的就是 `isolation:` 缩进块里的 `level:`。缩进只能用空格。
 
 **一个键后面什么都不写（`extras:`）就是空值**，和 `extras: []` / `keywords: ""` 是同一件事 ——
 把一整段列表删光之后留在那儿的那一行正是它，所以它读得进去。空值的读法由键自己决定：路径是
@@ -284,109 +289,107 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 **每个键上面都写着它自己的说明**，`gen` 生成的配置就是这样：阶段的解释留在文件里，
 人读到它的时候正好在编辑它。下面这些表是同一份内容的查阅版。
 
+**四个节点，按"这是谁的话"分**：`source` 是这个程序在哪，`override` 是 twin 覆盖了什么，
+`isolation` 是它怎么跑，`bwrap` 是这一次 bwrap 调用拿到什么。旧的定义里那几节
+（`exec` / `identity` / `desktop` / `icon` / `tray`）**一律指名报错并给出新位置**，不会被
+当成"没设置"读掉 —— 读成"没设置"会让两份定义各表一套，而终端上一个字都不说。
+
 ### 顶层
 
 | 键 | 说明 |
 |---|---|
-| `id` | 实例 id（= 桌面项基名 = 别名文件名） |
+| `id` | 实例 id（= 桌面项基名 = 别名文件名 = 这个目录名） |
 
-### `desktop`
-
-生成出来的那份 `.desktop` 的文案。**留空一律表示"沿用源桌面项"** —— 这一组键回答的是同一个问题，
-所以它们在一节里，而不是散在根上。
+### `source`
 
 | 键 | 说明 |
 |---|---|
-| `name` / `name_en` | 显示名 / 英文名 |
-| `comment` / `comment_en` | 说明 |
-| `keywords` | 搜索关键词（`;` 分隔） |
-| `categories` | 分类（`;` 分隔） |
-| `source` | 源桌面项路径（信息性，`install` / `reinstall` 会重读它取 Categories/Keywords） |
+| `exec` | 真实程序的路径。可以绝对、`~/` 开头、或相对（基准是这份文件所在的目录） |
+| `desktop` | 源桌面项路径。生成下面那份正文时从这里取显示名、图标、分类；留空也能生成，只是什么都要自己填 |
 
-> 键名前面那份版本把它们放在根上。那个写法**仍然读得懂**（根上的 `name` 没有第二种解释），
-> 所以不用为了升级去改手上已有的实例；下一次 `install` / `reinstall` 会把文件改写成
-> `desktop:` 一节。
+别名不再是一个键：**它永远是 `id`**。窗口 `app_id` 与托盘 `SNI Id` 都等于它，而它又是桌面项基名 ——
+分叉了就会有一个找不到桌面项，所以没有第二处可以写它（旧的 `exec.alias` / `exec.argv0` 都被拒了）。
 
-### `identity`
+### `override`
+
+twin 覆盖了什么。这一节的形状是这份配置里唯一一处需要解释的：
 
 | 键 | 说明 |
 |---|---|
-| `level` | `none` \| `alias` \| `redirect` |
-| `wm_class` | 写进桌面项的 `StartupWMClass`。默认 = `id`，且**只在 level 会改名时写**（X11/XWayland 才真正需要它，Wayland 下认领窗口的是基名） |
-| `notify` | 写进桌面项的 `StartupNotify=`。默认 `true`。它总是被写出来（"要不要"本身是一个决定） |
+| `desktop` | 桌面项**正文**所在的文件。`gen` 写的是与本文件同目录的 `<id>.desktop`；`install` 每次把它**逐字复制**到 `~/.local/share/applications/<id>.desktop`。文件不在时按源桌面项重新生成一份（`Exec` / `Icon` / `StartupWMClass` 都填好），**生成过之后它就是正文** |
+| `wm_class` | 生成正文时写进 `StartupWMClass` 的值。默认 = `id`，且只在 level 会改名时写。⚠️ 别依赖它：Wayland 下认领窗口的是别名基名（这一行只对 X11/XWayland 有意义），而且正文生成过一次之后，改这里不再有影响 |
+| `icon.source` | 源图标：png/jpeg/svg 路径，或图标主题里的名字。路径写法同 `source.exec` |
+| `icon.badge` | 角标文字（`style = dot` 不用它）。纯数字要加引号，否则会被读成数字 |
+| `icon.style` | `corner` \| `number` \| `dot` |
+| `tray` | 要不要让 twin 管这个实例的托盘图标。**总是写** —— "不覆盖"本身也是一个决定，缺这一段会和"这个字段存在之前写的老文件"分不开（缺段老文件按 `true`）。走哪条路（助手扩展读的 `~/.local/share/twin/tray.d/<id>.json`，还是回退到宿主 `custom-icons` 覆盖表）是**机器**的事（[`architecture.md`](architecture.md) §7.1），不由这个键决定 |
 
-### `icon`
+**为什么正文是一份文件、不是五个键**：它是这一份包裹里唯一"改写"而不是"阅读"的东西 ——
+显示名、说明、关键词、菜单分类 —— 而"在配置里改一行、再 install 一遍"其实是用两步做一件
+文本编辑。现在改它就是在改最终结果；`install` 复制的就是它，`--dry-run` 印的也是它。
+它也顺便回答了"装出来的到底是什么"。
 
-| 键 | 说明 |
-|---|---|
-| `source` | 源图标路径 |
-| `badge` | 角标文字 |
-| `style` | `corner` \| `number` \| `dot` |
-
-### `exec`
-
-| 键 | 说明 |
-|---|---|
-| `target` | 真实程序的**绝对路径** |
-| `alias` | 别名文件名（只在命名空间内存在）。窗口 `app_id` ＝ 它，托盘 `SNI Id` 也 ＝ 它 |
-| `argv0` | **保留字段**，默认留空（空 ⇒ `argv[0]` 自动取别名）。填了就必须等于 `alias` |
+`gen` 只写**一次**（文件已存在就不动它）：那份文件从第一个字节起就是你的文档，重写一次就等于
+用 `install` 的推导覆盖你的编辑 —— 与这份 `profile.yml` 同一条规矩。反过来说，"改配置里的
+`icon.badge` 却没反应"是设计如此：正文里写着 `Icon=` 的那一行才是结果。
 
 ### `isolation`
 
 | 键 | 说明 |
 |---|---|
+| `level` | `none` \| `alias` \| `redirect` |
 | `unshare` | 额外 unshare 的命名空间。**含 `net` 会被拒绝** |
 | `nested_ns` | 这个程序要不要自己建嵌套 user namespace（Chromium/Electron 类）。**总是写**，见下 |
 
 ### `bwrap`
 
-这一个节点就是这次 bwrap 调用：`extras` 是原始选项列表，其余每个键都是**一种挂载的写法**
-（它对应哪条 bwrap 选项，见右列）。键的顺序就是它们在命令里出现的顺序 —— 唯一的例外是
-`extras`，它写在最后，却在命令里排在根挂载之后、其余各条之前（见 §4 末尾）。
+这一个节点就是这次 bwrap 调用，一共三个键：**挂载**（`bind`）、**环境**（`env`）、
+**其余全部**（`extras`）。
 
 | 键 | 对应 | 说明 |
 |---|---|---|
-| `extras` | （原样） | 交给 bwrap 的**完整选项列表**：`gen` 写的基座里没有自己节点的那一条（`--die-with-parent`）→ config ＋ rules ＋ CLI 的追加，低位在前。它是跑起来那一份，不是一份建议 —— twin 不再自己补任何选项。**总是写**，而且写在节点的最后；空列表本身没问题（根挂载在 `bind` 里），两处都没有根挂载才会被拒绝。`--dry-run` 印出来的、启动器里 exec 的就是它 |
-| `proc` | `--proc` | 挂一个 proc 到这条路径。`gen` 写的是 `/proc`；留空 = 一个都不挂 |
-| `tmpfs` | `--tmpfs` | 盖成空目录的路径（写后即弃，宿主看不见；代价是那里原本的东西也看不见）。`gen` 写的是 `/dev/shm`（空的私有共享内存）与 `/tmp`（程序走 Wayland 时的私有 `/tmp`）；只走 X11 的程序不能要后者，那时 `gen` 在 `bind` 里写一条 `/tmp:/tmp` 把宿主那个挂回来 —— 它发在这一条**之后**，所以不必同时把这里那条 `/tmp` 删掉 |
-| `bind` | `--bind` / `--ro-bind` / `--dev-bind` | 隔离哪个数据目录。**总是写**（空时是 `bind: []`）—— "一条映射都没有"本身是一个决定。写法见下。⚠️ 第一条是**根挂载** `/:/:dev`：它是整个宿主根（就是 `--dev-bind / /`），永远发在所有挂载之前，**不算**这个程序的数据映射（终端列「路径映射」时会滤掉它）。宿主 `/tmp` 那条跟着根走，是这一条里的自映射（无私有 `/tmp` 的实例才有；它发在 `tmpfs` 之后，压得住那里的一条 `/tmp`） |
-| `remountRO` | `--remount-ro` | 把哪些路径**收回只读**，排在所有挂载之后，所以能压住 `bind` 给出的那种可写。⚠️ 只能作用在**自己就是一条挂载**的路径上（`bind` 的目标端、overlay/tmpfs 那条路径、或整个 `/`）：宿主本来就在那一条大根挂载里的路径底下没有单独的挂载，bwrap 会拒绝启动（`Can't remount readonly on …: Unable to find … in mount table`） |
+| `bind` | `--bind` / `--ro-bind` / `--dev-bind` | 隔离哪个数据目录。**总是写**（空时是 `bind: []`）—— "一条映射都没有"本身是一个决定。写法见下。⚠️ 第一条是**根挂载** `/:/:dev`：它是整个宿主根（就是 `--dev-bind / /`），**不算**这个程序的数据映射（终端列「路径映射」时会滤掉它）。它的位置不由文件决定：`Build` 把两端都是 `/` 的那一条提到**所有挂载之前**（排在 overlay 别名之后会把程序的真名还回来）。收紧成只读就是改成 `/:/:ro`（三段：源、目标、模式 —— 两段的 `/:/ro` 读成"把根挂到 `/ro`"，会被指名拒掉），代价是设备与 `/run/user` 要自己补回来（`--dev-bind /dev /dev`、`--bind /run/user /run/user`），否则 Wayland socket、会话总线、PipeWire 全断 |
 | `env` | `--setenv` | 注入沙箱的环境变量，一条一个 `键=值`，后面的同名者胜。等号只在**第一个**处断开，所以值里可以再有等号与冒号（`OPTS=--a=b`、`PATH=/a:/b`）；值可以为空（写 `键=`），键名不能带空格。`gen` 写的 `TWIN_INSTANCE=<id>` 就在这一条里 |
+| `extras` | （原样） | 交给 bwrap 的**其余全部参数**，一行一条完整命令（选项和它的值写在同一行，按空格拆开）。它是一份**合并后**的列表：`gen` 写的基座 ＋ config.toml 的 `[bwrap] args` ＋ rules.d 的 `[bwrap] args` ＋ `gen` 的 `--` 透传区，低位在前。**总是写**，写在节点的最后；空列表本身没问题（根挂载在 `bind` 里），两处都没有根挂载才会被拒绝。`--dry-run` 印出来的、启动器里 exec 的就是它 |
+
+**位置**：`bind` 与 `env` 排在前、后两端（挂载要先落地，环境变量与顺序无关），`extras` 在**所有
+挂载之后、`env` 之前**。这不是文风问题，是两条硬约束撞在一起的结果：
+
+- `--remount-ro <路径>` **必须排在它收紧的那条挂载之后**，否则那条挂载会把它盖回去、又变回可写；
+  写早了 bwrap 直接拒绝启动（`Can't remount readonly on …: Unable to find … in mount table`，实测）。
+  它也因此只能作用在**自己就是一条挂载**的路径上：`bind` 的目标端、overlay/tmpfs 那条路径、或
+  整个 `/` —— 根挂载底下的普通路径没有单独的挂载项。
+- `extras` 里**后写的压住先写的**，这也正是宿主 `/tmp` 那一支的写法：程序走 Wayland 时
+  `gen` 写一行 `--tmpfs /tmp`（空的私有 `/tmp`），只走 X11 的程序不能要它（`--tmpfs /tmp` 会把
+  `/tmp/.X11-unix/X0` 一起带走，于是连不上 X），那时基座在那**之后**再写一行 `--bind /tmp /tmp`
+  把宿主那个挂回来 —— 同一条列表里的行序就是全部机制，不必再去别处删一行。
+
+`extras` 的一个已知边界：**值里不能有空格**。一行按空格拆开就是它的全部理解方式 ——
+twin 不知道任何 bwrap 选项的元数，也不打算开始猜（[`architecture.md`](architecture.md) §2.1）。
+带空格的路径属于 `bind`（那一侧是真解析的），不属于这里。
 
 为空就是没设置：空值不发出任何参数，也不会被理解成"要默认的那个" —— 默认的那几条是 `gen`
-写在这几个键里的，是文件里看得见的一段文本。
+写在这三个键里的，是文件里看得见的一段文本。
 
-基座（`gen` 写的，可改）。**每条挂在它自己那个键里**，只有没有对应键的那一条留在 `extras`
-（写在最后，理由见下）：
+基座（`gen` 写的，可改）。除了根挂载，**每一条都是这份列表里的一行**：
 
 ```
-# bwrap.bind / bwrap.proc / bwrap.tmpfs / bwrap.env
+# bwrap.bind —— 唯一一条不是选项行的
 /:/:dev               整个宿主根（含设备）挂进来 ⇒ 设备可用、根可写（就是 --dev-bind / /）
+
+# bwrap.extras —— 一次调用剩下的一切，按命令顺序
 --proc /proc
 --tmpfs /dev/shm      空的私有共享内存
 --tmpfs /tmp          空的私有 /tmp（选了私有那一条时）
-/tmp:/tmp             宿主那个 /tmp 原地可写（不要私有 /tmp 时才有这一条）
---setenv TWIN_INSTANCE <id>
-
-# bwrap.extras：没有自己节点的那一条
+--bind /tmp /tmp      宿主那个 /tmp 原地可写（不要私有 /tmp 时才有这一行）
 --die-with-parent
+
+# bwrap.env
+TWIN_INSTANCE=<id>
 ```
-
-根挂载写在 `bind` 的第一条，但位置不由文件决定：`Build` 把两端都是 `/` 的那一条提到**所有挂载
-之前**（排在 overlay 别名之后会把程序的真名还回来）。收紧成只读就是把它改成 `/:/:ro`（三段：
-源、目标、模式 —— 两段的 `/:/ro` 读成"把根挂到 `/ro`"，会被指名拒掉），代价是设备与 `/run/user`
-要自己补回来（`--dev-bind /dev /dev`、`--bind /run/user /run/user`），否则 Wayland socket、会话
-总线、PipeWire 全断 —— 这份文件里那段注释就写在那一行旁边。
-
-`extras` 写在节点的**最后**，位置同样不由它自己决定 —— 它是这份定义里唯一一个文件位置不读的键：
-`Build` 把它发在根挂载之后、上面那几个有形状的键**之前**（有形状的那几条得能压住它，而基座剩下
-的那两条属于基座旁边）。所以它写在末尾不是"最后才加的那几个 token"：它是一份**合并后**的完整
-列表（基座剩下的两条 ＋ config.toml ＋ rules.d ＋ `gen` 的 `--` 透传区），名字说的是"上面那些有
-形状的挂载之外的那些"。
 
 #### `bwrap.bind`
 
-数组，每条是 `源:目标[:ro|:dev]`。
+数组，每条是 `源:目标[:ro|:rw|:dev][:try]`。
 
 | 写法 | 说明 |
 |---|---|
@@ -394,18 +397,13 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 | `源:目标:ro` | 只读挂载（`--ro-bind`）：程序看得见但改不动 |
 | `源:目标:dev` | 带设备访问（`--dev-bind`，bwrap 的原话是"allowing device access"）：给设备节点用。bwrap 没有只读的设备映射，所以 `:dev` 不能与 `:ro` 同用 |
 | 单写一条路径 | 该路径挂回自己，只把只读升回可写（数据不搬家） |
+| 末尾加 `:try` | 用 bwrap 自己的 `--bind-try` / `--ro-bind-try` / `--dev-bind-try`（它的原话是"equal to --bind but ignores non-existent SRC"）：**源不在就整条跳过，不报错**。给"程序第一次运行才会建的目录"用 —— 普通 `--bind` 会把"还没有这个目录"变成"程序起不来"，而在 twin 这一侧替它建一个空的源，等于替这个程序回答了它的数据在哪。⚠️ `:try` 要跟在写全的模式后面（`源:目标:ro:try`）：三段的 `源:目标:try` 会被读成一个访问模式，而两段的 `x:try` 从第一天起就是"目标叫 try" |
 
 `:dev` 的用处是让"把根收紧成 `/:/:ro`"的定义仍能表达"这条绑定带设备访问"：`gen` 写的根挂载就是
 `/:/:dev`（`--dev-bind / /`），整个宿主本就带设备可用（含 `/dev`），那时它是多余的。
 
 ⚠️ `rules.d` 里的 `bind` 仍在顶层（见 §3）：那份文件描述的是"这个程序的数据放在哪"这类**应用知识**，
 旁边还有 `keywords` / `tmpfs` 这些与 bwrap 无关的键，它服务多个实例，不是一次调用。写法两边一样。
-
-### `tray`
-
-| 键 | 说明 |
-|---|---|
-| `override` | 要不要让 twin 管这个实例的托盘图标。**总是写** —— "不覆盖"本身也是一个决定，缺这段会让它和"这个字段存在之前写的老文件"无法区分（缺段老文件按 `true`）。走哪条路（助手扩展读的 `~/.local/share/twin/tray.d/<id>.json`，还是回退到宿主 `custom-icons` 覆盖表）是**机器**的事（[`architecture.md`](architecture.md) §7.1），不由这个键决定 |
 
 ---
 
@@ -418,10 +416,10 @@ bwrap 会以 `Can't create file at <目录>: Is a directory` 明说。私有侧�
 | **意图** | id、名字、level、`bwrap` 里那几张列表 | ✅ | 用户对这个实例明确表达过的东西 |
 | **推导结果** | 由 id 推出的 badge、由源 Name 推出的中文名 | ✅ | 落成全量值，文件自解释，不留 `null` |
 | **环境** | bwrap 路径、python 路径、图标尺寸（由本机 DPI 决定） | ❌ | 换机器/换会话就变，写进文件必然过期 |
-| **源的现状** | `Categories` / `Keywords` / `Icon=`（实例里留空表示"继承"时） | ❌ | 源桌面项可能被系统更新覆盖 ⇒ `install` / `reinstall` 时重读 |
+| **源的现状** | `Categories` / `Keywords` / `Icon=` | ❌ | 源桌面项可能被系统更新覆盖 ⇒ 只用来**生成**那份正文（`override.desktop` 指的文件），之后那份文件说了算 |
 | **应用知识** | 该程序是否需要嵌套 ns | ✅ | 它跟着程序走，不跟着机器走 |
 | **机器状态** | 用哪个跳板 / 要不要自己装 profile、副本放哪 | ❌ | 留在 `config.toml`，让下一台机器自己决定 |
-| **会话类型** | Wayland / X11 | ⚠️ 部分 | 已固化成基座那条 `/tmp` 的取舍（`bwrap.tmpfs` 里的 `/tmp`，或 `bwrap.bind` 里的 `/tmp:/tmp`）；`reinstall` 时会**警告**它与当前会话不符 |
+| **会话类型** | Wayland / X11 | ⚠️ 部分 | 已固化成基座那一行 `/tmp`（`bwrap.extras` 里的 `--tmpfs /tmp` 或 `--bind /tmp /tmp`）；`reinstall` 时会**警告**它与当前会话不符 |
 
 ⇒ 一句话：**"这台机器现在什么样"每次重算；"我要什么"写死在文件里。**
 
@@ -446,6 +444,9 @@ $EDITOR ~/.config/twin/rules.d/myapp.toml
 # 改一个实例（install 与 reinstall 读的是同一份定义，敲哪个都行）
 $EDITOR ~/.local/share/twin/wechat2/profile.yml && twin install wechat2
 $EDITOR ~/.local/share/twin/wechat2/profile.yml && twin reinstall wechat2
+
+# 改菜单里显示的东西：改的是那份正文，不是配置
+$EDITOR ~/.local/share/twin/wechat2/wechat2.desktop && twin install wechat2
 ```
 
 ### 它是给人读的
@@ -455,39 +456,42 @@ header 就写着这一点 —— 而且**每种来路各有各的那一句**：
 ```yaml
 # --- profile.yml（twin gen 写出，落在实例目录里）---
 # twin —— 实例定义。改完跑 `twin install wechat2` 按它落盘，`twin reinstall wechat2` 重放的就是它。
-# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
+# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`override.icon.badge` 那种纯数字尤其要）。
 # 每个键的说明写在它自己上面 —— 终端不再重复一遍。
 
 # --- profile.yml（twin gen -o <文件> 写出，落在你指定的地方）---
 # twin —— 实例定义。改完跑 `twin install -p ~/wraps/wx.yml` 按它落盘，`twin reinstall wechat2`
 # 重放的是实例目录里那份记录。
-# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
+# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`override.icon.badge` 那种纯数字尤其要）。
 # 每个键的说明写在它自己上面 —— 终端不再重复一遍。
 
 # --- profile.yml（twin install -p <别处> 写出的存档记录）---
 # twin —— 实例定义（存档记录）。`twin install` 按你指定的那份配置写出它，改完跑
 # `twin reinstall wechat2` 重放。
-# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。
+# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`override.icon.badge` 那种纯数字尤其要）。
 # 每个键的说明写在它自己上面 —— 终端不再重复一遍。
 
 # 实例 id：桌面项基名、别名文件名、这个目录名，三者都是它。
 id: wechat2
 …
-desktop:
-  # 显示名（窗口标题与菜单里看到的）。
-  name: 微信2
-  # 搜索关键词，`;` 分隔。留空则沿用源桌面项。
-  keywords: 微信;wechat;
+source:
+  # 真实程序的路径。可以绝对、~/ 开头、或相对 —— 相对时基准是这份文件所在的目录。
+  exec: /opt/wechat/wechat
 …
-exec:
-  # 沙箱内建在 target 同目录下的别名文件名：窗口 app_id 与托盘 SNI Id 都等于它，
-  # 分叉了就有一个找不到桌面项。
-  alias: wechat2
+override:
+  # 桌面项**正文**所在的文件（相对路径的基准同上，`gen` 写的是与本文件同目录的
+  # <id>.desktop）。install 每次把它逐字复制到 ~/.local/share/applications/<id>.desktop；
+  # 文件不在时会按源桌面项生成一份（Exec / Icon / StartupWMClass 都填好），此后它就是正文。
+  desktop: ./wechat2.desktop
+  icon:
+    # 图标上的角标文字（style = dot 不用它）。纯数字要加引号，否则会被读成数字。
+    badge: "2"
 …
 bwrap:
-  # 隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:dev]`，同 Docker 的卷
-  # （:ro 只读、:dev 带设备访问，单写一条路径则挂回自己）。`gen` 的第一条是根挂载 /:/:dev，
-  # 整个宿主根可写 = --dev-bind / /，永远排最前，收紧成只读改成 /:/:ro。空 = 数据目录与源程序共用。
+  # 隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:rw|:dev][:try]`，同 Docker 的卷
+  # （:ro 只读、:rw 可读写、:dev 带设备访问，单写一条路径则挂回自己；末尾的 :try 要写全模式，
+  # 源不在就整条跳过、不报错）。`gen` 的第一条是根挂载 /:/:dev，整个宿主根可写 = --dev-bind / /，
+  # 发在其余所有挂载之前。空 = 数据目录与源程序共用。
   bind:
     - /:/:dev
     - ~/.local/state/twin/wechat2/xwechat:~/.xwechat

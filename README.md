@@ -8,12 +8,13 @@
 （两个账号、两套配置、两个任务栏图标）。
 
 ```console
-$ twin gen wechat       # 写出一份 profile.yml（~/.local/share/twin/wechat2/）：独立窗口名、托盘图标、账号状态
-$ twin install wechat2  # 读它，落盘，然后自检这条身份链路的每一环
+$ twin gen wechat       # 写出 profile.yml 与它旁边的 wechat2.desktop（~/.local/share/twin/wechat2/）
+$ twin install wechat2  # 读它们，落盘，然后自检这条身份链路的每一环
 ```
 
 最短可用命令就是上面这两行 —— id、显示名、说明、角标、关键词、状态路径全部从源程序的
-`.desktop` 与二进制里推导出来，落盘前**逐条打印来源**，都可用选项覆盖。
+`.desktop` 与二进制里推导出来，落盘前**逐条打印来源**，都可用选项覆盖。写出的两份东西也正是
+你以后要改的两份：**实例定义**（隔离哪些目录、怎么跑）与**桌面项正文**（菜单里显示什么）。
 
 ---
 
@@ -55,12 +56,14 @@ twin doctor
 # 1. 只看不写：这个程序会被包成什么样
 twin inspect wechat
 
-# 2. 写定义：~/.local/share/twin/wechat2/profile.yml；每个键的说明都写在文件里的注释里
-#    （命令结束时报出这个路径与下一步敲哪条命令）
+# 2. 写定义 ＋ 桌面项正文：~/.local/share/twin/wechat2/{profile.yml,wechat2.desktop}
+#    每个键的说明都写在 profile.yml 的注释里（命令结束时报出这两个路径与下一步敲哪条命令）
 twin gen wechat
 
-# 3. 改定义（可选）：`bwrap.bind` 那一节最容易猜错，每个键的说明都写在文件里的注释里
+# 3. 改（可选）：profile.yml 的 `bwrap.bind` 那一节最容易猜错；
+#    想让菜单里显示别的字，改的是旁边那份 wechat2.desktop
 $EDITOR ~/.local/share/twin/wechat2/profile.yml
+$EDITOR ~/.local/share/twin/wechat2/wechat2.desktop
 
 # 4. 安装 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
 twin install wechat2
@@ -84,10 +87,11 @@ twin install -p ~/wraps/wx-work.yml
 安装后你会发现多了这些东西：
 
 ```
-~/.local/share/applications/wechat2.desktop     ← 身份锚点
+~/.local/share/applications/wechat2.desktop     ← 身份锚点（逐字复制下面那份正文）
 ~/.local/share/appicons/wechat2.png             ← 带角标的图标
 ~/.local/share/twin/wechat2/launch           ← 薄启动器（bash，exec bwrap）
 ~/.local/share/twin/wechat2/profile.yml      ← 实例定义（`gen` 写下的那份，`install` 读的就是它，不改写）
+~/.local/share/twin/wechat2/wechat2.desktop  ← 桌面项正文（`gen` 写一次，之后归你；`install` 只复制）
 ~/.local/state/twin/wechat2/                 ← 这个实例的私有数据目录
 ```
 
@@ -137,14 +141,15 @@ twin gen wechat                  ← 前半段：只配置
       ├─ 2. 推导默认值   → id=wechat2  name=微信2  badge=2  keywords=微信;wechat;
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
       ├─ 4. 从内置规则 / rules.d 算出路径映射
-      └─ 5. 写出 profile.yml 到实例自己的目录（~/.local/share/twin/<id>/，唯一一个文件），
-            报出它的路径与下一步敲什么
+      └─ 5. 写出两份文件到实例自己的目录（~/.local/share/twin/<id>/）：profile.yml（定义）
+            与 wechat2.desktop（桌面项正文），报出它们的路径与下一步敲什么
 
 twin install <id>                ← 后半段：按那份定义安装（reinstall 也走这条路）
       │
       ├─ 6. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板。
       │                    两者都没有、而程序又要嵌套 ns 时：用 sudo 装一份 AppArmor profile
-      ├─ 7. 落盘 5~7 件产物（幂等）。那份定义**不重写**（改写会丢手写的注释）；只有定义
+      ├─ 7. 落盘 5~7 件产物（幂等）。那份定义**不重写**（改写会丢手写的注释），正文也只
+      │                    **逐字复制**（写回一次就等于把你的编辑回退掉）；只有定义
       │                    放在别处（`-p`）时，才在实例目录里写一份存档记录
       ├─ 8. 托盘覆盖：助手扩展被 shell 加载了 ⇒ 写它读的文件表，并删掉宿主表里那一行；
       │                    没加载 ⇒ 写宿主托盘覆盖表兜底（两条都热生效）
@@ -170,16 +175,17 @@ mount_pair "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_
 
 exec /usr/bin/bwrap \
   --dev-bind / / \
-  --die-with-parent \
-  --proc /proc \
-  --tmpfs /dev/shm \
-  --tmpfs /tmp \
   --overlay-src /opt/wechat \
   --tmp-overlay /opt/wechat \
   --ro-bind /opt/wechat/wechat /opt/wechat/wechat2 \
   --bind "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" \
   --bind "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" \
   --bind "$HOME/.local/state/twin/wechat2/all_users" "$HOME/Documents/xwechat_files/all_users" \
+  --proc /proc \
+  --tmpfs /dev/shm \
+  --tmpfs /tmp \
+  --bind /tmp /tmp \
+  --die-with-parent \
   --setenv TWIN_INSTANCE wechat2 \
   -- \
   /opt/wechat/wechat2 "$@"
@@ -187,18 +193,17 @@ exec /usr/bin/bwrap \
 
 （上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
 `mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端，根挂载不建，它两端都是 `/`。这些 token
-全部**来自 `profile.yml`**：第一行是它的 `bwrap.bind` 里那条根挂载 `/:/:dev`，接着是它的
-`bwrap.extras`，其余各条来自同名的键（`bwrap.proc` / `bwrap.tmpfs` / `bwrap.bind` / `bwrap.env`）
-—— `twin` 不知道任何 bwrap 选项的元数，所以除了那份列表，它只按文件里的键序发它们（`extras` 例外：
-它写在文件的最后一个键的位置上，却在命令里排在前面 —— 那份列表的文件位置不决定命令位置）。想换根、
-想加减隔离，改的就是那份定义。）
+全部**来自 `profile.yml`**：`--dev-bind / /` 是 `bwrap.bind` 里那条根挂载 `/:/:dev`，三条 `--bind`
+是同一个键里的路径映射，`--proc` 到 `--die-with-parent` 那几行就是 `bwrap.extras` 的内容（**行序即
+命令序**），`--setenv` 来自 `bwrap.env`。想换根、想加减隔离，改的就是那份定义。）
 
 几处关键点，每一条都对应一次实测：
 
 1. `--overlay-src` 必须排在 `--ro-bind … 别名` **之前**，否则挂载点建不出来；
-2. 根挂载与 `profile.yml` 里那份选项列表排在**所有映射之前**：映射要能覆盖基座，就不能被基座
-   覆盖（bubblewrap 的规则是"后挂载遮蔽前者"）。根挂载写在 `bwrap.bind` 里（`/:/:dev`），位置由
-   生成器保证 —— 写在文件的第几行都一样；
+2. 根挂载排在**所有映射之前**：映射要能覆盖基座，就不能被基座覆盖（bubblewrap 的规则是"后挂载
+   遮蔽前者"）。它写在 `bwrap.bind` 里（`/:/:dev`），位置由生成器保证 —— 写在文件的第几行都一样；
+   反过来 `bwrap.extras` 那份列表整份排在**所有映射之后**（所以其中 `--remount-ro` 收得紧、宿主
+   `/tmp` 那行也压得住上面那条 `--tmpfs /tmp`），而它内部的行序就是文件里的行序；
 3. 程序名写成 `/opt/wechat/wechat2`（别名，只在命名空间里存在）⇒ `/proc/self/exe` 的
    basename 就是 `wechat2`，`argv[0]` 默认也是它 ⇒ **窗口与托盘的 id 天然一致**；
 4. 每个 bind 的**两端**都要先在宿主机上存在。`--dev-bind / /` 之后 bwrap 其实建得出来，但它会把
@@ -208,9 +213,9 @@ exec /usr/bin/bwrap \
    `Already exists` 并让这份脚本死在 `set -e` 上 —— 所以形态按磁盘上**已有的那一端**决定，两端
    都没在时按目录。这样"源是文件"的映射（单个配置文件，如 `vlcrc`）才走得通，`twin install`
    也会按同一条规则把私有侧建成文件而不是目录。
-5. `/tmp` 必须是这两种之一：`bwrap.tmpfs` 里的 `/tmp`（空的私有 `/tmp`）或 `bwrap.bind` 里的
-   `/tmp:/tmp`（宿主那个，原地可写 —— 它排在有形状的那几条挂载之后，只读的根与那里的 `--tmpfs /tmp`
-   都压不住它）。只读的 `/tmp`
+5. `/tmp` 必须是这两种之一：`bwrap.extras` 里的 `--tmpfs /tmp`（空的私有 `/tmp`）或同一份列表里、
+   排在它**后面**的 `--bind /tmp /tmp`（宿主那个，原地可写 —— 行序就是机制，两行都留着是正常的）。
+   只读的 `/tmp`
    是最糟的一种 —— 建不出临时目录的程序会在别处报错：Chromium 会打印
    `process_singleton_posix.cc: Failed to create socket directory` 然后放弃单实例锁。
 6. token 只在**非加不可**时才加引号（`sandbox.Sh`）：会被 $HOME 折叠的那几个、含空格或 shell
@@ -254,7 +259,7 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 
 | 命令 | 作用 |
 |---|---|
-| `twin gen <source>` | **最常用**：写出一份定义（`profile.yml`，默认落在 `~/.local/share/twin/<id>/`，`-o` 可换地方）；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin gen <source>` | **最常用**：写出定义与桌面项正文（默认落在 `~/.local/share/twin/<id>/`，`-o` 可换地方并把正文带过去）；id / 名字 / 角标 / 状态路径全部推导 |
 | `twin install <id>` | **最常用**：读那个实例的定义，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。配置在别处就 `-p <文件>`。需要 AppArmor profile 时用 `sudo` 装；托盘覆盖走哪条路由它当场决定并打印；托盘扩展本身只**检查**，缺了会给出下面那条命令 |
 | `twin install --ext` | 装入 **shell 侧的托盘扩展**（机器级，一份服务所有实例，装一次即可；装完要注销重登一次才启用得上，之后各实例的托盘图标由它画，下次 install / reinstall 才改走那条路）。`twin reinstall --ext` 是同一个动作 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |
@@ -290,9 +295,11 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 （两者读的是同一个文件，也都不会改写它）。定义放在别处（`-o` / `-p`）时，实例目录里那份才是
 `install` 写下的**存档记录**，`reinstall` 重放的是它。
 `config.toml` 不存在是正常的（用内置默认）。数组类字段（实例定义里的 `bwrap.extras` /
-`bwrap.tmpfs` / `bwrap.bind`，规则文件里的 `tmpfs` / `bind` / `[bwrap] args`）
+`bwrap.bind`，规则文件里的 `tmpfs` / `bind` / `[bwrap] args`）
 按**低位在前**拼接，同目标挂载由后写的那个胜出（bubblewrap 自己的规则）。`bwrap.extras` 是交给
-bwrap 的**完整**选项列表（沙箱基座也在里面），所以"这个程序拿到哪个根"在文件里看得见也改得动。
+bwrap 的**其余全部**参数（沙箱基座那几行也在里面，一行一条），所以"这个程序拿到哪些参数"在文件里
+看得见也改得动；而桌面项正文（显示名、关键词、分类）是一份单独的文件，由 `override.desktop` 指出
+—— 想改菜单里显示的字，改的是它。
 
 ```bash
 twin config > ~/.config/twin/config.toml   # 生成一份带注释的模板

@@ -100,12 +100,12 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 | 值 | 默认来源 |
 |---|---|
 | `id` | 源桌面项基名 ＋ **最小空闲序号（从 2 开始）** |
-| `desktop.name` | 源 `Name[<当前语言>]` ＋ 序号（如 `微信2`）；没有语言化变体则用 `Name` |
-| `desktop.name_en` | 源 `Name` ＋ 序号；与 `desktop.name` 相同则不写 `Name[en]` |
-| `desktop.comment` | 源 `Comment[<当前语言>]` → `Comment` → 合成一句 |
-| `desktop.keywords` | 显式 > rules.d > 源 `Keywords[<语言>]`/`Keywords` > 从源名与程序名合成 |
-| `badge` | `id` 尾部的数字串（`wechat2` → `2`） |
-| `badge_style` | `config.toml` → `corner` |
+| `override.desktop Name` | 源 `Name[<当前语言>]` ＋ 序号（如 `微信2`）；没有语言化变体则用 `Name` |
+| `override.desktop Name[en]` | 源 `Name` ＋ 序号；与 `Name` 相同则不写 `Name[en]` |
+| `override.desktop Comment` | 源 `Comment[<当前语言>]` → `Comment` → 合成一句 |
+| `override.desktop Keywords` | 显式 > rules.d > 源 `Keywords[<语言>]`/`Keywords` > 从源名与程序名合成 |
+| `override.desktop Categories` | rules.d → 源 `Categories` |
+| `override.icon.badge` | `id` 尾部的数字串（`wechat2` → `2`） |
 | `level` | CLI → rules.d → `config.toml` → `alias` |
 | `/tmp` 是否 tmpfs | 程序支持 Wayland ⇒ 加 `--tmpfs /tmp`；只支持 X11 ⇒ **不加**（会砍掉 `/tmp/.X11-unix/X0`）。不加时用的是宿主那个 `/tmp`，**可写**（这一条不是"顺带"：只读的 `/tmp` 会让 Chromium 的单实例 socket 建不出来，见 §5） |
 
@@ -118,36 +118,42 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 
 ```
 推导出的默认值（都可用选项覆盖）
-  id               wechat3   ← 源桌面项基名 wechat + 最小空闲序号
-  level            alias   ← config.toml defaults.level
-  desktop.name     微信3   ← 源 Name[zh_CN]="微信" + 序号 3
-  desktop.name_en  wechat3   ← 源 Name + 序号 3
-  desktop.comment  微信桌面版   ← 源 Comment[zh_CN]
-  desktop.keywords 微信;wechat;   ← 源无 Keywords；由 Name[zh_CN]、Name 推得
-  badge            3   ← 从 id 的尾部数字提取
+  id                        wechat3   ← 源桌面项基名 wechat + 最小空闲序号
+  isolation.level           alias   ← config.toml defaults.level
+  override.desktop Name     微信3   ← 源 Name[zh_CN]="微信" + 序号 3
+  override.desktop Name[en] wechat3   ← 源 Name + 序号 3
+  override.desktop Comment  微信桌面版   ← 源 Comment[zh_CN]
+  override.desktop Keywords 微信;wechat;   ← 源无 Keywords；由 Name[zh_CN]、Name 推得
+  override.icon.badge       3   ← 从 id 的尾部数字提取
 ```
+
+正文那五行说的是**同一份文件**（`override.desktop` 指的那份），所以键写成"文件 ＋ 里面哪一行"：
+全是 `override.desktop` 的话，读者拿到的是"去那份文件里找"，而不是"改哪一行"。既然是文件，
+它们就只在**生成正文的那一刻**推导 —— 正文一旦存在，它自己说了算（见 §5.1）。
 
 一个看不见来源的默认值，就是一个没人能纠正的默认值。
 
 ## 5. 产物与模板
 
-`twin install` 写下面这些。第 4 件（`~/.local/share/twin/<id>/profile.yml`）不是它写的 ——
-`twin gen` 写的就是那一份，`install <id>` 读回同一份且**不重写它**（一次解析往返会丢掉手写的注释）；
-只有 `-p` 指到别处时，它才在这个位置写一份存档记录。落点在实例自己的目录里，因为它必须从下一个
-shell 里还找得到，而且**一个 id 一份**（想放别处用 `-o`，再用 `-p` 读）。
+`twin install` 写下面这些。第 4、5 两件是**用户自己的文档**：`gen` 写它们，`twin install <id>`
+读回同一份且**不重写**（一次解析往返会丢掉手写的注释；正文那份更是只写一次，之后每个字节都属于
+编辑它的人）。只有 `-p` 指到别处时，实例目录里才另写一份 `profile.yml` 的存档记录。落点在实例
+自己的目录里，因为它必须从下一个 shell 里还找得到，而且**一个 id 一份**（想放别处用 `-o`，
+`install -p` 读）。
 
 | # | 路径 | 内容 | 何时写 |
 |---|---|---|---|
-| 1 | `~/.local/share/applications/<id>.desktop` | 身份锚点 | 总是 |
+| 1 | `~/.local/share/applications/<id>.desktop` | 身份锚点：**逐字复制**第 5 件 | 总是 |
 | 2 | `~/.local/share/appicons/<id>.png` | 合成好的图标（256×256 默认） | 总是 |
 | 3 | `~/.local/share/twin/<id>/launch` | 薄启动器（bash，`exec` bwrap） | 总是 |
 | 4 | `~/.local/share/twin/<id>/profile.yml` | 实例定义（`gen` 写的就是你编辑的那一份；`-p` 指别处时这里放的是 install 写下的存档记录） | 定义：`twin gen`；存档记录：仅 `install -p <别处>` |
-| 5 | `~/.config/twin/rules.d/<id>.json` | L5 规则（扩展读） | 仅 `level=redirect` |
-| 6 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
-| 7 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
-| 8 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（借别人的 AppArmor 标签那条路用） | 仅当这一趟走的是跳板 —— 走"自己装的 profile"时不需要它 |
-| 9 | `~/.local/share/twin/tray.d/<id>.json` | 托盘文件表（扩展读它画图标，§7.1 的**首选路径**） | 每次 install；扩展不可用时**不写**（那份是兜底） |
-| 10 | `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘扩展（`metadata.json` ＋ `extension.js`：读上面那份表画图标 ＋ 同步图标框尺寸） | **不是** `twin install`：`twin install --ext`（机器级，一份服务所有实例） |
+| 5 | `~/.local/share/twin/<id>/<id>.desktop` | 桌面项**正文**（`override.desktop` 指的文件） | 仅当它不存在时生成一份（按源桌面项）；此后由人改写，install 只复制 |
+| 6 | `~/.config/twin/rules.d/<id>.json` | L5 规则（扩展读） | 仅 `level=redirect` |
+| 7 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
+| 8 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
+| 9 | `~/.local/share/twin/bin/bootstrap.js` | 跳板脚本（借别人的 AppArmor 标签那条路用） | 仅当这一趟走的是跳板 —— 走"自己装的 profile"时不需要它 |
+| 10 | `~/.local/share/twin/tray.d/<id>.json` | 托盘文件表（扩展读它画图标，§7.1 的**首选路径**） | 每次 install；扩展不可用时**不写**（那份是兜底） |
+| 11 | `~/.local/share/gnome-shell/extensions/twin-tray@edwinhuish.github.io/` | 托盘扩展（`metadata.json` ＋ `extension.js`：读上面那份表画图标 ＋ 同步图标框尺寸） | **不是** `twin install`：`twin install --ext`（机器级，一份服务所有实例） |
 
 ### 5.1 实例定义
 
@@ -162,50 +168,39 @@ shell 里还找得到，而且**一个 id 一份**（想放别处用 `-o`，再�
 # 改完跑 `twin reinstall wechat2` 重放。
 id: wechat2
 
-desktop:
-  name: 微信2
-  name_en: WeChat2
-  comment: 微信
-  keywords: 微信;wechat;WeChat;
-  source: /usr/share/applications/wechat.desktop
+source:
+  exec: /opt/wechat/wechat
+  desktop: /usr/share/applications/wechat.desktop
 
-identity:
-  level: alias
+override:
+  desktop: ./wechat2.desktop   # 正文在这份文件里（同目录），不是配置里的六行
   wm_class: wechat2     # = id，仅当 level 会改名时写；X11/XWayland 才真正需要
-  notify: true          # → 桌面项 StartupNotify=true
-
-icon:
-  source: /usr/share/icons/hicolor/512x512/apps/wechat.png
-  badge: "2"
-  style: corner
-
-exec:
-  target: /opt/wechat/wechat
-  alias: wechat2
+  icon:
+    source: /usr/share/icons/hicolor/512x512/apps/wechat.png
+    badge: "2"
+    style: corner
+  tray: true
 
 isolation:
+  level: alias
   unshare: []
   nested_ns: false
 
-bwrap:                 # 这一个节点就是这次调用；键的顺序就是命令里的顺序 —— extras 除外
-  proc: /proc          # 挂一个 proc 到这条路径（基座写的就是它）
-  tmpfs:               # 盖成空目录的路径（含基座那两条：/dev/shm 与私有 /tmp）
-    - /dev/shm
+bwrap:                 # 这一个节点就是这次调用
   bind:                # 挂载都写在这里；第一条是根挂载，永远排在最前（写在第几行都一样）
     - /:/:dev
     - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
-  remountRO: []        # 把哪些路径收回只读（只能作用在自己就是一条挂载的路径上）
   env:                 # 注入沙箱的环境变量，一条一个 `键=值`（基座那条 TWIN_INSTANCE 也在里面）
     - TWIN_INSTANCE=wechat2
-  extras:              # 没有自己节点的那些 token；基座里**没有自己节点**的那几条在这里
-    - --bind           # 宿主那个 /tmp，可写（程序走 X11、不要私有 /tmp 时才有这一条）
-    - /tmp
-    - /tmp
+  extras:              # 其余全部参数，一行一条；基座那几行也在里面 —— 行序就是命令里的顺序
+    - --proc /proc
+    - --tmpfs /dev/shm
+    - --bind /tmp /tmp   # 宿主那个 /tmp，可写（程序走 X11、不要私有 /tmp 时才是这一行）
     - --die-with-parent
-
-tray:
-  override: true
 ```
+
+`./wechat2.desktop`（第 5 件产物，内容见 §5.3）由 `gen` 写一次，之后归你：`install` 只把它逐字
+复制成第 1 件，缺了才按 `source.desktop` 重新生成。
 
 那些文件都是**给人读、给人改的**：常态只有一份（`gen` 写进实例目录、你改、再 `twin install <id>` 或
 `twin reinstall <id>`）；`install -p <别处>` 时实例目录里那份是存档记录，改它就直接 `twin reinstall <id>`。
@@ -219,14 +214,16 @@ tray:
   诉求还有第二种写法 —— **相对路径，基准是这份文件所在的目录**（`inst.Load` 解析一次），
   它让"配置 + 程序 + 状态目录"能放成一个整体搬走的 bundle。`bwrap.extras` 两种都不解析：那是 bwrap
   的选项列表，逐 token 照搬。
-- **凡是会变成 bwrap 参数的东西都在 `bwrap` 节点里**：`args`（原始 token 列表）、`bind`、以及
-  `proc` / `tmpfs` / `remountRO` / `env` 这四个**有形状的挂载**。后四个各有自己的键，是因为每个都
-  是**一种**挂载——一个 proc、一个用完即弃的 tmpfs、一条被收回只读的路径——而平铺的 token 列表说不出
-  这件事；`bind` 的 `:ro` / `:dev` 说的是同一类事。四者在文件里的顺序就是它们在命令里的顺序，于是
-  "这条设置会变成哪条 bwrap 选项"不必跨半个文件拼。注意 `rules.d` 里的 `bind` / `tmpfs` 仍在顶层：
-  那份文件描述的是"这个程序的数据放在哪"这类**应用知识**（旁边还有 `keywords` / `categories`），
-  它服务多个实例，不是一次调用。
-- **`tray.override` 总是写**（即使值是 `true`）："不覆盖托盘"本身也是一个决定，缺这段会让它
+- **凡是会变成 bwrap 参数的东西都在 `bwrap` 节点里，而且只有三个键**：`bind`（有形状的挂载）、
+  `env`、`extras`（其余全部参数，一行一条）。曾经每个"有形状的挂载"——proc、tmpfs、remountRO——
+  各有自己的键（理由是"一个用完即弃的 tmpfs"不是平铺 token 列表说得清的），现在它们也是 `extras`
+  里的一行：**行序就是命令序**，而"哪条压住哪条"这个唯一说不清的问题，从此写在文件里。
+  三者的位置（`bind` 在前、`extras` 在所有挂载之后、`env` 最后）由 `Build` 保证，不靠文件顺序 ——
+  `--remount-ro` 必须排在它收紧的那条挂载之后，而 `extras` 里的行后写的胜出，宿主 `/tmp` 那一支
+  就靠这个位置把前面那条 `--tmpfs /tmp` 换回来。
+  注意 `rules.d` 里的 `bind` / `tmpfs` 仍在顶层：那份文件描述的是"这个程序的数据放在哪"这类
+  **应用知识**（旁边还有 `keywords` / `categories`），它服务多个实例，不是一次调用。
+- **`override.tray` 总是写**（即使值是 `true`）："不覆盖托盘"本身也是一个决定，缺这段会让它
   和"这个字段存在之前写的老文件"无法区分。缺段的老文件按 `true` 读。
 - **`nested_ns` 总是写**：它是**应用知识**（这个程序要不要自己建 ns），跟定义走；而"要不要给副本
   装一份 profile、用哪个跳板、副本放哪"是**机器状态**，留在 `config.toml` 里，让下一台机器自己决定。
@@ -239,7 +236,6 @@ set -euo pipefail
 : "${HOME:?twin: HOME 未设置，拒绝启动}"
 
 readonly ID='wechat2'
-readonly NAME='微信2'
 readonly STATE="$HOME/.local/state/twin/wechat2"
 
 # ── 启动失败 ── 判 GUI、抓 twin 自己的输出、twin_dialog、twin_fail（见 failHelpers）
@@ -299,40 +295,40 @@ StartupNotify=true
 
 ### 5.4 bwrap 调用（`level=alias` 的基座）
 
-**基座是那份定义里的一段文本，不是 twin 的一个常量；而且每条各归自己那个键。** `twin gen`
-（`sandbox.BaseFor`）把它写进定义时按**挂载的种类**分派：有形状的进同名的键，没形状的才留在一个
-扁平列表里。`sandbox.Build` 一字不改地照发；twin 不再自己补任何选项，所以"最终跑的是哪些参数"
+**基座是那份定义里的一段文本，不是 twin 的一个常量；而且只有根挂载是个有形状的键。** `twin gen`
+（`sandbox.BaseFor`）把它写进定义时只把"一条挂载"写进 `bwrap.bind`：其余每一条（proc、两个 tmpfs、
+宿主 /tmp 那条自映射、`--die-with-parent`）都是 `bwrap.extras` 里的一行 —— **一行就是一条完整参数，
+行序就是命令序**。`sandbox.Build` 一字不改地照发；twin 不再自己补任何选项，所以"最终跑的是哪些参数"
 在文件里就能整份读到、也能整份改掉。
 
-**有一处例外要记住**：`bwrap.extras` 写在节点的**最后**，而它在命令里排在根挂载之后、其余各条
-**之前**。它不是"最后才加的那几个 token"（那是一份合并后的完整列表，见 §6），只是因为它是这份
-定义里唯一一个**文件位置不决定命令位置**的键，放在末尾才不会让文件暗示一个它没有的顺序。其余键
-的文件顺序就是命令顺序。
+曾经这些"有形状的挂载"各有自己的键（`proc` / `tmpfs` / `remountRO`），理由是"一个用完即弃的 tmpfs
+不是平铺 token 列表说得清的"。改回来的原因只有一个：**这些键和 `extras` 本来就是同一次调用的两半**，
+分成两处之后，"哪一条压住哪一条"这件事没有任何一个地方写着 —— 宿主 /tmp 那一条就是被这个逼到
+`bind` 里去的（它得排在 tmpfs 之后）。一行一条的列表里，这个问题退化成行序。
 
 ```
-# bwrap.bind / bwrap.proc / bwrap.tmpfs / bwrap.env（gen 写的基座，用户可改）
+# bwrap.bind —— gen 写的基座里唯一有形状的那一条（用户可改）
   /:/:dev                           # 根挂载：整个宿主根（含设备）挂进来，就是 --dev-bind / /
+
+# bwrap.extras —— 一次调用剩下的一切，按命令顺序（同样由 gen 写，用户可改）
   --proc /proc
   --tmpfs /dev/shm                  # 空的私有共享内存
   --tmpfs /tmp                      # 空的私有 /tmp（选了私有那一条时；另一条见下）
-  /tmp:/tmp                         # 宿主那个 /tmp 原地可写（不要私有 /tmp 时才有这一条）
-  --setenv TWIN_INSTANCE <id>
-
-# bwrap.extras（同样由 gen 写，用户可改；写在节点最后，但位置与命令无关）
+  --bind /tmp /tmp                  # 宿主那个 /tmp 原地可写（不要私有 /tmp 时才是这一行）
   --die-with-parent
+
+# bwrap.env
+  TWIN_INSTANCE=<id>
 ```
 ```
 bwrap
   --dev-bind / /                    # 根挂载：从 bwrap.bind 里提到最前（见下）
-  <bwrap.extras 整个列表>             # 原样，跟在根挂载后面（与它在文件里的位置无关）
-  [--proc <bwrap.proc>]…            # 其余各条从这一行往下，顺序照文件里的键
-  [--tmpfs <bwrap.tmpfs 里的路径>]…
   --overlay-src <targetdir>
   --tmp-overlay <targetdir>         # ⚠️ 必须在创建别名之前
   --ro-bind <target> <alias path>
   [--bind|--ro-bind|--dev-bind <源> <目标>]…   # 路径映射（源是数据实际所在；:ro / :dev 选后两个）
-                                               # ↑ 基座那条 /tmp:/tmp 也发在这一批里，所以它压得住上面那条 --tmpfs /tmp
-  [--remount-ro <bwrap.remountRO 里的路径>]…   # ⚠️ 必须在所有挂载之后
+  <bwrap.extras 整个列表>             # 原样，行序即此处的顺序（与它在文件里前后的位置无关）
+                                               # ↑ 基座那几行、以及 --remount-ro，都在这一批里
   [--setenv <bwrap.env 里的键> <值>]…
   --
   <alias path> "$@"
@@ -358,12 +354,15 @@ bwrap
 
 1. `--tmp-overlay DIR` **必须**排在创建别名的 `--ro-bind … DIR/别名` 之前，否则挂载点建不出来
    （`Can't create file: Read-only file system`）。
-2. 根挂载与定义里那份列表**必须**排在所有映射之前（`Build` 先发根挂载，再发那份列表）。理由与
+2. 根挂载与定义里那份列表**必须**排在所有映射之前（`Build` 先发根挂载，再发那份列表），理由与
    第 1 条同源、方向相反：后写的挂载遮蔽同目标的前一个挂载，所以映射要能覆盖基座，就不能被基座
-   覆盖。
-3. `--remount-ro` **必须**排在它所收紧的那条挂载之后（`sandbox.Build` 把它发在最后），否则那条可写
-   的挂载会盖在它上面，收紧变成空操作。它还有一条自己的边界：只对**自己就是一条挂载**的路径有效，
-   宿主那一条大根挂载里的路径底下没有单独的挂载 —— 点错了 bwrap 直接拒绝启动
+   覆盖。这一条同时决定了 `bwrap.extras` 里那些行**只能后发**：它们是这份定义里"最后说"的话
+   （`extras` 排在映射之后），所以其中一条与某条映射同目标时，赢的是 `extras`。
+3. `--remount-ro` **必须**排在它所收紧的那条挂载之后，否则那条可写的挂载会盖在它上面，收紧变成
+   空操作。它现在没有自己的键，而是 `extras` 里的一行：映射都在 `bind`（发在 `extras` 之前），
+   所以**收紧 `bind` 的目标时写在 `extras` 的哪一行都成立**；只有收紧的目标本身也是 `extras` 里的
+   一行时才要守住行序 —— 这是唯一一处靠人守的规则。它还有一条自己的边界：只对**自己就是一条挂载**
+   的路径有效，宿主那一条大根挂载里的路径底下没有单独的挂载 —— 点错了 bwrap 直接拒绝启动
    （`Can't remount readonly on …: Unable to find … in mount table`）。
 
 在这三条之前，启动器还要先把**所有挂载点**建出来。`--dev-bind / /` 之后 bwrap 其实建得了挂载点，
@@ -383,34 +382,32 @@ file system`）。唯一不建挂载点的是根挂载本身 —— 它两端都
 （`$TMPDIR`，否则 `/tmp`）下 `CreateUniqueTempDir()`，`mkdir` 拿到 `EROFS` 就打印
 `[ERROR:chrome/browser/process_singleton_posix.cc] Failed to create socket directory` 并放弃单实例锁
 —— 一条关于 *socket* 的报错，来自一个用户刚刚才包上的程序。所以两条路都保证它可写：走 tmpfs 的
-程序拿到一个空的私有 `/tmp`（`bwrap.tmpfs` 里的一条），不走 tmpfs 的程序（X11 那一路，tmpfs 会把
-`/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，可写**（`bwrap.bind` 里的 `/tmp:/tmp`）。
-"存在但写不进去的 /tmp" 不是第三种选择。
+程序拿到一个空的私有 `/tmp`（`bwrap.extras` 里的一行 `--tmpfs /tmp`），不走 tmpfs 的程序（X11
+那一路，tmpfs 会把 `/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，可写**（同一份列表里、
+排在它**后面**的一行 `--bind /tmp /tmp`）。"存在但写不进去的 /tmp" 不是第三种选择。
 
-宿主 `/tmp` 那一条写在 `bwrap.bind` 里，**位置**才是理由：`bind` 发在**有形状的那几条挂载之后**，
-`extras` 发在它们**之前**。而这一条要干的事就是"把 `tmpfs` 里那条 `/tmp` 换掉" —— 写在 `extras`
-里会被那条 tmpfs 盖回去，于是要么不生效、要么要求读者记得再去 `tmpfs` 里删一行（只加那一行、不动
-`tmpfs`，`/tmp` 还是私有那个，而且没有任何东西会告诉他）。写在 `bind` 里它压得住那条 tmpfs；在默认
-那个可写的根下它则**什么也不做**（整个宿主根本来就带着一个可写的 `/tmp`）—— 它保的是"哪天把根收紧
-成 `/:/:ro` 时 /tmp 仍然可写"。代价照实付：这条自映射在报告眼里就是"这个程序的数据目录"，
-`install` 会把它列进路径映射、并建议照抄进这个程序的 `rules.d`（它不是根挂载，滤不掉），等于把
-基座的决定混进用户的数据布局 —— `gen` 因此在推导日志里点名它（不点名就分不出来）。
+宿主 `/tmp` 那一行**排在 tmpfs 那一行之后**，这就是它的全部机制：bwrap 后写的挂载遮蔽前一个，
+所以这一行把上面那条 `--tmpfs /tmp` 换掉了，而**两行都留在文件里** —— 想给程序一个私有 /tmp 时，
+读者不必记得去别处删一行（这正是它先前被逼进 `bind` 的原因：那时 `tmpfs` 是另一个键，两份列表
+一前一后，位置本身成了机制）。它现在也不再被报告成"这个程序的数据目录"：它不在 `bind` 里，
+`install` 的路径映射与 `rules.d` 草稿都看不见它 —— 基座的决定不再混进用户的数据布局。
 
 ## 6. bwrap 选项列表的合并
 
 原则：**传 token，不重新解析**。`twin` 不知道也不想知道任何 bwrap 选项的元数（arity）——
 那是 bwrap 的事，在这里再实现一张表只会随每个 bwrap 版本腐烂。
 
-- `bwrap.extras` 拼的是**这份列表自己**，按位置、低位在前：`gen` 写的基座（没有自己节点的那几条）
+- `bwrap.extras` 拼的是**这份列表自己**，按位置、低位在前：`gen` 写的基座那几行
   → `config.toml` 的 `[bwrap] args` → `rules.d` 的 `[bwrap] args` → `gen` 命令行上 `--` 之后那一段。
   后写的遮蔽同目标的前一个挂载，而 twin 不需要拥有任何一条冲突规则 —— bubblewrap 自己就是规则。
-  ⚠️ 基座里**有**自己节点的那几条（根挂载在 `bind`，`proc` / `tmpfs` / `env` 在各自那个键）不在这份
-  列表里，而 `Build` 把根挂载发在所有东西**之前**、把其余几条发在这份列表**之后**：所以这几层能压住
-  根挂载（在 `--` 里绑一次根，就是不动文件换个根），却压不住 `proc` / `tmpfs` / `env` —— 想改那三个
-  就改那个键；两个键描述同一处挂载本来也不是这份定义打算表达的。
+  ⚠️ 基座里**有形状的那一条**（根挂载，写在 `bind`）不在这份列表里，而 `Build` 把它发在所有东西
+  **之前**：所以这几层能压住根挂载（在 `--` 里绑一次根，就是不动文件换个根）。反过来，这份列表
+  整体发在所有挂载**之后**，所以其中一条与某条路径映射同目标时，赢的是列表里的那一条 —— 想压住
+  基座那几行也一样，写在它们后面即可，不必再记"哪个键在哪一侧"。
 - `--` 之后那一段**是写进文件的一份**，不是每次启动的覆盖：它落在基座与全局/规则层之后，
-  于是它在**列表内部**有最终话语权，而列表整体排在根挂载之后、路径映射之前。
-- 这些 token **不享受**三件事（在别处都有的）：挂载点自动补齐（含形态判断）、`~/` 展开、语义校验。
+  于是它在**列表内部**有最终话语权，而列表整体排在根挂载与路径映射之后。
+- 这些行**不享受**三件事（在别处都有的）：挂载点自动补齐（含形态判断）、路径相对化/解析
+  （`~` 展开是唯一例外，见 §5.1）、语义校验（例如"两端必须同形"）。
   ⇒ 数据路径请写进 `rules.d` 或实例定义里的 `bind`，不要写进 `bwrap.extras`。
 - 三条硬边界（拒绝，不是警告）：
   - `--`（会截断 bwrap 自己的选项解析，后面全被当成程序名）；
@@ -418,10 +415,11 @@ file system`）。唯一不建挂载点的是根挂载本身 —— 它两端都
   - 需要文件描述符的选项（`--file` / `--bind-fd` / `--seccomp` / `--userns-block-fd` …）——
     启动器由桌面环境 exec，手里没有可用的 fd。
 - 校验是 **lint 而不是 transform**：宁可警告，不悄悄改写用户写的东西。
-- 旧键 `bwrap.extra`（以及 `config.toml` / `rules.d` 里的同名键）**指名报错**：它只装用户追加的
-  token，而 `bwrap.extras` 装的是交给 bwrap 的完整列表（基座也在里面，只是分节点写），读错会交给
-  bwrap 一个什么都没挂的命名空间，失败信息里一个字都不会提到 twin。没有根挂载同理（`bind` 里没有
-  `/:/…`、`args` 也空着）—— 有沙箱就必须有一个根挂载，`/:/ro` 这种两段写法也会被指名拒掉。
+- 旧键一律**指名报错**并给出新位置：`bwrap.extra`（只装用户追加的 token）、`bwrap.args`（同一个
+  意思、改了名，而且一条从"一个 token"变成"一整条命令"）、`bwrap.proc` / `bwrap.tmpfs` /
+  `bwrap.remountRO`（现在都是 `extras` 里的一行）。读错会交给 bwrap 一个什么都没挂的命名空间，
+  而失败信息里一个字都不会提到 twin。没有根挂载同理（`bind` 里没有 `/:/…`、`extras` 也空着）——
+  有沙箱就必须有一个根挂载，`/:/ro` 这种两段写法也会被指名拒掉。
 
 ## 7. 图标管线
 

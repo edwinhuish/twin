@@ -121,8 +121,9 @@ Keywords   微信;wechat;
 
 | 命令 | 做什么 |
 |---|---|
-| `twin gen wechat` | 写一份配置（默认 `~/.local/share/twin/wechat2/profile.yml`；id、显示名、路径映射全部推导出来写进去），然后说清文件落在哪、下一步敲什么 |
-| `$EDITOR ~/.local/share/twin/wechat2/profile.yml` | 改 `bwrap.bind` / `desktop.name` / `desktop.keywords` / `identity.level`；不改也行，推导出来的默认值通常够用 |
+| `twin gen wechat` | 写**两份**文件（默认 `~/.local/share/twin/wechat2/profile.yml` 与它旁边的 `wechat2.desktop`：id、显示名、路径映射全部推导出来写进去），然后说清它们落在哪、下一步敲什么 |
+| `$EDITOR ~/.local/share/twin/wechat2/profile.yml` | 改 `bwrap.bind` / `bwrap.extras` / `isolation.level` / `override.icon.*`；不改也行，推导出来的默认值通常够用 |
+| `$EDITOR ~/.local/share/twin/wechat2/wechat2.desktop` | 改菜单里显示的东西（显示名、说明、关键词、分类）—— 正文是那份文件，改配置里的 `override.icon.badge` 之类的键不会再影响它 |
 | `twin install wechat2` | 读那份定义 → 落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 检查托盘扩展 ＋ 自检。`twin reinstall wechat2` 是同一个动作的另一个入口 |
 | `twin install --ext` | 装入 shell 侧的托盘扩展（机器级；`install` / `reinstall` 只检查它）。`twin reinstall --ext` 是同一个动作的另一个入口 |
 
@@ -141,22 +142,25 @@ Keywords   微信;wechat;
 ```console
 $ twin gen wechat
 ✅ 已写出配置 /home/you/.local/share/twin/wechat2/profile.yml
+  桌面项正文（已写出） /home/you/.local/share/twin/wechat2/wechat2.desktop
 
 👉 下一步
   1. 改 /home/you/.local/share/twin/wechat2/profile.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
   2. 安装：twin install wechat2
 ```
 
-`gen` 的输出刻意短：它只做两件事 —— **只写一个文件**（桌面项、图标、启动器、私有状态目录都等
-`install`），并且**把落点指出来**。逐键的说明、`bwrap.bind` 的语义、`rules.d` 的存在，全都写在**那份文件
-的注释里**：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件两处说法各表一套。
-要看推导值与**这一份配置的**路径映射一节，加 `--explain`。
+`gen` 的输出刻意短：它写**两份文件**（实例定义 ＋ 桌面项正文；桌面项、图标、启动器、私有状态目录
+都等 `install`），并且**把落点指出来**。逐键的说明、`bwrap.bind` 的语义、`rules.d` 的存在，全都写在
+**那份定义**的注释里：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件两处说法各表
+一套。正文那份路径留下来是因为"想让菜单里显示别的字"要编辑的正是它 —— 只给 `profile.yml` 等于把人
+指到一个改不动的文件上。要看推导值与**这一份配置的**路径映射一节，加 `--explain`。
 
 终端上只多留一行，给"**一条映射都没有**"的程序：
 
 ```console
 $ twin gen foo
 ✅ 已写出配置 /home/you/.local/share/twin/foo2/profile.yml
+  桌面项正文（已写出） /home/you/.local/share/twin/foo2/foo2.desktop
   ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bwrap.bind
 
 👉 下一步
@@ -183,6 +187,8 @@ $ twin gen foo
 **它不重写那份定义。** `install <id>` 与 `reinstall <id>` 读的是同一个文件，头注释里写着"改完跑
 `twin install <id>`"；写回去就是一次解析往返，`yamlz.Parse` 会丢掉你手写的每一条注释（见
 configuration.md §4）。只有 `-p` 指到别处时，实例目录里才写一份 `RoleSnapshot` 的存档记录。
+**桌面项正文同理**：它由 `gen` 生成**一次**，此后 `install` 只是把它逐字复制成
+`~/.local/share/applications/<id>.desktop`，缺文件时才按 `source.desktop` 重新生成。
 
 ```console
 $ twin install wechat2
@@ -193,6 +199,7 @@ $ twin install wechat2
   实例定义 /home/you/.local/share/twin/wechat2/profile.yml
   托盘覆盖 已写入 /home/you/.local/share/twin/tray.d/wechat2.json（助手扩展读它画图标，不再写宿主表）
   托盘扩展 twin-tray@edwinhuish.github.io 已启用 —— 托盘图标由它接管
+  · 桌面项正文 /home/you/.local/share/twin/wechat2/wechat2.desktop（install 逐字复制它）
 
 📁 路径映射
   3 条，来源：配置 /home/you/.local/share/twin/wechat2/profile.yml
@@ -207,7 +214,8 @@ $ twin install wechat2
 安装阶段的输出也刻意短：产物清单 ＋ `路径映射` ＋ 下一步。"要动手时才需要"的东西（规则模板全文、
 候选状态目录、改哪个文件、推导值、手工验证命令）用 `--explain` 展开。`--dry-run` 是**完整落盘**的
 预演 —— 桌面项正文、定义正文（定义已在原处时不重写，预演会明确说出来）、bwrap 调用、托盘将写入的
-那一行全都在，而且由真实落盘用的**同一份代码**渲染。
+那一行全都在，而且由真实落盘用的**同一份代码**渲染。桌面项正文是**写一次**的：它不在时预演会印出
+将要生成的那一份，已经在时只印将要复制的那一份。
 
 托盘那半段是个**二选一**，判据只有一个：用户扩展目录下的
 `twin-tray@edwinhuish.github.io/` 是否**在 shell 的启用列表里、且不在它的禁用列表里**（两个列表都读得到
@@ -326,7 +334,8 @@ $ twin install wechat2            # 标准输入不是终端
     ]
 
   源:目标 ⇒ 私有副本，两个实例互不干扰；单写一条路径 ⇒ 与该目录共用，只把只读升回可写；
-  源:目标:ro ⇒ 只读挂载；源:目标:dev ⇒ 带设备访问（--dev-bind，给设备节点目录用）。
+  源:目标:ro ⇒ 只读挂载；源:目标:dev ⇒ 带设备访问（--dev-bind，给设备节点目录用）；
+  末尾再加 :try ⇒ 源不在时整条跳过、不报错（要写全模式：源:目标:ro:try）。
 ```
 
 模板里的 `{id}` 占位符 —— 本实例的私有状态目录会被写回成 `~/.local/state/twin/{id}` —— 照抄出来的
@@ -399,7 +408,7 @@ $ twin install --ext        # 或 twin reinstall --ext —— 同一段代码
 
 | 检查项 | 失败意味着 |
 |---|---|
-| `exec.target` 存在 / 可执行 | 真实程序不见了 |
+| `source.exec` 存在 / 可执行 | 真实程序不见了 |
 | 别名只在命名空间内 | 别名污染了宿主文件系统（overlay 没生效） |
 | 桌面项存在 / 可用 / 基名 == id | 身份锚点缺失或名字对不上 |
 | GLib 接受该桌面项 | **最贵的一项**：`Exec=` 无执行位 ⇒ GLib 丢弃整个桌面项 |
@@ -538,18 +547,18 @@ $ twin reinstall -h    # 重放存档的那一个开关
 没人会回头再看第二眼 —— 所以它先落成文件（见 [`configuration.md`](configuration.md)）。
 
 `--` 透传区的形式、边界与它写进哪个键，都在 `-h` 里（它不是 flag，PrintDefaults 打不出来，所以那几行
-是手写的）。这里只留 `-h` 装不下的那条**理由**：它写进实例定义 `bwrap.extras` 的**尾部**（基座里没有
-自己节点的那几条与 config/rules 层之后），所以同一份列表里同目标的挂载由**它**胜出（bubblewrap
-自己就是"后挂载遮蔽前者"）—— 它不是一个"额外选项"，而是这几行里最终说话的那几个 token。而
-`bwrap.extras` 整份又排在根挂载之后、路径映射**之前**，于是两件事同时成立：映射覆盖基座与这份列表，
-`--` 覆盖这份列表里的每一条。⚠️ 边界只有这份列表：根挂载（在 `bwrap.bind` 里）发在它**之前**，所以
-在 `--` 里写一条同样绑根的挂载**能**压住它（不必为了换个根去改文件）；而 `bwrap.proc` /
-`bwrap.tmpfs` / `bwrap.env` 由 `Build` 发在这份列表**之后**，`--` 里写一条同目标的挂载压不住它们
-—— 想改就改那个键。校验只到 lint 为止：改写它等于替用户猜他要覆盖什么。
+是手写的）。这里只留 `-h` 装不下的那条**理由**：它写进实例定义 `bwrap.extras` 的**尾部**（基座那几行
+与 config/rules 层之后），所以同一份列表里同目标的挂载由**它**胜出（bubblewrap 自己就是"后挂载遮蔽
+前者"）—— 它不是一个"额外选项"，而是这几行里最终说话的那几条。而 `bwrap.extras` 整份又排在根挂载
+与**所有映射之后**，于是两件事同时成立：这份列表覆盖每一条映射，`--` 覆盖这份列表里的每一条。
+⚠️ 唯一的边界是根挂载（在 `bwrap.bind` 里，`Build` 把它提到所有东西**之前**）：在 `--` 里写一条
+同样绑根的挂载**能**压住它（不必为了换个根去改文件），反过来不行。校验只到 lint 为止：改写它等于
+替用户猜他要覆盖什么。
 
-**基座就在那份定义里，而且分节点写**（`gen` 写的 `bwrap` 节点，多数在各自同名的键上，见
-[`configuration.md`](configuration.md) §4）—— 这正是"不要偷偷给 bwrap 加参数"的落点：想换根
-（比如把 `bind` 里那条 `/:/:dev` 换成 `/:/:ro`）就是改那份定义里的一行，不必去猜 twin 还加了什么。
+**基座就在那份定义里，只有根挂载是个有形状的键**（`gen` 写的 `bwrap.bind` 里那一条 `/:/:dev`；
+其余全在 `bwrap.extras`，一行一条，见 [`configuration.md`](configuration.md) §4）—— 这正是"不要
+偷偷给 bwrap 加参数"的落点：想换根（比如把 `/:/:dev` 换成 `/:/:ro`）就是改那份定义里的一行，
+连"twin 还加了什么"这个问题都不存在。
 
 ---
 

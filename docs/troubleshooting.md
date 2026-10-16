@@ -191,13 +191,14 @@ twin doctor | grep -A2 userns
 
 ### C2. X11 程序报 `cannot open display` / `No protocol specified`
 
-**根因**：定义里给 `/tmp` 盖了空 tmpfs（`bwrap.tmpfs` 里的 `/tmp`；旧定义则写在 `bwrap.extras`
-里）—— `/tmp/.X11-unix/X0` 一起被砍掉了。
+**根因**：定义里给 `/tmp` 盖了空 tmpfs（`bwrap.extras` 里的一行 `--tmpfs /tmp`）——
+`/tmp/.X11-unix/X0` 一起被砍掉了。
 
 ```bash
 $EDITOR ~/.local/share/twin/<id>/profile.yml
-#   在 bwrap.bind 里加一条 /tmp:/tmp（宿主那个，原地可写）—— 它发在那条 tmpfs 之后，
-#   所以这一条就够了，不必再去 tmpfs 里删 /tmp（那是这份定义里的文本，不是 twin 的常量）
+#   在 bwrap.extras 里、那条 --tmpfs /tmp 的下面加一行 --bind /tmp /tmp（宿主那个，原地可写）——
+#   同一份列表里写在后面的压得住它，所以这一行就够了，不必再去删上面那条
+#   （那是这份定义里的文本，不是 twin 的常量）
 twin reinstall <id>
 # 或者重新推导一次：twin gen <source> --no-tmpfs && twin install
 ```
@@ -207,7 +208,7 @@ twin reinstall <id>
 
 `twin gen --explain` 的 `/tmp 策略` 一节会告诉你这个程序是 Wayland 还是 X11。同时支持两套的
 程序会有一条警告：它今天走 Wayland，但哪天真退到 X11，私有 `/tmp` 就会踩这个坑 ——
-那时要改的也是那份定义里的 `/tmp` 那一条（`bwrap.tmpfs` 换到 `bwrap.extras`）。
+那时要改的也是那份定义里 `/tmp` 那两行（把 `--bind /tmp /tmp` 移到 `--tmpfs /tmp` 下面）。
 
 ### C3. 程序起不来，报 `Can't create file: Read-only file system`（或 `Can't mkdir …`）
 
@@ -260,9 +261,9 @@ abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 
 ### C5. 程序报 `Failed to create socket directory` / `mktemp: Read-only file system`
 
-**根因**：沙箱里的 `/tmp` 是**只读**的 —— 这份定义的 `bwrap.bind` 与 `bwrap.tmpfs` 里都没有
-`/tmp`，`bwrap.extras` 里也没有一条手写的 `--bind /tmp /tmp`（把 `/tmp:/tmp` 删掉、或把根换成
-`/:/:ro` 而没给 `/tmp` 补一条的实例会这样）。
+**根因**：沙箱里的 `/tmp` 是**只读**的 —— 这份定义的 `bwrap.extras` 里既没有 `--tmpfs /tmp`、
+也没有 `--bind /tmp /tmp`（把那条 `--bind /tmp /tmp` 删掉、或把根换成 `/:/:ro` 而没给 `/tmp`
+补一条的实例会这样）。
 
 **最典型的一例**是 Chromium / Electron：单实例锁的 socket 目录建在 `base::GetTempDir()`
 （`$TMPDIR`，否则 `/tmp`）下的一个 `mkdtemp` 里，建不出来就打
@@ -273,13 +274,12 @@ abstract socket 的单实例锁，而 bwrap 本来也隔离不了网络。
 grep -n "tmpfs\|/tmp" ~/.local/share/twin/<id>/profile.yml   # 决定就写在这份定义里
 ```
 
-修复后必定有这两种之一：`bwrap.tmpfs` 里的 `/tmp`（空的私有 `/tmp`），或 `bwrap.bind` 里那条
-`/tmp:/tmp`（宿主那个 `/tmp`，原地可写）。旧定义把 `--bind /tmp /tmp` 写在 `bwrap.extras` 里
-（那时基座在那儿），也照旧工作 —— 只是那条发在 `tmpfs` **之前**，所以那时必须没有
-`bwrap.tmpfs` 里的 `/tmp`。都没有，说明这份定义更旧（那时基座在 twin 里，`bwrap.extra`
-只装你追加的 token）—— 重新 `twin gen` 一份。
+修复后必定有这两种之一：`bwrap.extras` 里的 `--tmpfs /tmp`（空的私有 `/tmp`），或它下面那一行
+`--bind /tmp /tmp`（宿主那个 `/tmp`，原地可写）。**两行都留着是正常的** —— 程序走 Wayland 时是
+前者的天下，X11 那一路靠后者把它换回来，机制就是"同一份列表里写在后面的胜出"。都没有，说明这份
+定义更旧（那时基座在 twin 里、`bwrap.extra` 只装你追加的 token）—— 重新 `twin gen` 一份。
 
-⚠️ 反过来，别用"把 `/tmp` 加进 `bwrap.tmpfs`"来救 X11 的程序：那样连 `/tmp/.X11-unix/X0` 一起
+⚠️ 反过来，别用"加一行 `--tmpfs /tmp`"来救 X11 的程序：那样连 `/tmp/.X11-unix/X0` 一起
 没了（见 C2）。X11 那一路要的正是宿主那个可写的 `/tmp`。
 
 ### C6. `错误：HOME is not set`

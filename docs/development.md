@@ -348,7 +348,8 @@ HOME=/tmp/scratch-home twin verify wechat2
 ### `--dry-run` 必须是忠实的
 
 它由**和真实落盘完全相同的代码**渲染出来 —— 一个用另一套代码画的预览就是一句谎话。
-`DesktopEntry` 与 `it.Render()` 被 dry-run 和 `Materialize` 共用，就是为了这一点。
+`generate.EntryBytes`（桌面项正文，`gen` 与 `Materialize` 的"缺了才生成"共用）与 `it.Render()`
+被 dry-run 和 `Materialize` 共用，就是为了这一点。
 
 ---
 
