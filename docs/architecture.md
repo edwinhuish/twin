@@ -89,26 +89,31 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 各阶段各自遵守一条硬规则：
 
 - **inspect 只读**：不改任何东西，不写任何文件。它的输出就是"我打算怎么做"。
-- **plan 纯函数**：不碰磁盘（除了读），把 CLI ＋ 各配置层合成一份 `inst.Instance`。所有默认值
-  在这一步推导并**记录来源**。
+- **plan 纯函数**：不碰磁盘（除了读），把 CLI ＋ 各配置层合成一份 `inst.Instance`。默认值在这一步
+  推导并**记录来源** —— 除了桌面项正文那五行，它们不属于这份定义：那份文件还不存在，推导发生在
+  `materialize` 生成它的那一刻（`DeriveBody` ＋ `EntryBytes`），来源随之交给调用方打印。
 - **materialize 幂等**：重复跑只覆盖自己的产物，永不碰源程序、永不碰系统目录。
 - **verify 回读**：**重新读硬盘上的东西**，不看内存里的期望 —— 这是它和"我以为我写对了"的
   唯一区别。
 
 ### 默认值是怎么推导的
 
-| 值 | 默认来源 |
-|---|---|
-| `id` | 源桌面项基名 ＋ **最小空闲序号（从 2 开始）** |
-| `override.desktop Name` | 源 `Name[<当前语言>]` ＋ 序号（如 `微信2`）；没有语言化变体则用 `Name` |
-| `override.desktop Name[en]` | 源 `Name` ＋ 序号；与 `Name` 相同则不写 `Name[en]` |
-| `override.desktop Comment` | 源 `Comment[<当前语言>]` → `Comment` → 合成一句 |
-| `override.desktop Keywords` | 显式 > rules.d > 源 `Keywords[<语言>]`/`Keywords` > 从源名与程序名合成 |
-| `override.desktop Categories` | rules.d → 源 `Categories` |
-| `override.icon.badge` | `id` 尾部的数字串（`wechat2` → `2`） |
-| `isolation.level` | CLI → rules.d → `config.toml` → `alias` |
-| `bwrap.root` | 固定 `dev`（`--dev-bind / /`）：整个宿主根含设备。想收紧就改这个键，见 §5.4 |
-| `/tmp` 是否 tmpfs | 程序支持 Wayland ⇒ 加 `--tmpfs /tmp`；只支持 X11 ⇒ **不加**（会砍掉 `/tmp/.X11-unix/X0`）。不加时用的是宿主那个 `/tmp`，**可写**（这一条不是"顺带"：只读的 `/tmp` 会让 Chromium 的单实例 socket 建不出来，见 §5） |
+| 值 | 谁推导（`gen` 写定义 / `install` 写正文） | 默认来源 |
+|---|---|---|
+| `id` | `gen` | 源桌面项基名 ＋ **最小空闲序号（从 2 开始）** |
+| `override.desktop Name` | `install` | 源 `Name[<当前语言>]` ＋ 序号（如 `微信2`）；没有语言化变体则用 `Name` |
+| `override.desktop Name[en]` | `install` | 源 `Name` ＋ 序号；与 `Name` 相同则不写 `Name[en]` |
+| `override.desktop Comment` | `install` | 源 `Comment[<当前语言>]` → `Comment` → 合成一句 |
+| `override.desktop Keywords` | `install` | rules.d → 源 `Keywords[<语言>]`/`Keywords` → 从源名与程序名合成 |
+| `override.desktop Categories` | `install` | rules.d → 源 `Categories` |
+| `override.icon.badge` | `gen` | `id` 尾部的数字串（`wechat2` → `2`） |
+| `isolation.level` | `gen` | CLI → rules.d → `config.toml` → `alias` |
+| `bwrap.root` | `gen` | 固定 `dev`（`--dev-bind / /`）：整个宿主根含设备。想收紧就改这个键，见 §5.4 |
+| `/tmp` 是否 tmpfs | `gen` | 程序支持 Wayland ⇒ 加 `--tmpfs /tmp`；只支持 X11 ⇒ **不加**（会砍掉 `/tmp/.X11-unix/X0`）。不加时用的是宿主那个 `/tmp`，**可写**（这一条不是"顺带"：只读的 `/tmp` 会让 Chromium 的单实例 socket 建不出来，见 §5） |
+
+正文那五行没有"CLI"这一层：`gen` 的选项表里没有任何一项描述那几个字（`--name` / `--comment` /
+`--keywords` / `--categories` 都随"正文改由 install 生成"一起取消了）—— 一个只在文件还不存在时才
+有用、之后静默失效的 flag 比没有它更糟。
 
 > `id` 为什么从 2 开始：`wechat` 这个 id 通常已被**系统的那份桌面项**占用，而同名会撞车 ——
 > GNOME 对重复桌面项 id 的处理是**静默遮蔽其中一个**。`freeID` 找的是第一个既不是 twin
@@ -118,29 +123,27 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 `wechat2` 已被占用，所以取了 3）：
 
 ```
-推导出的默认值（都可用选项覆盖）
+推导出的默认值（改那份文件即可覆盖）
   id                        wechat3   ← 源桌面项基名 wechat + 最小空闲序号
   isolation.level           alias   ← config.toml defaults.level
-  override.desktop Name     微信3   ← 源 Name[zh_CN]="微信" + 序号 3
-  override.desktop Name[en] wechat3   ← 源 Name + 序号 3
-  override.desktop Comment  微信桌面版   ← 源 Comment[zh_CN]
-  override.desktop Keywords 微信;wechat;   ← 源无 Keywords；由 Name[zh_CN]、Name 推得
   override.icon.badge       3   ← 从 id 的尾部数字提取
   bwrap.root                dev   ← gen 写的沙箱基座：程序跑在哪个根下（这一条发在其余所有挂载之前，位置不由文件决定）
 ```
 
-正文那五行说的是**同一份文件**（`override.desktop` 指的那份），所以键写成"文件 ＋ 里面哪一行"：
-全是 `override.desktop` 的话，读者拿到的是"去那份文件里找"，而不是"改哪一行"。既然是文件，
-它们就只在**生成正文的那一刻**推导 —— 正文一旦存在，它自己说了算（见 §5.1）。
+正文那五行（`Name` / `Name[en]` / `Comment` / `Keywords` / `Categories`）不在这一份里，因为那份
+文件不在这里诞生：它们由 **`install`** 在生成正文的那一刻推导并打印（`Result.EntryDer`），键同样
+写成"文件 ＋ 里面哪一行" —— 全是 `override.desktop` 的话，读者拿到的是"去那份文件里找"，而不是
+"改哪一行"（`--dry-run` 的预演把它们印在正文那段底下）。正文一旦存在，它自己说了算（见 §5.1），
+那时这几行连推导都不再发生。
 
 一个看不见来源的默认值，就是一个没人能纠正的默认值。
 
 ## 5. 产物与模板
 
-`twin install` 写下面这些。第 4、5 两件是**用户自己的文档**：`gen` 写它们，`twin install <id>`
-读回同一份且**不重写**（一次解析往返会丢掉手写的注释；正文那份更是只写一次，之后每个字节都属于
-编辑它的人）。只有 `-p` 指到别处时，实例目录里才另写一份 `profile.yml` 的存档记录。落点在实例
-自己的目录里，因为它必须从下一个 shell 里还找得到，而且**一个 id 一份**（想放别处用 `-o`，
+`twin install` 写下面这些。第 4、5 两件是**用户自己的文档**：`twin install <id>` 读回第 4 件
+且**不重写**它（一次解析往返会丢掉手写的注释），第 5 件则是它自己生成一次、之后只复制（每个字节
+都属于编辑它的人）。只有 `-p` 指到别处时，实例目录里才另写一份 `profile.yml` 的存档记录。落点在
+实例自己的目录里，因为它必须从下一个 shell 里还找得到，而且**一个 id 一份**（想放别处用 `-o`，
 `install -p` 读）。
 
 | # | 路径 | 内容 | 何时写 |
@@ -149,7 +152,7 @@ inspect ──▶ plan ──▶ materialize ──▶ verify
 | 2 | `~/.local/share/appicons/<id>.png` | 合成好的图标（256×256 默认） | 总是 |
 | 3 | `~/.local/share/twin/<id>/launch` | 薄启动器（bash，`exec` bwrap） | 总是 |
 | 4 | `~/.local/share/twin/<id>/profile.yml` | 实例定义（`gen` 写的就是你编辑的那一份；`-p` 指别处时这里放的是 install 写下的存档记录） | 定义：`twin gen`；存档记录：仅 `install -p <别处>` |
-| 5 | `~/.local/share/twin/<id>/<id>.desktop` | 桌面项**正文**（`override.desktop` 指的文件） | 仅当它不存在时生成一份（按源桌面项）；此后由人改写，install 只复制 |
+| 5 | `~/.local/share/twin/<id>/<id>.desktop` | 桌面项**正文**（`override.desktop` 指的文件） | 仅当它不存在时生成一份（按源桌面项，`DeriveBody` ＋ `EntryBytes`）；此后由人改写，install 只复制 |
 | 6 | `~/.config/twin/rules.d/<id>.json` | L5 规则（扩展读） | 仅 `level=redirect` |
 | 7 | `~/.local/state/twin/<id>/` | 私有状态目录（空目录） | 总是 |
 | 8 | `~/.local/share/twin/bin/bwrap` | 私有 bwrap 副本 | 仅当程序需要嵌套 ns |
@@ -201,8 +204,9 @@ bwrap:                 # 这一个节点就是这次调用
     - --die-with-parent
 ```
 
-`./wechat2.desktop`（第 5 件产物，内容见 §5.3）由 `gen` 写一次，之后归你：`install` 只把它逐字
-复制成第 1 件，缺了才按 `source.desktop` 重新生成。
+`./wechat2.desktop`（第 5 件产物，内容见 §5.3）由 `install` 生成一次，之后归你：`install` 只把它
+逐字复制成第 1 件，不存在时才按 `source.desktop` 推出来。`gen` 不写它，也没有选项能描述它 ——
+改菜单里那几个字的路径是"装一次、编辑那份文件、`twin reinstall`"。
 
 那些文件都是**给人读、给人改的**：常态只有一份（`gen` 写进实例目录、你改、再 `twin install <id>` 或
 `twin reinstall <id>`）；`install -p <别处>` 时实例目录里那份是存档记录，改它就直接 `twin reinstall <id>`。

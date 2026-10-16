@@ -109,9 +109,6 @@ Keywords   微信;wechat;
 以别处的报错告终（Chromium 是 `Failed to create socket directory`，见
 [`troubleshooting.md`](troubleshooting.md) C5）。
 
-`--name` 只影响预览：它会**真的**参与 keywords 的推导（因为你显式给了名字），所以能在不写盘
-的前提下看到"命名 ↔ 关键词"的联动结果。
-
 ### `twin gen <source>`
 
 **只写一份配置，不安装任何东西。**
@@ -121,11 +118,16 @@ Keywords   微信;wechat;
 
 | 命令 | 做什么 |
 |---|---|
-| `twin gen wechat` | 写**两份**文件（默认 `~/.local/share/twin/wechat2/profile.yml` 与它旁边的 `wechat2.desktop`：id、显示名、路径映射全部推导出来写进去），然后说清它们落在哪、下一步敲什么 |
+| `twin gen wechat` | 写**一份**文件（默认 `~/.local/share/twin/wechat2/profile.yml`：id、路径映射、沙箱基座全部推导出来写进去），然后说清它落在哪、下一步敲什么 |
 | `$EDITOR ~/.local/share/twin/wechat2/profile.yml` | 改 `bwrap.bind` / `bwrap.extras` / `isolation.level` / `override.icon.*`；不改也行，推导出来的默认值通常够用 |
-| `$EDITOR ~/.local/share/twin/wechat2/wechat2.desktop` | 改菜单里显示的东西（显示名、说明、关键词、分类）—— 正文是那份文件，改配置里的 `override.icon.badge` 之类的键不会再影响它 |
-| `twin install wechat2` | 读那份定义 → 落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 检查托盘扩展 ＋ 自检。`twin reinstall wechat2` 是同一个动作的另一个入口 |
+| `twin install wechat2` | 读那份定义 → 落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 检查托盘扩展 ＋ 自检。桌面项正文也在这一步生成（它还不存在时） |
+| `$EDITOR ~/.local/share/twin/wechat2/wechat2.desktop` | 改菜单里显示的东西（显示名、说明、关键词、分类）—— 正文是那份文件，改配置里的 `override.icon.badge` 之类的键不会再影响它。改完 `twin reinstall wechat2` |
 | `twin install --ext` | 装入 shell 侧的托盘扩展（机器级；`install` / `reinstall` 只检查它）。`twin reinstall --ext` 是同一个动作的另一个入口 |
+
+**顺序就是这样：先装一次，再改那几个字。** 桌面项正文由 `install` 生成，所以装之前没有那份文件
+可编辑。这不是遗漏，是那条边界的形状：正文的每一行都从源桌面项推得出来（显示名、说明、关键词、
+分类），`gen` 那一步没有任何"只有装之前才决定得了"的东西要问；而它是**这一份包裹里唯一"改写"
+而不是"阅读"的文件**，人真正要在它上面落笔的时刻是"装完了、菜单里那几个字想换个说法"。
 
 **定义为什么在实例自己的目录里？** 两个理由。一是**找得回来**：它是这份 wrap 里唯一需要人读一遍的
 东西，落点必须从下一个 shell、下一台终端、明天都还找得到，而"当前目录"只是你这次站的地方。二是
@@ -142,25 +144,23 @@ Keywords   微信;wechat;
 ```console
 $ twin gen wechat
 ✅ 已写出配置 /home/you/.local/share/twin/wechat2/profile.yml
-  桌面项正文（已写出） /home/you/.local/share/twin/wechat2/wechat2.desktop
 
 👉 下一步
   1. 改 /home/you/.local/share/twin/wechat2/profile.yml —— 每个键的说明都写在文件里的注释里（不改也能装）
   2. 安装：twin install wechat2
 ```
 
-`gen` 的输出刻意短：它写**两份文件**（实例定义 ＋ 桌面项正文；桌面项、图标、启动器、私有状态目录
-都等 `install`），并且**把落点指出来**。逐键的说明、`bwrap.bind` 的语义、`rules.d` 的存在，全都写在
+`gen` 的输出刻意短：它写**一份文件**（实例定义；桌面项、正文、图标、启动器、私有状态目录都等
+`install`），并且**把落点指出来**。逐键的说明、`bwrap.bind` 的语义、`rules.d` 的存在，全都写在
 **那份定义**的注释里：读到它的时候人正在编辑它，这比在终端里滚过去有用，也不会和文件两处说法各表
-一套。正文那份路径留下来是因为"想让菜单里显示别的字"要编辑的正是它 —— 只给 `profile.yml` 等于把人
-指到一个改不动的文件上。要看推导值与**这一份配置的**路径映射一节，加 `--explain`。
+一套。它**不提**桌面项正文那份文件：`install` 才生成它，在这里印一个还不存在的路径，等于把人送进
+一个空文件。要看推导值与**这一份配置的**路径映射一节，加 `--explain`。
 
 终端上只多留一行，给"**一条映射都没有**"的程序：
 
 ```console
 $ twin gen foo
 ✅ 已写出配置 /home/you/.local/share/twin/foo2/profile.yml
-  桌面项正文（已写出） /home/you/.local/share/twin/foo2/foo2.desktop
   ⚠️ 没有隔离任何数据目录：这个程序若有单实例锁（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bwrap.bind
 
 👉 下一步
@@ -187,8 +187,9 @@ $ twin gen foo
 **它不重写那份定义。** `install <id>` 与 `reinstall <id>` 读的是同一个文件，头注释里写着"改完跑
 `twin install <id>`"；写回去就是一次解析往返，`yamlz.Parse` 会丢掉你手写的每一条注释（见
 configuration.md §4）。只有 `-p` 指到别处时，实例目录里才写一份 `RoleSnapshot` 的存档记录。
-**桌面项正文同理**：它由 `gen` 生成**一次**，此后 `install` 只是把它逐字复制成
-`~/.local/share/applications/<id>.desktop`，缺文件时才按 `source.desktop` 重新生成。
+**桌面项正文同理**：它由 `install` 生成**一次**（不存在时按 `source.desktop` 推出来），此后
+`install` 只是把它逐字复制成 `~/.local/share/applications/<id>.desktop`。想改菜单里那几个字就改
+那份正文，再 `twin reinstall <id>`。
 
 ```console
 $ twin install wechat2
@@ -199,7 +200,7 @@ $ twin install wechat2
   实例定义 /home/you/.local/share/twin/wechat2/profile.yml
   托盘覆盖 已写入 /home/you/.local/share/twin/tray.d/wechat2.json（助手扩展读它画图标，不再写宿主表）
   托盘扩展 twin-tray@edwinhuish.github.io 已启用 —— 托盘图标由它接管
-  · 桌面项正文 /home/you/.local/share/twin/wechat2/wechat2.desktop（install 逐字复制它）
+  · 桌面项正文（install 生成的第一份）/home/you/.local/share/twin/wechat2/wechat2.desktop
 
 📁 路径映射
   3 条，来源：配置 /home/you/.local/share/twin/wechat2/profile.yml
@@ -215,7 +216,9 @@ $ twin install wechat2
 候选状态目录、改哪个文件、推导值、手工验证命令）用 `--explain` 展开。`--dry-run` 是**完整落盘**的
 预演 —— 桌面项正文、定义正文（定义已在原处时不重写，预演会明确说出来）、bwrap 调用、托盘将写入的
 那一行全都在，而且由真实落盘用的**同一份代码**渲染。桌面项正文是**写一次**的：它不在时预演会印出
-将要生成的那一份，已经在时只印将要复制的那一份。
+将要生成的那一份（连"这一行是从哪推出来的"那几行一起），已经在时只印将要复制的那一份。正文那几行
+推导只在 `install --explain` 里出现 —— 定义本身不装文案，那五个值没有 key 可以从 `profile.yml`
+读回来。
 
 托盘那半段是个**二选一**，判据只有一个：用户扩展目录下的
 `twin-tray@edwinhuish.github.io/` 是否**在 shell 的启用列表里、且不在它的禁用列表里**（两个列表都读得到

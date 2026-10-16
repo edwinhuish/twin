@@ -279,9 +279,14 @@ PATH=/tmp/fakebin:$PATH HOME=/tmp/scratch-home DISPLAY=:0 \
 
 三处：
 
-1. `cmd/twin/main.go` 的 `cmdNew`：加 flag，放进 `generate.Options`；
+1. `cmd/twin/main.go` 的 `cmdGen`：加 flag，放进 `generate.Options`；
 2. `internal/generate/generate.go` 的 `Options` 与 `Plan`：决定它的优先级与默认值来源；
 3. 若是会进 profile.yml 的字段，还要动 `internal/inst` 的 `toTree` / `Load` 并写往返测试。
+
+⚠️ 有一类选项**不该存在**：只影响另一件产物、而且只在那件产物还不存在时才生效的那种。曾经的六个
+文案 flag（`--name` / `--name-en` / `--comment` / `--comment-en` / `--keywords` / `--categories`）
+就是这一种 —— 它们描述的是桌面项正文，而正文由 `install` 生成，装过一次之后那些 flag 全部静默失效。
+顺带一提，那六个 flag 的说明文本原样写着"写进生成的桌面项正文"，也就是当时就已经有一座断桥。
 
 ⚠️ 记住 `parseFL`：位置参数可以出现在选项之间。`fs.Parse` 直接用会让文档里的
 `twin gen <source> --as <id>` 静默忽略 `--as`。
@@ -349,8 +354,9 @@ HOME=/tmp/scratch-home twin verify wechat2
 ### `--dry-run` 必须是忠实的
 
 它由**和真实落盘完全相同的代码**渲染出来 —— 一个用另一套代码画的预览就是一句谎话。
-`generate.EntryBytes`（桌面项正文，`gen` 与 `Materialize` 的"缺了才生成"共用）与 `it.Render()`
-被 dry-run 和 `Materialize` 共用，就是为了这一点。
+`generate.EntryBytes`（桌面项正文，`install` 的"缺了才生成"与它的预演共用）与 `it.Render()`
+被 dry-run 和 `Materialize` 共用，就是为了这一点。正文那份现在**只有这一条路**：`gen` 不再写它，
+所以预览与落盘之间没有第二种推法可以互相漂移。
 
 ---
 

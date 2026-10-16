@@ -8,13 +8,14 @@
 （两个账号、两套配置、两个任务栏图标）。
 
 ```console
-$ twin gen wechat       # 写出 profile.yml 与它旁边的 wechat2.desktop（~/.local/share/twin/wechat2/）
-$ twin install wechat2  # 读它们，落盘，然后自检这条身份链路的每一环
+$ twin gen wechat       # 写出一份实例定义 ~/.local/share/twin/wechat2/profile.yml
+$ twin install wechat2  # 读它、落盘，然后自检这条身份链路的每一环
 ```
 
-最短可用命令就是上面这两行 —— id、显示名、说明、角标、关键词、状态路径全部从源程序的
-`.desktop` 与二进制里推导出来，落盘前**逐条打印来源**，都可用选项覆盖。写出的两份东西也正是
-你以后要改的两份：**实例定义**（隔离哪些目录、怎么跑）与**桌面项正文**（菜单里显示什么）。
+最短可用命令就是上面这两行 —— id、角标、状态路径、沙箱基座全部从源程序的 `.desktop` 与二进制里
+推导出来，落盘前**逐条打印来源**，都可用选项覆盖。剩下那两样要改的东西也不靠选项：**实例定义**
+（隔离哪些目录、怎么跑）是 `gen` 写的那份文件，**桌面项正文**（菜单里显示什么）由 `install` 生成
+一次、之后归你 —— 改菜单里那几个字就是编辑它、再 `twin reinstall`。
 
 ---
 
@@ -56,18 +57,22 @@ twin doctor
 # 1. 只看不写：这个程序会被包成什么样
 twin inspect wechat
 
-# 2. 写定义 ＋ 桌面项正文：~/.local/share/twin/wechat2/{profile.yml,wechat2.desktop}
-#    每个键的说明都写在 profile.yml 的注释里（命令结束时报出这两个路径与下一步敲哪条命令）
+# 2. 写定义：~/.local/share/twin/wechat2/profile.yml
+#    每个键的说明都写在它的注释里（命令结束时报出这个路径与下一步敲哪条命令）
 twin gen wechat
 
-# 3. 改（可选）：profile.yml 的 `bwrap.bind` 那一节最容易猜错；
-#    想让菜单里显示别的字，改的是旁边那份 wechat2.desktop
+# 3. 改（可选）：`bwrap.bind` 那一节最容易猜错
 $EDITOR ~/.local/share/twin/wechat2/profile.yml
-$EDITOR ~/.local/share/twin/wechat2/wechat2.desktop
 
 # 4. 安装 ＋ 自检，然后从桌面项重新启动这个实例（⚠️ 见下面"为什么必须重启"）
 twin install wechat2
 twin verify wechat2
+
+# 5. 想让菜单里显示别的字：这一步会生成桌面项正文
+#    （~/.local/share/twin/wechat2/wechat2.desktop，路径就印在上面那条命令的输出里），
+#    改它，再 reinstall 一次把它复制过去
+$EDITOR ~/.local/share/twin/wechat2/wechat2.desktop
+twin reinstall wechat2
 ```
 
 一份定义可以放别处、可以有几份（多实例、多台机器共用）：
@@ -91,7 +96,7 @@ twin install -p ~/wraps/wx-work.yml
 ~/.local/share/appicons/wechat2.png             ← 带角标的图标
 ~/.local/share/twin/wechat2/launch           ← 薄启动器（bash，exec bwrap）
 ~/.local/share/twin/wechat2/profile.yml      ← 实例定义（`gen` 写下的那份，`install` 读的就是它，不改写）
-~/.local/share/twin/wechat2/wechat2.desktop  ← 桌面项正文（`gen` 写一次，之后归你；`install` 只复制）
+~/.local/share/twin/wechat2/wechat2.desktop  ← 桌面项正文（`install` 生成一次，之后归你；install 只复制）
 ~/.local/state/twin/wechat2/                 ← 这个实例的私有数据目录
 ```
 
@@ -138,19 +143,20 @@ gnome-shell 49 已删 ⇒ 恒 16px，外面补不了）。扩展**没被加载**
 twin gen wechat                  ← 前半段：只配置
       │
       ├─ 1. 解析源桌面项 → 找到真实程序 /opt/wechat/wechat、图标、语言化的 Name/Keywords
-      ├─ 2. 推导默认值   → id=wechat2  name=微信2  badge=2  keywords=微信;wechat;
+      ├─ 2. 推导默认值   → id=wechat2  badge=2  bwrap.root=dev  等
       ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
       ├─ 4. 从内置规则 / rules.d 算出路径映射
-      └─ 5. 写出两份文件到实例自己的目录（~/.local/share/twin/<id>/）：profile.yml（定义）
-            与 wechat2.desktop（桌面项正文），报出它们的路径与下一步敲什么
+      └─ 5. 写出一份文件到实例自己的目录（~/.local/share/twin/<id>/）：profile.yml（定义），
+            报出它的路径与下一步敲什么
 
 twin install <id>                ← 后半段：按那份定义安装（reinstall 也走这条路）
       │
       ├─ 6. 解析沙箱方案 → 本机要不要私有 bwrap 副本 / 要不要跳板。
       │                    两者都没有、而程序又要嵌套 ns 时：用 sudo 装一份 AppArmor profile
-      ├─ 7. 落盘 5~7 件产物（幂等）。那份定义**不重写**（改写会丢手写的注释），正文也只
-      │                    **逐字复制**（写回一次就等于把你的编辑回退掉）；只有定义
-      │                    放在别处（`-p`）时，才在实例目录里写一份存档记录
+      ├─ 7. 落盘 5~7 件产物（幂等）。那份定义**不重写**（改写会丢手写的注释）；桌面项正文不
+      │                    在时按源桌面项生成一份（`--dry-run` 印的就是它），在时只**逐字复制**
+      │                    （写回一次就等于把你的编辑回退掉）；只有定义放在别处（`-p`）时，
+      │                    才在实例目录里写一份存档记录
       ├─ 8. 托盘覆盖：助手扩展被 shell 加载了 ⇒ 写它读的文件表，并删掉宿主表里那一行；
       │                    没加载 ⇒ 写宿主托盘覆盖表兜底（两条都热生效）
       │                    ＋ 检查托盘扩展本身（缺了会提醒装它：twin install --ext，
@@ -259,7 +265,7 @@ Chromium 系的程序（含所有 Electron 应用）启动时会**自己再建�
 
 | 命令 | 作用 |
 |---|---|
-| `twin gen <source>` | **最常用**：写出定义与桌面项正文（默认落在 `~/.local/share/twin/<id>/`，`-o` 可换地方并把正文带过去）；id / 名字 / 角标 / 状态路径全部推导 |
+| `twin gen <source>` | **最常用**：写出一份实例定义（默认落在 `~/.local/share/twin/<id>/`，`-o` 可换地方）；id / 角标 / 状态路径 / 沙箱基座全部推导。桌面项正文不在这里 —— `install` 才生成它 |
 | `twin install <id>` | **最常用**：读那个实例的定义，落盘（桌面项 / 图标 / 启动器 / 托盘）＋ 自检。配置在别处就 `-p <文件>`。需要 AppArmor profile 时用 `sudo` 装；托盘覆盖走哪条路由它当场决定并打印；托盘扩展本身只**检查**，缺了会给出下面那条命令 |
 | `twin install --ext` | 装入 **shell 侧的托盘扩展**（机器级，一份服务所有实例，装一次即可；装完要注销重登一次才启用得上，之后各实例的托盘图标由它画，下次 install / reinstall 才改走那条路）。`twin reinstall --ext` 是同一个动作 |
 | `twin inspect <source>` | 只读：源程序是什么、身份该怎么做、/tmp 策略 |

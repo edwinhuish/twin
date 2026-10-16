@@ -140,9 +140,10 @@ style → {}    ← 只有标准库
    `if 在沙箱里 { 跳过 }` 这种基于位置的判断。
 5. **`--dry-run` 必须是忠实的。** 预览与真实落盘必须由**同一份代码**渲染
    （`generate.EntryBytes` 与 `it.RenderAs(inst.RoleSnapshot)` 被 dry-run 和 `Materialize` 共用；
-   `gen` 用 `RoleConfig`，预览的也就是它写的那份）。`gen` 多写的第二件产物（桌面项正文）同理：
-   预览印的那份文本就是它写进文件的那一份，`install` 复制的还是它。用另一套代码画的预览就是
-   一句谎话。
+   `gen` 用 `RoleConfig`，预览的也就是它写的那份）。桌面项正文同理，而且它现在只有一条路：
+   `install --dry-run` 印的那份文本（`generate.DeriveBody` ＋ `EntryBytes`）就是 `Materialize`
+   即将写进文件的那一份，也是随后被复制成 `~/.local/share/applications/<id>.desktop` 的那一份。
+   用另一套代码画的预览就是一句谎话。
 6. **CLI 用 `parseFL`，不要直接 `fs.Parse`；`FlagSet` 一律用 `newFlags` 建。** Go 的 `flag` 在
    第一个非 flag token 处停止，而文档里的写法是 `twin gen <source> --as <id>` —— 直接用会让
    `--as` 及其后的所有选项被**静默忽略**。位置参数可以出现在选项之间，这是文档承诺的行为。
@@ -161,10 +162,11 @@ style → {}    ← 只有标准库
 8. **输出走 `internal/style`，判定按流。** 不在别处写转义序列、不自己判 `isatty`：stdout 与
    stderr 各判一次（`> log` 时两者结论不同），非终端一律纯文本。状态行必须同时有字形和颜色
    （`st.Mark(...)`），因为 `| grep` / 无颜色终端 / bug 报告里只剩字形。
-9. **默认输出是给人读的，不是给人查的。** `twin gen` 只打印两个落点与下一步；逐键说明用
+9. **默认输出是给人读的，不是给人查的。** `twin gen` 只打印**那一个落点**与下一步；逐键说明用
    `yamlz.SetComment` 写在那份配置里，人读到它的那一刻正在编辑它 —— 同一件事在终端和
-   文件里各说一遍，就是两处将来会各表一套。第二件产物（桌面项正文）的路径留下来是因为
-   "想让菜单里显示别的字"要编辑的正是它，只给 `profile.yml` 会把人指到一个改不动的文件上。
+   文件里各说一遍，就是两处将来会各表一套。它**不提**桌面项正文：那份文件还不存在
+   （`install` 才生成它），把人送进一个空路径的编辑器比少说一句更糟 —— 正文的路径由
+   `install` 打印，那也是它第一次存在的地方。
    唯一的例外是"一条映射都没有"的警告：它描述的是别处不会再报的后果，所以留在终端上。`twin install` 打印产物、路径映射、下一步；自检**只在
    有非 OK 项时**才出现（`formatProblems`，而 `twin verify` 用的是 `formatFindings`，把每一条
    都列出来正是它的职责），而且通过项不带修复命令 —— 那会给读者一条他没有的问题的命令。
@@ -174,13 +176,16 @@ style → {}    ← 只有标准库
 10. **一条命令只做一件事，安装是显式的。** `twin gen` **只写一份配置**，`twin install` 才落盘。
     理由见 §5"加一个 `gen` 选项"：一次 wrap 里唯一随程序而变、又猜错了不出声的东西是
     路径映射，它该先落成一份能读能改的文件。
-11. **实例定义只有一份，`install` 不重写它；正文只有一份，`gen` 也只写一次。** 前者的默认落点是
-    `~/.local/share/twin/<id>/profile.yml`，`install <id>` 与 `reinstall <id>` 读的是同一份，
-    `Materialize` 见到"定义已在此处"就跳过写入（`definitionIsHere`）—— 写回一次就是一次解析往返，
-    用户手写的注释与排版会没。**桌面项正文同理**：`gen` 在它不存在时才按源桌面项生成，之后每次
-    `install` 只是把 `override.desktop` 指的那份**逐字复制**成 `~/.local/share/applications/<id>.desktop`
-    —— 它是这一份包裹里唯一"改写"而不是"阅读"的东西（菜单里那几个字），所以重写一次就等于用推导
-    覆盖用户的编辑。想改显示名就改那份文件，别指望 `override.icon.*` 那一类键再回头影响它。
+11. **实例定义只有一份，`install` 不重写它；桌面项正文也只写一次，由 `install` 写。** 前者的默认
+   落点是 `~/.local/share/twin/<id>/profile.yml`，`install <id>` 与 `reinstall <id>` 读的是同一份，
+   `Materialize` 见到"定义已在此处"就跳过写入（`definitionIsHere`）—— 写回一次就是一次解析往返，
+   用户手写的注释与排版会没。**桌面项正文同理**：`install` 在它不存在时按源桌面项生成一份
+   （`DeriveBody` ＋ `EntryBytes`，与 `--dry-run` 印的是同一份），之后每次只是把
+   `override.desktop` 指的那份**逐字复制**成 `~/.local/share/applications/<id>.desktop`
+   —— 它是这一份包裹里唯一"改写"而不是"阅读"的东西（菜单里那几个字），所以重写一次就等于用推导
+   覆盖用户的编辑。想改显示名就改那份文件、再 `twin reinstall <id>`，别指望 `override.icon.*`
+   那一类键再回头影响它。`gen` **不写**这份正文：它写的东西全都从源程序推得出来、没有一处需要
+   人在装之前决定，而一个"只在你还没装过时才生效"的文案选项正是这个工具不愿留的那类选项。
     只有 `-p` 指到别处时，实例目录里才另写一份存档记录
     （`RoleSnapshot`）供 `reinstall` 重放。两条路都不从 CLI 重新推导 —— 所以"带着描述实例的选项
     去装一个已存在的实例"这件事**不存在**了：`install` 根本没有那些选项（见 §5"加一个 `gen` 选项"）。
@@ -276,25 +281,28 @@ style → {}    ← 只有标准库
 2. **决定它属于哪一类**：描述**实例**（会进 profile.yml）还是描述**这次动作**
    （`-o` / `--force` / `--dry-run` / `--explain`）。只有 `gen` 拥有前者 ——
    `install` 的 flag 表里一个实例选项都没有，所以"带着描述实例的选项去装一个已存在的实例"
-   这件事**无法表达**：那不是一条运行时判断，而是动词拆分本身（见 §4.11）；
+   这件事**无法表达**：那不是一条运行时判断，而是动词拆分本身（见 §4.11）。
+   **第三类是不存在的**：只影响另一件产物的选项（曾经的六个文案 flag 就是这一种）在 `gen`
+   上等于"文件不在时才生效"，那不是一条边界而是一个陷阱 —— 正文的推导在 `install` 那一步，
+   那里没有选项，改的是文件（见 §4.11）；
 3. `internal/generate/generate.go` 的 `Options` 与 `Plan`：决定优先级与默认值来源；
 4. 会进配置的字段还要动 `internal/inst` 的 `toTree` / `Load`，补一个往返测试，并给它加一条
    `SetComment` 说明 —— 终端不再解释任何键，注释是它唯一的说明书（`TestEverySnapshotKeyIsExplained`
    会拦下漏写的）。
 
 ### 两段式（`twin gen` / `twin install`）
-- 前半段（`twin gen`）写**两份**东西，都是"用户自己的文档"：**实例定义**（`it.Render()` ＋
-  `writeConfigFile`，`inst.RoleConfig`，默认落在 `~/.local/share/twin/<id>/profile.yml`，
-  `Paths.Profile(id)`，跟 `$HOME` 派生、一个 id 一份，见 §4.7；`-o` 可以写到任何地方）与
-  **桌面项正文**（`generate.EntryBytes`，落在定义旁边 —— 定义里的 `override.desktop` 就是相对
-  它写的相对路径，所以 `-o` 挪到哪正文就跟到哪）。id 是 `Plan` 推出来的，所以默认落点只能在
-  `planInstance` 之后算。定义那份拒绝覆盖已存在的文件，除非 `--force`：撞上默认落点时说的是
-  "这份已经是那个实例的定义 —— 直接 `twin install <id>`"，而不是泛泛的"换个 -o"。正文那份
-  反过来：**已经存在就不碰**（它是用户改过的正文，覆盖等于把菜单里那几个字回退掉）。
-- 后半段（`twin install <id>`）读**同一份文件**落盘，`Materialize` 不重写它，正文也只复制不重写
-  （§4.11）；缺正文时才按 `source.desktop` 重新生成一份。`-p` 指到别处时，实例目录里才另写一份
-  `RoleSnapshot` 的存档记录，供 `reinstall` 重放；`Role` 这层就是为这个例外存在的，两个 header
-  各自指向读它的那条命令。
+- 前半段（`twin gen`）写**一份**东西：**实例定义**（`it.Render()` ＋ `writeConfigFile`，
+  `inst.RoleConfig`，默认落在 `~/.local/share/twin/<id>/profile.yml`，`Paths.Profile(id)`，
+  跟 `$HOME` 派生、一个 id 一份，见 §4.7；`-o` 可以写到任何地方）。id 是 `Plan` 推出来的，
+  所以默认落点只能在 `planInstance` 之后算。它拒绝覆盖已存在的文件，除非 `--force`：撞上默认
+  落点时说的是"这份已经是那个实例的定义 —— 直接 `twin install <id>`"，而不是泛泛的"换个 -o"。
+- 后半段（`twin install <id>`）读**同一份文件**落盘，`Materialize` 不重写它（§4.11）。
+  **桌面项正文也在这里诞生**：定义里的 `override.desktop` 是相对本文件写的相对路径，所以
+  正文落在定义旁边（`-o` 挪到哪，它就跟着到哪）；不存在时按 `source.desktop` 生成一份
+  （`generate.DeriveBody` 是唯一那份推导 —— 定义里不装文案，`install` 也没有能覆盖它的选项），
+  已经存在就**只复制不重写**（它是用户改过的正文，覆盖等于把菜单里那几个字回退掉）。
+  `-p` 指到别处时，实例目录里才另写一份 `RoleSnapshot` 的存档记录，供 `reinstall` 重放；
+  `Role` 这层就是为这个例外存在的，两个 header 各自指向读它的那条命令。
 - 配置里的注释由 `inst.toTree` 用 `yamlz.SetComment` 挂上，渲染只依赖 `Instance`。`yamlz.Parse`
   **丢掉**注释 —— 这也是 install 不能重写定义的原因：写回一次，手写的注释就没了。
 - **定义里的路径可以写成相对的**，基准是那份文件自己所在的目录：`inst.Load` 解析一次
@@ -339,6 +347,10 @@ Manual**：那会让它和非做不可的那一步共用一个退出码（托盘
   正文是一份**文件**，那条拆分是它的前身（那次改动就是为了让"改菜单里显示什么"变成一次文本编辑，
   而不是"改配置里一行、再 install 一遍"）。同理不要让 `install` 去"补全"那份正文 —— 生成一次之后
   它每个字节都属于编辑它的人。
+- ❌ 不要让 `gen` 再去写那份桌面项正文，也不要给它加"只在还没装过时生效"的文案选项（`--name` /
+  `--keywords` / `--categories` …）：正文全部由源桌面项推得出来，人要在它上面落笔的时刻是
+  "装完之后、想改菜单里那几个字"，而那一步是编辑文件 ＋ `twin reinstall`。一个"文件在就静默失效"
+  的 flag 比没有这个 flag 更糟。
 - ❌ 不要写会动真实 `$HOME` 的自动化测试。
 - ❌ 不要让托盘覆盖**同时**走两条路（扩展读的文件表 ＋ 宿主 `custom-icons` 表）。一次只走一条，
   判据只有 `tray.ExtState.Usable()` 一个，而它被四处读（`applyTray` 的选路、预演、`verify`、

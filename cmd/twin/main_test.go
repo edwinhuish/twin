@@ -324,6 +324,15 @@ func TestProblemsAreQuietWhenNothingIsWrong(t *testing.T) {
 	}
 }
 
+// `twin gen -h` 是"想改名的人"最可能翻到的地方：他要找的那个选项没有了，所以这里必须说清
+// 那几个字现在住在哪、改完敲哪条命令。文档里写了不算 —— `-h` 与实现同一次编译。
+func TestGenHelpSaysWhereTheEntryTextIsEdited(t *testing.T) {
+	h := helpFooter["gen"]
+	if !strings.Contains(h, "桌面项正文") || !strings.Contains(h, "reinstall") {
+		t.Errorf("twin gen -h 没说改菜单里那几个字该去哪：%q", h)
+	}
+}
+
 // 定义落在哪儿，头注释就得指向哪条命令：默认那份由 `twin install <id>` 读，写在别处的那份
 // 只有 `-p` 读得到 —— 而 `twin install <id>` 会去读实例目录里那份记录，把读者送回一个不是他
 // 手上这份的文件。写盘与 --dry-run 预演都走这一个函数，所以预演不会显示另一个头。

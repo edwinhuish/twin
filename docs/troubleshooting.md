@@ -315,7 +315,7 @@ grep -n "tmpfs\|/tmp" ~/.local/share/twin/<id>/profile.yml   # 决定就写在�
 |---|---|---|
 | 名字或关键词里有乱码 | 终端 locale 与桌面项编码不一致（桌面项本身是 UTF-8） | `locale` 检查；`twin inspect` 直接读源桌面项，对比是否一致 |
 | 角标里的中文变成"豆腐块" | 内置点阵字体只覆盖 ASCII | 用数字/几何风格（`corner`＋数字，或 `dot`） |
-| 搜索找不到这个实例 | 关键词没推导出来（源桌面项既无 `Keywords`，也无可用 `Name`/程序名） | `--keywords 'k1;k2'`；`wrap` 遇到这种情况会警告 |
+| 搜索找不到这个实例 | 关键词没推导出来（源桌面项既无 `Keywords`，也无可用 `Name`/程序名） | 在桌面项正文里补一行 `Keywords=k1;k2`（路径就是 `twin install` 打印的那份"桌面项正文"），再 `twin reinstall <id>`；`install` 生成那份正文时会为这种情况打印一行警告 |
 
 ---
 

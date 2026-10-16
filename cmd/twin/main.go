@@ -257,7 +257,9 @@ var helpFooter = map[string]string{
 		"    `--` 之后的 token 原样进配置的 bwrap.extras（合并后那份列表的尾部 ⇒ 同目标的挂载\n" +
 		"    由它胜出；有形状的那几个键排在它之后，压不住）。它是**写进文件**的一份，不是每次启动的覆盖。\n" +
 		"    ⚠️ 不享受 ~/ 展开与 mkdir 补齐；再写一个 `--`、写 --argv0、或写需要 fd 的选项都会被拒绝，\n" +
-		"       其余 token 只做 lint（警告），不改写。\n",
+		"       其余 token 只做 lint（警告），不改写。\n" +
+		"    本命令不写桌面项正文（菜单里显示什么）：那份文件由 install 生成一次，此后归你 ——\n" +
+		"    改它、再 twin reinstall <id>。所以这里没有 --name / --keywords 一类的选项。\n",
 	"install": "\n  twin install <id> | -p <文件> [选项]   （二选一，同时给是用法错误）\n" +
 		"    <id>：读那个实例自己的定义 " + defaultProfileLabel + "；\n" +
 		"    -p  ：读你指定的那份（配置放在别处时用它）。\n" +

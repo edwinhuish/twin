@@ -75,9 +75,10 @@
   状态行统一用 `✅ / ⚠️ / ❌ / ➖`，与颜色表达同一件事，纯文本里也不丢信息。
 - **`twin gen --explain`**：展开完整说明（推导出的默认值、`路径映射` 的三种修改粒度、
   照抄即可的 `rules.d` 模板、手工验证命令）。`--dry-run` 同样展开。
-- **两段式 wrap：`twin gen` 写定义、`twin install <id>` 落盘。** `twin gen wechat` 只写
-  `~/.local/share/twin/wechat2/profile.yml` 与它旁边的 `wechat2.desktop`（桌面项正文），并打印这两个
-  落点与下一步命令；改完再 `twin install wechat2` 落盘（桌面项 / 图标 / 启动器 / 宿主托盘 ＋ 自检）。
+- **两段式 wrap：`twin gen` 写定义、`twin install <id>` 落盘。** `twin gen wechat` 只写一份
+  `~/.local/share/twin/wechat2/profile.yml`（桌面项正文后来也归 `install` 生成，见下面的 Changed），
+  并打印这个落点与下一步命令；改完再 `twin install wechat2` 落盘
+  （桌面项 / 图标 / 启动器 / 宿主托盘 ＋ 自检）。
 - `generate.Plan` / `Materialize` / `CheckInstall`：两半按**那份定义文件**相认（`<id>` 或 `-p` 指到
   哪一份），不重新推导 id —— 定义一写出来那个 id 就被占用了，重新推导只会悄悄挪到 `wechat3`。
 - **实例定义的逐键说明**（`yamlz` 新增按键注释）：`profile.yml` 里每个键上面都写着它自己的说明。
@@ -94,6 +95,26 @@
   补了这句（文件是唯一的说明书）。
 
 ### Changed
+
+- **桌面项正文改由 `install` 生成，`gen` 从此只写一份文件**：正文（`override.desktop` 指的那份
+  纯文本桌面项）的每一行都从源桌面项推得出来，`gen` 提前把它写出来换到的只有一件事 —— 那六个
+  文案选项（`--name` / `--name-en` / `--comment` / `--comment-en` / `--keywords` /
+  `--categories`）从此**只在文件还不存在时有效**，装过一次之后改了没反应、也不报错。这是这个工具
+  最不该留的那类选项，所以它们连同 `inspect --name`（存在的唯一理由是预览"名字会参与关键词推导"，
+  而那条规则本身没了）一起取消。`gen` 现在写出的是**一份实例定义**（默认
+  `~/.local/share/twin/<id>/profile.yml`），桌面项正文由 `install` 在它不存在时按源桌面项生成
+  （`generate.DeriveBody` 仍是唯一那份推导，只是调用点从"可能有 flag"的那一侧挪到了"没有 flag"的
+  这一侧），此后每次 `install` 依旧只**逐字复制**它。想改菜单里那几个字：装一次、编辑那份文件、
+  `twin reinstall <id>` —— 那份文件从第一个字节起就是你的，这条没变。
+  跟着搬的还有两样东西：正文那五行推导（`Name` / `Name[en]` / `Comment` / `Keywords` /
+  `Categories`）从 `gen --explain` 移到写它的那一步（`--dry-run` 的预演把它们印在正文那段底下，
+  `install --explain` 打印它们），关键词推不出来时的那条警告同样落到 `install` 生成正文的那一刻
+  （它在 `gen` 里几乎不可能触发：程序基名本身就是候选；真正会触发的是"源桌面项已经不在了"那条
+  路）。`printDerived` 的表头因此改由调用方给 —— `gen` 那批是"改那份文件即可覆盖"，`install` 那批
+  是"这份正文是怎么推出来的"，一句话没法同时对。
+  老定义**不需要改**：`override.desktop` 那个键没动，`gen -o` 也照旧把正文带到新定义旁边（正文
+  的落点一直是"定义所在目录 ＋ 定义里写的相对路径"）。`inst.ResolveAgainst` 随之没有调用者
+  （只有 `gen` 需要在没跑过 `Load` 时解析那个相对路径）而被删掉。
 
 - **`bwrap` 节点只剩四个键，一次 bwrap 调用的参数全在里面**：`root`（一个词，见下一条）、`bind`
   （有形状的挂载）、`env`（`--setenv`）、`extras`（**其余全部**参数，一行一条完整命令，按空格拆开）。
@@ -404,8 +425,8 @@
   `rules` / `config` / `version`。
 - 三层配置：CLI > `profile.yml`（实例快照）> `rules.d/<app>.toml`（应用知识）>
   `config.toml`（本机环境）> 内置默认。
-- 两段式 wrap：`twin gen` 写实例定义与桌面项正文、`twin install <id>` 落盘；`reinstall` 重放的是
-  同一份定义。
+- 两段式 wrap：`twin gen` 写实例定义、`twin install <id>` 落盘（桌面项正文也在这一步生成，之后它
+  就是你的）；`reinstall` 重放的是同一份定义。
 - `/tmp` 策略、路径映射（`bind` 的 `源:目标[:ro|:rw|:dev][:try]` 写法，写在 `rules.d` 或实例定义里）、
   bwrap 透传区（lint 而非改写）。
 - 纯 Go 图标管线（PNG/JPEG 解码、缩放、角标蒙版、5×7 点阵字体）；SVG 走外部工具三级降级。
