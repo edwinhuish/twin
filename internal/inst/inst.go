@@ -105,6 +105,18 @@ type Bind struct {
 	// `:dev` — bubblewrap has no read-only device bind — so Check refuses that
 	// pair rather than silently dropping one of the two.
 	Dev bool
+	// Try renders the `-try` spelling of whichever option the mode picked
+	// (`--bind-try` / `--ro-bind-try` / `--dev-bind-try`), which bubblewrap
+	// documents as "equal to --bind but ignores non-existent SRC".
+	//
+	// It exists because a mapping whose source may legitimately not be there yet
+	// — a rules.d entry pointing at a directory the program creates on first
+	// run — has no other honest spelling: plain `--bind` turns "not there yet"
+	// into "the program does not start at all", and manufacturing an empty
+	// source for it would be twin answering a question about somebody else's
+	// data. It only ever *skips* the mount; where the source is there, the two
+	// spellings are the same mount.
+	Try bool
 }
 
 // IsRootMount reports whether this entry is the base's root mount: the whole
@@ -121,6 +133,14 @@ type Bind struct {
 func (b Bind) IsRootMount() bool { return b.Source == "/" && b.Target == "/" }
 
 // String renders the one-line form the config files carry.
+//
+// `:try` is written *after* the mode, and the mode is spelled out even when it
+// is the default one: the file has exactly one way to say "optional mapping"
+// (`目标:源:rw:try`, three colons), and a bare `源:目标:try` would be a second
+// spelling of the same thing — read back as a target named `try` by every
+// reader that does not know the suffix. Round-tripping is the rule here because
+// `regen` re-renders from the parsed value: a spelling that drifts shows up as
+// a diff nobody made.
 func (b Bind) String() string {
 	s := b.Source + ":" + b.Target
 	switch {
@@ -128,13 +148,18 @@ func (b Bind) String() string {
 		s += ":ro"
 	case b.Dev:
 		s += ":dev"
+	case b.Try:
+		s += ":rw" // spelled only to make room for the :try after it
+	}
+	if b.Try {
+		s += ":try"
 	}
 	return s
 }
 
 // ParseBind reads the one-line form: "source:target", "source:target:ro",
-// "source:target:rw", "source:target:dev", or a bare "path" meaning the same
-// directory both ways.
+// "source:target:rw", "source:target:dev", "source:target:rw:try", or a bare
+// "path" meaning the same directory both ways.
 //
 // The bare form is not an optimisation. A directory bound onto itself is what
 // upgrades it to writable in place under `--ro-bind / /`, which is the one
@@ -144,8 +169,26 @@ func (b Bind) String() string {
 // first colon separates the two sides. A path that itself contains a colon is
 // therefore ambiguous, and — as in Docker — the ambiguity is resolved the
 // documented way rather than guessed at.
+//
+// `:try` comes after the mode and *requires* it: `源:目标:try` is refused with
+// the spelling to write instead. Reading it as a mode would be inventing a
+// fourth one, and reading `源:try` as "the optional mapping" would silently
+// take away a target path somebody wrote — a mapping is the one thing in a
+// wrap that is silently wrong when it is wrong.
 func ParseBind(spec string) (Bind, error) {
 	parts := strings.Split(strings.TrimSpace(spec), ":")
+	b := Bind{}
+	// Only a *trailing* :try is the suffix, and only when a mode is already
+	// there: `x:y:try` (three parts) is the miswrite this refuses. `x:try`
+	// (two parts) stays what it always was — a target path named `try`.
+	if len(parts) >= 3 && parts[len(parts)-1] == "try" {
+		if len(parts) < 4 {
+			return Bind{}, fmt.Errorf("路径映射 %q 的 :try 要跟在写全的访问模式后面：写成 "+
+				"`源:目标:ro:try`（可写的写 :rw:try，带设备访问的写 :dev:try）", spec)
+		}
+		b.Try = true
+		parts = parts[:len(parts)-1]
+	}
 	if len(parts) == 2 && isBindMode(parts[1]) {
 		// `x:ro` has no target, only what looks like a mode. Reading it as
 		// "target named ro" would build a relative mount point out of a typo,
@@ -155,7 +198,6 @@ func ParseBind(spec string) (Bind, error) {
 		return Bind{}, fmt.Errorf("路径映射 %q 的右侧是访问模式而不是目标路径："+
 			"两侧写全（%s:%s:%s），或去掉模式（同一路径默认可写）", spec, parts[0], parts[0], parts[1])
 	}
-	b := Bind{}
 	if len(parts) == 3 {
 		switch parts[2] {
 		case "ro":
@@ -169,7 +211,7 @@ func ParseBind(spec string) (Bind, error) {
 		parts = parts[:2]
 	}
 	if len(parts) > 3 {
-		return Bind{}, fmt.Errorf("路径映射 %q 的冒号太多（形如 \"源:目标[:ro|:rw|:dev]\"）；"+
+		return Bind{}, fmt.Errorf("路径映射 %q 的冒号太多（形如 \"源:目标[:ro|:rw|:dev][:try]\"）；"+
 			"ro 与 dev 也不能同时用：bwrap 没有只读的设备映射", spec)
 	}
 	b.Source = parts[0]
@@ -860,9 +902,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// invocation the list above fills, emitted in the order written here. Two
 	// keys that have to agree about one command line belong next to each other
 	// in the file, not in two halves of it.
-	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:dev]`，同 Docker 的卷（:ro 只读、:dev 带设备访问，单写一条路径则挂回自己）。\n"+
-		"`gen` 的第一条是根挂载 /:/:dev，整个宿主根可写 = --dev-bind / /，永远排最前，收紧成只读改成 /:/:ro；\n"+
-		"X11 那种没有私有 /tmp 的实例还会有一条 /tmp:/tmp（宿主那个 /tmp 原地可写，见 tmpfs 那条）。空 = 数据目录与源程序共用。")
+	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:rw|:dev][:try]`，同 Docker 的卷（:ro 只读、:rw 可读写、\n"+
+		":dev 带设备访问，单写一条路径则挂回自己；末尾的 :try 要写全模式，源不在就整条跳过、不报错）。`gen` 的第一条\n"+
+		"是根挂载 /:/:dev，整个宿主根可写 = --dev-bind / /，永远排最前，收紧成只读改成 /:/:ro。空 = 数据目录与源程序共用。")
 	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
 		binds = append(binds, b.String())

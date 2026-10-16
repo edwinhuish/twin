@@ -79,6 +79,7 @@ func mountInstance() *inst.Instance {
 		{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
 		{Source: "~/Documents/xwechat_files", Target: "~/Documents/xwechat_files"},
 		{Source: "/usr/share/wechat/theme.conf", Target: "~/.config/wechat/theme.conf", ReadOnly: true},
+		{Source: "/etc/wechat/optional.conf", Target: "~/.config/wechat/optional.conf", ReadOnly: true, Try: true},
 	}
 	return i
 }
@@ -110,6 +111,11 @@ func TestLauncherRendersOneMountPairPerMapping(t *testing.T) {
 		// without them.
 		`mount_point dir "$HOME/.local/state/twin/wechat2" || twin_fail "$?" '建立状态目录失败：~/.local/state/twin/wechat2'` + "\n",
 		`touch -- "$2"`,
+		// `:try` goes through the helper that does nothing when the source is
+		// missing — bwrap skips that mount itself, so there is nothing to build
+		// and nothing to complain about.
+		`mount_try /etc/wechat/optional.conf "$HOME/.config/wechat/optional.conf" ro || twin_fail "$?"`,
+		`[ -e "$1" ] || return 0`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("launcher is missing %q:\n%s", want, got)
@@ -175,6 +181,7 @@ func TestEnsureMountPointsCreatesFilesForFileMappings(t *testing.T) {
 		{Source: "~/.local/state/twin/vlc2/vlcrc", Target: "~/" + filepath.Base(real)},
 		{Source: "~/.local/state/twin/vlc2/data", Target: "~/data"},
 		{Source: "~/elsewhere", Target: "~/elsewhere2", ReadOnly: true},
+		{Source: "~/.local/state/twin/vlc2/optional", Target: "~/optional", Try: true},
 	}}
 	if err := EnsureMountPoints(i, p); err != nil {
 		t.Fatal(err)
@@ -202,6 +209,11 @@ func TestEnsureMountPointsCreatesFilesForFileMappings(t *testing.T) {
 	// A `:ro` source is somebody else's path: twin must not manufacture it.
 	if sysx.Exists(filepath.Join(home, "elsewhere")) {
 		t.Error("只读映射的源不该被创建")
+	}
+	// `:try` 的私有侧同样不建 —— 源不在正是这个后缀的全部内容，在这里替它补齐
+	// 会把"这一次没有这条映射"变成一个从此每次都有的空挂载。
+	if sysx.Exists(filepath.Join(p.StateDir("vlc2"), "optional")) {
+		t.Error(":try 映射的源不该被创建")
 	}
 }
 
@@ -351,13 +363,17 @@ func TestBuildEmitsExtraTmpfsButNeverInventsTmp(t *testing.T) {
 
 // The mode is the reason a mapping is not just two paths: `:ro` hands over
 // somebody else's data, `:dev` lets a directory of device nodes through, and
-// the bare form is the private copy everything else is built from.
+// the bare form is the private copy everything else is built from. `:try` is a
+// suffix on whichever of them was picked, and it is the only spelling that
+// survives a source which is not there yet.
 func TestBuildMapsEachModeToItsFlag(t *testing.T) {
 	i := passthroughInstance()
 	i.Binds = []inst.Bind{
 		{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
 		{Source: "/usr/share/wechat/theme.conf", Target: "~/.config/wechat/theme.conf", ReadOnly: true},
 		{Source: "/dev/dri", Target: "/dev/dri", Dev: true},
+		{Source: "~/.config/wechat/pending.conf", Target: "~/pending.conf", ReadOnly: true, Try: true},
+		{Source: "~/.local/state/twin/wechat2/cache", Target: "~/.cache/wechat", Try: true},
 	}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
@@ -368,6 +384,8 @@ func TestBuildMapsEachModeToItsFlag(t *testing.T) {
 		"--bind /home/edwin/.local/state/twin/wechat2/xwechat /home/edwin/.xwechat",
 		"--ro-bind /usr/share/wechat/theme.conf /home/edwin/.config/wechat/theme.conf",
 		"--dev-bind /dev/dri /dev/dri",
+		"--ro-bind-try /home/edwin/.config/wechat/pending.conf /home/edwin/pending.conf",
+		"--bind-try /home/edwin/.local/state/twin/wechat2/cache /home/edwin/.cache/wechat",
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("argv 里没有 %q：%s", want, args)

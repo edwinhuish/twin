@@ -254,6 +254,11 @@ func BaseFor(id string, privateTmp bool) Base {
 // handing a program somebody else's directory, `:dev` for a directory of device
 // nodes (which only `--dev-bind` lets through — the root mount is one of them),
 // and plain writable is what the private-copy isolation is for.
+//
+// `:try` picks the `-try` spelling of that same option, which is bwrap's own
+// "ignores non-existent SRC". It is a suffix on the flag rather than a fourth
+// mode because it says nothing about *how* the mapping is made — only about
+// what to do when its source is not there (see inst.Bind.Try).
 func bindGroup(p inst.Paths, b inst.Bind) []string {
 	flag := "--bind"
 	switch {
@@ -261,6 +266,9 @@ func bindGroup(p inst.Paths, b inst.Bind) []string {
 		flag = "--ro-bind"
 	case b.Dev:
 		flag = "--dev-bind"
+	}
+	if b.Try {
+		flag += "-try"
 	}
 	return []string{flag, p.Expand(b.Source), p.Expand(b.Target)}
 }
@@ -467,7 +475,15 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 		if bind.ReadOnly {
 			ro = " " + mountRO
 		}
-		fmt.Fprintf(&b, "mount_pair %s %s%s || twin_fail \"$?\" %s\n",
+		// A `:try` mapping goes through mount_try, which does nothing at all
+		// when the source is missing — bwrap will skip that mount itself, so
+		// there is nothing for twin to prepare. Creating it here would undo the
+		// suffix: the source's absence is the whole thing it is about.
+		helper := "mount_pair"
+		if bind.Try {
+			helper = "mount_try"
+		}
+		fmt.Fprintf(&b, "%s %s %s%s || twin_fail \"$?\" %s\n", helper,
 			shHome(p.Home, p.Expand(bind.Source)),
 			shHome(p.Home, p.Expand(bind.Target)), ro,
 			Sh(fmt.Sprintf("建立挂载点失败：%s → %s", bind.Source, bind.Target)))
@@ -590,6 +606,10 @@ func mountKind(p inst.Paths, b inst.Bind) string {
 // (that path may be the program's own data). A `:ro` source is skipped — twin
 // did not put it there, and creating it would turn "you gave the wrong path"
 // into an empty read-only mount that looks like it worked.
+//
+// A `:try` mapping creates nothing at all, either — the same rule the launcher
+// follows through mount_try: an absent source is what that suffix is for, and
+// manufacturing one here would make the mount unconditional from then on.
 func EnsureMountPoints(i *inst.Instance, p inst.Paths) error {
 	for _, b := range i.Binds {
 		// The root's two ends are `/` — nothing to create, and `EnsureDir("/")`
@@ -599,6 +619,9 @@ func EnsureMountPoints(i *inst.Instance, p inst.Paths) error {
 			continue
 		}
 		if b.ReadOnly {
+			continue
+		}
+		if b.Try {
 			continue
 		}
 		if mountKind(p, b) == mountFile {
@@ -646,6 +669,14 @@ mount_pair() {  # <源> <目标> [ro]
     mount_point "$kind" "$1" || return 1
   fi
   mount_point "$kind" "$2"
+}
+
+# 带 :try 的那条映射：源不在就整条跳过 —— 两边都不建。bwrap 自己会用 --bind-try 跳过
+# 这一条挂载，所以"什么都没挂"是这一趟的正常结果，不是失败。在这里顺手把源造出来的话
+# 这个后缀就白写了：源不存在正是它的全部内容。
+mount_try() {  # <源> <目标> [ro]
+  [ -e "$1" ] || return 0
+  mount_pair "$@"
 }
 `
 

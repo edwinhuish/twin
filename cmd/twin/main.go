@@ -2076,15 +2076,22 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		for _, b := range maps {
 			// Printed in the file's own spelling, so the line can be pasted into
 			// profile.yml or rules.d without a translation step in between.
+			// `:try` rides along as a trailing note rather than a tag of its
+			// own: it says nothing about *what* is mapped, only about what
+			// happens when the source is not there.
+			try := ""
+			if b.Try {
+				try = "   （:try —— 源不在就整条跳过，不报错）"
+			}
 			switch {
 			case b.ReadOnly:
-				fmt.Printf("  %s  %s\n", outStyle.Cyan("只读"), b)
+				fmt.Printf("  %s  %s%s\n", outStyle.Cyan("只读"), b, try)
 			case b.Dev:
-				fmt.Printf("  %s  %s   （带设备访问：--dev-bind）\n", outStyle.Cyan("设备"), b)
+				fmt.Printf("  %s  %s   （带设备访问：--dev-bind）%s\n", outStyle.Cyan("设备"), b, try)
 			case b.Source == b.Target:
-				fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）\n", outStyle.Cyan("共用"), b)
+				fmt.Printf("  %s  %s   （原地升回可写，数据不搬家）%s\n", outStyle.Cyan("共用"), b, try)
 			default:
-				fmt.Printf("  %s  %s\n", outStyle.Green("私有"), b)
+				fmt.Printf("  %s  %s%s\n", outStyle.Green("私有"), b, try)
 			}
 		}
 	}
@@ -2196,7 +2203,8 @@ func printRuleTemplate(p inst.Paths, it *inst.Instance, key string, binds []inst
 	}
 	fmt.Printf("    ]\n")
 	fmt.Printf("\n  源:目标 ⇒ 私有副本，两个实例互不干扰；单写一条路径 ⇒ 与该目录共用，只把只读升回可写；\n")
-	fmt.Printf("  源:目标:ro ⇒ 只读挂载；源:目标:dev ⇒ 带设备访问（--dev-bind，给设备节点目录用）。\n")
+	fmt.Printf("  源:目标:ro ⇒ 只读挂载；源:目标:dev ⇒ 带设备访问（--dev-bind，给设备节点目录用）；\n")
+	fmt.Printf("  末尾再加 :try ⇒ 源不在时整条跳过、不报错（要写全模式：源:目标:ro:try）。\n")
 }
 
 // dedupStateDir rewrites this instance's state directory back to the {id}

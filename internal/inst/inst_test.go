@@ -856,6 +856,12 @@ func TestParseBindRoundTrips(t *testing.T) {
 		"/src:/dst:dev",
 		"/dev/dri:/dev/dri:dev",
 		"/src:/dst",
+		// `:try` is written after the mode, and the mode is spelled out on the
+		// way back — a bare `源:目标:try` would be a second spelling of one
+		// thing (see Bind.String).
+		"/src:/dst:ro:try",
+		"/src:/dst:rw:try",
+		"~/.local/state/twin/wechat2/vlcrc:~/vlcrc:rw:try",
 	} {
 		got, err := ParseBind(spec)
 		if err != nil {
@@ -886,6 +892,17 @@ func TestParseBindRoundTrips(t *testing.T) {
 	if b, err := ParseBind("/dev/dri:/dev/dri:dev"); err != nil || !b.Dev || b.ReadOnly {
 		t.Errorf(":dev：%+v / %v", b, err)
 	}
+	// `:try` combines with every mode: it says what to do when the source is
+	// missing, which is a question independent of how the mount is made.
+	if b, err := ParseBind("/src:/dst:ro:try"); err != nil || !b.ReadOnly || !b.Try {
+		t.Errorf(":ro:try：%+v / %v", b, err)
+	}
+	if b, err := ParseBind("/src:/dst:rw:try"); err != nil || b.ReadOnly || b.Dev || !b.Try {
+		t.Errorf(":rw:try：%+v / %v", b, err)
+	}
+	if b, err := ParseBind("/dev/dri:/dev/dri:dev:try"); err != nil || !b.Dev || !b.Try {
+		t.Errorf(":dev:try：%+v / %v", b, err)
+	}
 }
 
 // Every shape that would otherwise be read as something it is not.
@@ -899,6 +916,9 @@ func TestParseBindRefusesAmbiguousShapes(t *testing.T) {
 		"/x:dev",     // 同上：设备路径也要把两侧写全
 		"/x:/y:rx",   // 不认识的模式
 		"/x:/y:ro:9", // 冒号太多
+		// `:try` 必须跟在写全的模式后面：三段里的 try 会被读成模式，
+		// 而两段的 `x:try` 从第一天起就是"目标叫 try"。
+		"/x:/y:try",
 	} {
 		if got, err := ParseBind(spec); err == nil {
 			t.Errorf("ParseBind(%q) 应当报错，得到 %+v", spec, got)
