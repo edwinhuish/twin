@@ -131,7 +131,7 @@ func ScanTraits(path string) (Traits, error) {
 	if t.MultiCall {
 		t.Notes = append(t.Notes,
 			"这是多合一二进制（BusyBox / coreutils 那种靠 argv[0] 决定「自己是哪个工具」的程序）："+
-				"alias 改名后它会不认识自己，identity.level=alias 用不了")
+				"alias 改名后它会不认识自己，isolation.level=alias 用不了")
 	}
 	return t, nil
 }

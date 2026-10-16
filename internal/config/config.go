@@ -91,9 +91,12 @@ type Config struct {
 	USerns   USerns
 	Icon     IconStyle
 	// Args is the global tail appended to every new instance's bwrap option
-	// list — after that instance's base, before its path mappings. One element
-	// is one token (设计 §3.2); twin appends it at `gen` time and never
-	// re-reads it at launch, so what runs is what the definition says.
+	// list — after that instance's base, before the ones the rule adds. One
+	// element is one complete argument group, spelled the way the file reads
+	// it (`"--proc /proc"`), because that is the shape profile.yml's
+	// bwrap.extras has and the two are the same list at two moments in time
+	// (设计 §3.2). twin appends it at `gen` time and never re-reads it at
+	// launch, so what runs is what the definition says.
 	Args []string
 }
 
@@ -107,9 +110,21 @@ type Rule struct {
 	Level      string
 	Keywords   string
 	Categories string
-	Tmpfs      []string
-	Binds      []inst.Bind
-	Args       []string
+	// Tmpfs is the paths this program wants hidden behind an empty directory.
+	// It stays a list of *paths* rather than of `--tmpfs` lines because one of
+	// them is also a decision (/tmp, see generate.Plan) — `gen` renders the list
+	// into bwrap.extras as the lines it becomes.
+	Tmpfs []string
+	Binds []inst.Bind
+	// Args are the bwrap option lines this program needs beyond its path
+	// mappings: `--dev-bind /dev/dri /dev/dri`, a `--tmpfs` for a cache
+	// directory, tightening something the root handed over. It is the only
+	// per-program channel for that, which is what makes it worth having two
+	// config layers: "this program needs X" is neither a property of the
+	// machine (config.toml) nor of one instance (profile.yml). One element is
+	// one complete argument group, exactly as in config.toml and in
+	// profile.yml's bwrap.extras.
+	Args []string
 }
 
 // Builtin is the set of defaults compiled into twin. Every field is
@@ -409,8 +424,8 @@ func Sample() string {
 level       = "alias"
 icon_size   = 256
 badge_style = "corner"        # corner | number | dot
-# 程序支持 Wayland 时，新实例的 bwrap.tmpfs 里写 /tmp（空的私有 /tmp）；关掉则改成
-# 在 bwrap.bind 里写一条 /tmp:/tmp（宿主那个，原地可写）。两者都必须是**可写**的
+# 程序支持 Wayland 时，新实例的 bwrap.extras 里写一行 --tmpfs /tmp（空的私有 /tmp）；
+# 关掉则改成写一行 --bind /tmp /tmp（宿主那个，原地可写）。两者都必须是**可写**的
 # —— 只读的 /tmp 会让程序在别处报错。**只在二进制特征扫描判错的机器上关掉它。**
 tmpfs_unless_x11 = true
 # 生成实例时是否把宿主的托盘图标覆盖表指向本实例的图标。
@@ -449,9 +464,9 @@ trampoline = "auto"
 theme = "hicolor"             # 源 Icon= 是主题名时的查找主题
 
 [bwrap]
-# 追加到每个**新**实例 bwrap 选项列表（profile.yml 里的 bwrap.extras）的尾部：排在
-# 那一份的基座之后、路径映射之前，所以同目标的挂载由这里写的那个胜出。
-# 一个元素 = 一个 token，原样拼接、不做替换。
+# 追加到每个**新**实例的 bwrap 选项列表（profile.yml 里的 bwrap.extras）—— 排在那一份
+# 的基座之后、rules.d 的 args 之前，所以同目标的挂载由后面写的那个胜出。
+# 一个元素 = 一条完整命令（选项和它的值写在同一行，按空格拆开）："--proc /proc"。
 # 写进 profile.yml 之后就不再回读这里了（改这份文件只影响以后新建的实例）。
 args = []
 `

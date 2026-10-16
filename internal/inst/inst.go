@@ -277,33 +277,30 @@ func ParseEnvVar(spec string) (EnvVar, error) {
 
 // Instance is one wrapped program.
 type Instance struct {
-	ID        string
-	Name      string
-	NameEn    string
-	Comment   string
-	CommentEn string
-	// Keywords and Categories override what the source entry provides. Empty
-	// means "inherit from the source": the hand-written 微信2 added its own
-	// values because the real wechat.desktop carries neither.
-	Keywords   string
-	Categories string
-	Source     string // source .desktop file, informational
+	ID string
 
-	Level   Level
+	// Where the program is, and which entry describes it — `source.exec` and
+	// `source.desktop`. Both are paths the way profile.yml writes paths:
+	// absolute, `~`-rooted, or relative to the file itself (see Load).
+	Target string
+	Source string
+
+	// DesktopOverride is the file holding the *text* of the desktop entry twin
+	// installs: `override.desktop`. It is a file rather than six keys because
+	// that text is the one part of a wrap a user rewrites instead of reads —
+	// a display name, keywords, a menu category — and a key per line meant
+	// editing the configuration to change what ends up in a .desktop anyway.
+	// `install` copies it to Paths.Desktop(id) verbatim (generating it from the
+	// source entry when it is not there yet), so it is also the answer to
+	// "what exactly is being installed?".
+	DesktopOverride string
+
+	// WMClass is the StartupWMClass written into the generated entry. Empty
+	// means "the id", which is the useful default for a renamed program and is
+	// why `gen` leaves it empty. Like every other field of the entry's text it
+	// is only consulted when that text is *generated*: once the file exists,
+	// editing this key changes nothing until the file is regenerated.
 	WMClass string
-	Notify  bool
-
-	// NestedNS says the program creates a user namespace of its own while it
-	// runs — the Chromium/Electron class, which probes for one to build its
-	// sandbox and dies without it. This is application knowledge, not machine
-	// state, so it belongs in the snapshot and travels with it; the
-	// machine-specific half (which trampoline, where the bubblewrap copy
-	// lives) stays in config.toml, where the next machine can decide its own.
-	//
-	// When it is set, the launcher routes through a private bubblewrap copy,
-	// because the system one cannot grant what the program needs (see
-	// internal/userns).
-	NestedNS bool
 
 	// TrayOverride says whether this instance asks twin to point the host's
 	// tray override table at its own icon. It is true by default and is only
@@ -316,58 +313,50 @@ type Instance struct {
 	Badge      string
 	BadgeStyle string
 
-	Target string // absolute path of the real program
-	Alias  string // file name created next to Target inside the sandbox
-	Argv0  string // reserved; empty means "let argv[0] default to the alias"
+	// Level, Unshare and NestedNS are this instance's isolation.
+	Level   Level
+	Unshare []string
+	// NestedNS says the program creates a user namespace of its own while it
+	// runs — the Chromium/Electron class, which probes for one to build its
+	// sandbox and dies without it. This is application knowledge, not machine
+	// state, so it belongs in the snapshot and travels with it; the
+	// machine-specific half (which trampoline, where the bubblewrap copy
+	// lives) stays in config.toml, where the next machine can decide its own.
+	//
+	// When it is set, the launcher routes through a private bubblewrap copy,
+	// because the system one cannot grant what the program needs (see
+	// internal/userns).
+	NestedNS bool
 
-	// The bwrap mounts that have a shape of their own, as opposed to the raw
-	// token list in Extras. They are separate keys because each one is a *kind* of
-	// mount — a proc, a throwaway tmpfs, a path re-tightened to read-only —
-	// which is exactly what `bind`'s `:ro` and `:dev` say for a mapping, and
-	// nothing in a flat token list can say it. Empty means "not asked for": an
-	// empty one emits no argument at all, so a reader can tell a mount they
-	// deleted from a mount twin never made.
-	Proc      string   // `--proc DEST`; empty = no proc mount at all
-	Tmpfs     []string // `--tmpfs DEST` each: hidden behind an empty directory
-	RemountRO []string // `--remount-ro DEST` each: re-tightened to read-only
+	// Binds, Env and Extras are the bubblewrap invocation, and they are all of
+	// it: the base is not in Go anywhere (see sandbox.BaseFor), so what the
+	// program gets is readable in this file.
+	//
+	// Binds is `--bind` / `--ro-bind` / `--dev-bind` / `--bind-try` and so on,
+	// in the order written. The first entry is the root mount (`/:/:dev`); Build emits it
+	// before every other mount wherever it sits in the file, and the reports
+	// that read this list as "the program's data directories" leave it out —
+	// see Bind.IsRootMount.
+	Binds []Bind
 	// Env is `--setenv` pairs, in the order written (later pairs win, as bwrap
 	// does it). The instance's own TWIN_INSTANCE is one of them: `twin gen`
 	// writes it here, because it is a variable twin sets and has no business
 	// being invisible in the definition.
 	Env []EnvVar
-
-	Unshare []string
-	// Extras is the bubblewrap option list — everything that names no kind of
-	// mount, and so has no key of its own: the base's leftovers (the host's /tmp
-	// when that is the branch, and --die-with-parent), plus whatever config.toml,
-	// rules.d and `gen`'s `--` region append. It is a *merged* list, not "a few
-	// more options": `twin gen` hands it to bwrap verbatim, and twin adds
-	// nothing of its own anywhere (the base lives in the file too, put there by
-	// `gen` and readable, because which root a program needs is a property of
-	// that program). It used to be hard-coded in Go as `--ro-bind / /`: a program
-	// that has to touch devices then had no way to ask for `--dev-bind / /`, and
-	// asking for it through the old passthrough region put it *after* every
-	// mapping, where binding the root again shadows all of them.
+	// Extras is everything else bwrap is called with — one line per argument
+	// group, in command order: `--proc /proc`, `--tmpfs /dev/shm`,
+	// `--die-with-parent`, and whatever config.toml, rules.d and `gen`'s `--`
+	// region append. It is a *merged* list, not "a few more options": Build
+	// splits each line into tokens and hands them over, and twin adds nothing
+	// of its own anywhere.
 	//
-	// The base's *shaped* mounts are written into the key that names its kind
-	// (Binds / Proc / Tmpfs / Env), where a reader can see what a mount *is*
-	// without knowing bubblewrap's options. This list is emitted ahead of every
-	// shaped mount; the one thing that goes before it is the root, which is a
-	// mapping itself now (see Bind.IsRootMount). Where it sits in the file says
-	// nothing about that: the key is written last because it is the one part of
-	// the invocation whose file position Build does not read (设计 §2.1).
-	//
-	// twin never parses or rewrites these tokens (设计 §2.1): the arity of a
-	// bwrap option is bwrap's business, and re-deriving it here would be a table
-	// that rots on every bwrap release.
+	// One line per group rather than one token per element: a line is what a
+	// reader can compare against `bwrap --help`, and the shape is the same one
+	// config.toml and rules.d use. The price is exact and documented — a value
+	// containing a space cannot be written here at all (a path with a space
+	// belongs in Binds, which is parsed and `~`-expanded; nothing in Extras is,
+	// because twin does not know any bwrap option's arity — 设计 §2.1).
 	Extras []string
-
-	// Binds is `--bind` / `--ro-bind` / `--dev-bind`, in the order written. The
-	// first entry `twin gen` writes is the root mount (`/:/:dev`); Build emits it
-	// before every other mount wherever it sits in the file, and the reports that
-	// read this list as "the program's data directories" leave it out — see
-	// Bind.IsRootMount.
-	Binds []Bind
 }
 
 // ProfileName is the file name the working copy and the instance archive both
@@ -390,8 +379,13 @@ func (p Paths) InstanceDir(id string) string {
 func (p Paths) Launch(id string) string { return filepath.Join(p.InstanceDir(id), "launch") }
 
 // Profile is the instance snapshot: the file a human is meant to read and edit.
-// YAML because the schema is nested (identity / exec / isolation / bwrap) and a
-// nested file reads as a hierarchy instead of as a wall of headers.
+// YAML because the schema is nested (source / override / isolation / bwrap) and
+// a nested file reads as a hierarchy instead of as a wall of headers.
+//
+// There is deliberately no Paths method for the desktop entry's own text (the
+// file `override.desktop` points at): its place is "beside this definition",
+// which is a fact about the file being read, not about $HOME — `gen -o` puts
+// both of them wherever the user asked.
 func (p Paths) Profile(id string) string {
 	return filepath.Join(p.InstanceDir(id), ProfileName)
 }
@@ -517,18 +511,13 @@ func IsResolvablePath(s string) bool {
 	return filepath.IsAbs(s) || s == "~" || strings.HasPrefix(s, "~/")
 }
 
-// resolvePaths is resolvePath over a list, preserving nil (nil means "no list",
-// and [] means "an empty one" — the two are different answers in profile.yml).
-func resolvePaths(base string, list []string) []string {
-	if list == nil {
-		return nil
-	}
-	out := make([]string, len(list))
-	for n, s := range list {
-		out[n] = resolvePath(base, s)
-	}
-	return out
-}
+// ResolveAgainst is resolvePath for the one caller that has a base but no Load
+// to run: `gen` writes the desktop entry's file next to the definition it is
+// writing, and the definition spells that place as a relative path (see
+// Instance.DesktopOverride). Doing it with the same function is the point —
+// `gen` and Load have to agree about what `./x.desktop` means, or the file gen
+// writes and the file install copies would be two different files.
+func ResolveAgainst(base, s string) string { return resolvePath(base, s) }
 
 // Expand turns a leading ~/ into an absolute path. Anything else is returned
 // unchanged; the sandbox never re-resolves it (a relative path was already
@@ -576,15 +565,6 @@ func ValidateID(id string) error {
 	return nil
 }
 
-// EffectiveAlias is the file name the program is exec'd through. It is the
-// single value that both identity channels must agree on.
-func (i *Instance) EffectiveAlias() string {
-	if i.Alias != "" {
-		return i.Alias
-	}
-	return i.ID
-}
-
 // DefaultIconSize is the edge length of generated icons. 256 is the size the
 // panel and the overview both scale down from without visible loss.
 const DefaultIconSize = 256
@@ -599,9 +579,16 @@ func (i *Instance) TargetDir() string { return filepath.Dir(i.Target) }
 // TargetBase is the real program's file name.
 func (i *Instance) TargetBase() string { return filepath.Base(i.Target) }
 
-// AliasPath is the absolute path of the renamed entry point.
+// AliasPath is the absolute path of the renamed entry point: the file twin
+// creates inside the target directory, and the value both identity channels
+// agree on (the window's app_id and the tray's SNI Id are both this basename).
+//
+// Its name is the id, and there is no key for it any more — a second spelling of
+// "which instance is this" could only ever disagree with the id, and every
+// disagreement is a program whose window and tray icon stop finding the desktop
+// entry that names them.
 func (i *Instance) AliasPath() string {
-	return filepath.Join(i.TargetDir(), i.EffectiveAlias())
+	return filepath.Join(i.TargetDir(), i.ID)
 }
 
 // hasRootMount reports whether anything in the file asks for a root. The `bind`
@@ -625,25 +612,29 @@ func (i *Instance) Check() error {
 		return err
 	}
 	if i.Target == "" {
-		return fmt.Errorf("exec.target is empty (nothing to run)")
+		return fmt.Errorf("source.exec is empty (nothing to run)")
 	}
 	if !filepath.IsAbs(i.Target) {
-		return fmt.Errorf("exec.target %q must be an absolute path", i.Target)
+		return fmt.Errorf("source.exec %q must be an absolute path", i.Target)
+	}
+	// The entry's text has to come from *somewhere*, and the only place it can
+	// come from is that file: `install` copies it, and an empty key would send
+	// the copy to the instance directory itself (a path that is a directory,
+	// which fails at the last possible moment and in a way nobody recognises as
+	// "you deleted a config value").
+	if i.DesktopOverride == "" {
+		return fmt.Errorf("override.desktop 是空的：桌面项正文必须有个文件装着（`gen` 写的是 ./<id>.desktop，" +
+			"与这份定义同目录）；install 会逐字复制它")
 	}
 	if !i.Level.Implemented() {
-		return fmt.Errorf("identity.level %q is not implemented yet (only %s)", i.Level, "none | alias | redirect")
+		return fmt.Errorf("isolation.level %q is not implemented yet (only %s)", i.Level, "none | alias | redirect")
 	}
-	alias := i.EffectiveAlias()
-	if err := ValidateID(alias); err != nil {
-		return fmt.Errorf("exec.alias: %w", err)
-	}
-	if alias == i.TargetBase() {
-		return fmt.Errorf("exec.alias %q equals the real file name — that is a no-op, pick a different name", alias)
-	}
-	if i.Level.Renames() && i.Argv0 != "" && i.Argv0 != alias {
-		return fmt.Errorf("exec.argv0 %q must equal exec.alias %q: "+
-			"the window app_id follows the real path while the tray id follows argv[0], "+
-			"so a mismatch guarantees one of them finds no desktop entry", i.Argv0, alias)
+	// The alias is the id, so this is the id colliding with the real file name:
+	// renaming to it would be a no-op while the desktop entry, the launcher and
+	// the tray table all claim it happened.
+	if i.ID == i.TargetBase() {
+		return fmt.Errorf("实例 id %q 与真实程序的文件名相同 —— 改名就成了空操作（而它既是别名文件名、"+
+			"又是桌面项基名），换一个 id", i.ID)
 	}
 	for _, u := range i.Unshare {
 		if u == "net" {
@@ -675,14 +666,6 @@ func (i *Instance) Check() error {
 				n, b, b.Target)
 		}
 	}
-	// The shaped mounts. An empty value means "not asked for" and emits nothing,
-	// so only a *present but empty* path is an error — that one reaches bwrap as
-	// an empty argument, which it reads as a relative path with no name.
-	for n, dest := range i.RemountRO {
-		if strings.TrimSpace(dest) == "" {
-			return fmt.Errorf("bwrap.remountRO[%d] 是空的：要收紧哪条路径就写哪条，不然整条去掉", n)
-		}
-	}
 	for n, e := range i.Env {
 		// Round-tripping the one-line form is the whole check: a key carrying a
 		// space cannot be told from the value when the pair is written back
@@ -711,9 +694,18 @@ func (i *Instance) Check() error {
 			"bwrap 至少要有一个根挂载（/:/:dev 或 --dev-bind / /），twin 不再自己补一个；" +
 			"请用 `twin gen` 重新生成，或照它的注释手写一份")
 	}
-	for n, tok := range i.Extras {
-		if err := CheckBwrapToken(tok); err != nil {
-			return fmt.Errorf("bwrap.extras[%d]: %w", n, err)
+	for n, line := range i.Extras {
+		if strings.TrimSpace(line) == "" {
+			return fmt.Errorf("bwrap.extras[%d] 是空行：要么写一条完整参数，要么整行去掉", n)
+		}
+		// One line is one complete argument group, so the tokens bwrap will
+		// actually see are the line split on whitespace — the same split Build
+		// does, spelled the same way, or this check would be inspecting a
+		// string that never reaches bwrap.
+		for _, tok := range strings.Fields(line) {
+			if err := CheckBwrapToken(tok); err != nil {
+				return fmt.Errorf("bwrap.extras[%d] %q: %w", n, line, err)
+			}
 		}
 	}
 	return nil
@@ -765,54 +757,29 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	t.SetComment("id", "实例 id：桌面项基名、别名文件名、这个目录名，三者都是它。")
 	t.Set("id", i.ID)
 
-	// The generated entry's text is one section, not seven keys at the root.
-	// They all answer the same question — what does the .desktop say? — and
-	// every one of them means "inherit it from the source" when left empty:
-	// that is a group, and it reads as one. Spread out at the root they were
-	// the widest thing in the file and the part a reader had to re-derive.
-	dt := t.Ensure("desktop")
-	dt.SetComment("name", "显示名（窗口标题与菜单里看到的）。")
-	dt.Set("name", i.Name)
-	dt.SetComment("name_en", "英文显示名。")
-	if i.NameEn != "" {
-		dt.Set("name_en", i.NameEn)
-	}
-	dt.SetComment("comment", "说明（菜单里那行副标题）。")
-	if i.Comment != "" {
-		dt.Set("comment", i.Comment)
-	}
-	dt.SetComment("comment_en", "英文说明。")
-	if i.CommentEn != "" {
-		dt.Set("comment_en", i.CommentEn)
-	}
-	dt.SetComment("keywords", "搜索关键词，`;` 分隔。留空则沿用源桌面项。")
-	if i.Keywords != "" {
-		dt.Set("keywords", i.Keywords)
-	}
-	dt.SetComment("categories", "桌面分类，`;` 分隔。留空则沿用源桌面项。")
-	if i.Categories != "" {
-		dt.Set("categories", i.Categories)
-	}
-	dt.SetComment("source", "源桌面项。`twin install` / `twin reinstall` 会重读它取 Categories / Keywords。")
+	src := t.Ensure("source")
+	src.SetComment("exec", "真实程序的路径。可以绝对、~/ 开头、或相对 —— 相对时基准是这份文件所在的目录。")
+	src.Set("exec", i.Target)
+	src.SetComment("desktop", "源桌面项：生成下面那份正文时从这里取显示名、图标与分类等（留空也能生成，只是\n"+
+		"什么都要自己填）。")
 	if i.Source != "" {
-		dt.Set("source", i.Source)
+		src.Set("desktop", i.Source)
 	}
 
-	id := t.Ensure("identity")
-	id.SetComment("level", "none = 只写桌面项与图标、程序原样跑（连 bwrap 都不过）；alias = bwrap overlay 零拷贝改名（主力）；\n"+
-		"redirect = 同 alias 改名，另加一条 L5 规则（~/.config/twin/rules.d/<id>.json）给 shell 扩展，\n"+
-		"由它把窗口改判回本实例 —— 给把 app_id 写死在代码里的程序用。")
-	id.Set("level", string(i.Level))
-	id.SetComment("wm_class", "写进桌面项的 StartupWMClass，默认 = id，且只在 level 会改名时才写。\n"+
-		"别依赖它：Wayland 下认领窗口的是别名基名，这一行只对 X11/XWayland 有意义。")
-	if i.WMClass != "" {
-		id.Set("wm_class", i.WMClass)
-	}
-	id.SetComment("notify", "写进桌面项的 StartupNotify=。默认 true，而且总是写出来（写不写本身就是一个决定）。")
-	id.Set("notify", i.Notify)
-
-	ic := t.Ensure("icon")
-	ic.SetComment("source", "源图标：png/jpeg/svg 路径，或图标主题里的名字。路径写法同 exec.target。")
+	// What twin is overriding, in one node. The entry's *text* is not five keys
+	// here but a file of its own: it is the part of a wrap a user rewrites
+	// rather than reads, and a pure-text file is where rewriting is pleasant.
+	// These keys are the decisions twin makes *about* that file.
+	ov := t.Ensure("override")
+	ov.SetComment("desktop", "桌面项**正文**所在的文件（相对路径的基准同上，`gen` 写的是与本文件同目录的\n"+
+		"<id>.desktop）。install 每次把它逐字复制到 ~/.local/share/applications/<id>.desktop；\n"+
+		"文件不在时会按源桌面项生成一份（Exec / Icon / StartupWMClass 都填好），此后它就是正文。")
+	ov.Set("desktop", i.DesktopOverride)
+	ov.SetComment("wm_class", "生成正文时写进 StartupWMClass 的值，留空 = 用 id。别依赖它：Wayland 下认领窗口的\n"+
+		"是别名基名，这一行只对 X11/XWayland 有意义；而且正文生成过一次之后，改这里不再有影响。")
+	ov.Set("wm_class", i.WMClass)
+	ic := ov.Ensure("icon")
+	ic.SetComment("source", "源图标：png/jpeg/svg 路径，或图标主题里的名字。路径写法同 source.exec。")
 	if i.IconSource != "" {
 		ic.Set("source", i.IconSource)
 	}
@@ -823,22 +790,16 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	ic.SetComment("style", "角标画法：corner 圆角方块 / number 圆形 / dot 小圆点（不带文字）；\n"+
 		"三种都贴齐图标右下角，图标自己是圆角也照贴。")
 	ic.Set("style", i.BadgeStyle)
-
-	ex := t.Ensure("exec")
-	ex.SetComment("target", "真实程序的路径。可以绝对、~/ 开头、或相对 —— 相对时基准是这份文件所在的\n"+
-		"目录（icon.source 与 bwrap 里那几个路径键同此）。")
-	ex.Set("target", i.Target)
-	ex.SetComment("alias", "沙箱内建在 target 同目录下的别名文件名：窗口 app_id 与托盘 SNI Id 都等于它，\n"+
-		"分叉了就有一个找不到桌面项。")
-	if i.Level.Renames() {
-		ex.Set("alias", i.EffectiveAlias())
-	}
-	ex.SetComment("argv0", "保留字段：留空即让 argv[0] 自动取 alias；填了就必须等于 alias。")
-	if i.Argv0 != "" {
-		ex.Set("argv0", i.Argv0)
-	}
+	ov.SetComment("tray", "让不让 twin 管这个实例的托盘图标：false = 托盘还是程序自己的（有些程序的托盘\n"+
+		"id twin 预测不了）。整机开关在 config.toml 的 defaults.tray_override，两处任一关掉都写 false。\n"+
+		"走哪条路是这台机器的事：助手扩展被加载 ⇒ 写它读的文件表，否则写宿主 custom-icons 表兜底。")
+	ov.Set("tray", i.TrayOverride)
 
 	iso := t.Ensure("isolation")
+	iso.SetComment("level", "none = 只写桌面项与图标、程序原样跑（连 bwrap 都不过）；alias = bwrap overlay 零拷贝改名（主力）；\n"+
+		"redirect = 同 alias 改名，另加一条 L5 规则（~/.config/twin/rules.d/<id>.json）给 shell 扩展，\n"+
+		"由它把窗口改判回本实例 —— 给把 app_id 写死在代码里的程序用。")
+	iso.Set("level", string(i.Level))
 	iso.SetComment("unshare", "额外 unshare 的命名空间；含 `net` 会被拒绝 —— 它切断网络，也打破\n"+
 		"基于 abstract socket 的单实例锁。")
 	if len(i.Unshare) == 0 {
@@ -853,76 +814,26 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"用哪个跳板是机器属性，留在 config.toml 里。")
 	iso.Set("nested_ns", i.NestedNS)
 
-	// The flattened base and the shaped mounts. The base is part of the file:
-	// what names no kind of mount has no key of its own and stays a flat token
-	// list (`extras`, written last, below); the rest is written under `bind` /
-	// `proc` / `tmpfs` / `env`, where a reader can tell a throwaway tmpfs from a
-	// mapping without knowing bubblewrap's options. twin used to keep the whole
-	// base in Go and let the list only *append*, which made the one decision that
-	// actually varies per program — which root the program sees — the one
-	// decision the file could not express.
+	// The invocation, all of it. Three keys, because a bwrap command line is
+	// three kinds of thing: mounts with two ends (`bind`), environment
+	// (`env`), and everything else as the option lines themselves (`extras`).
+	// The base is not in Go anywhere — `gen` writes it into these same keys
+	// (see sandbox.BaseFor) — so what the program gets can be read here, and
+	// which root it gets is a line in this file rather than a constant.
 	bw := t.Ensure("bwrap")
 
-	// The shaped mounts, in the order Build emits them: the root (out of `bind`,
-	// hoisted), then `extras`, then these, then the rest of `bind`, then remountRO
-	// (which has to come after whatever it tightens). Here the file reads
-	// top-to-bottom like the command line it turns into, and that is the only
-	// reason these have keys of their own at all: each one names a *kind* of
-	// mount that a flat token list cannot name — and that is where the base's own
-	// mounts are written too, so the file says what each of them is (see
-	// sandbox.BaseFor). `extras` is the one key whose file position Build does
-	// not read, so it is written last rather than here.
-	//
-	// All four are written even when empty, so that a reader discovers them
-	// where they belong; an empty one emits no argument, which is what "not
-	// asked for" has to mean for a knob as opposed to a decision (a decision is
-	// something like `bind: []`, which says the program shares its data).
-	bw.SetComment("proc", "挂一个 proc 到这条路径（bwrap --proc）；`gen` 写的是 /proc，留空 = 一个都不挂。")
-	if i.Proc == "" {
-		bw.Set("proc", "")
-	} else {
-		bw.Set("proc", i.Proc)
-	}
-
-	bw.SetComment("tmpfs", "盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主与里头原有的东西都看不见（含 X11 的 /tmp/.X11-unix/X0）。\n"+
-		"`gen` 写的是 /dev/shm，以及走 Wayland 时的 /tmp —— X11 的程序要改成在 bind 里加 `- /tmp:/tmp`：\n"+
-		"那条发在 tmpfs 之后，压得住这里的 /tmp，不必同时删它。两条路 /tmp 都必须可写。留空 = 不盖。")
-	if len(i.Tmpfs) == 0 {
-		bw.Set("tmpfs", []string{})
-	} else {
-		bw.Set("tmpfs", i.Tmpfs)
-	}
-
-	// Written unconditionally too, empty case included. "twin redirected
-	// nothing" is the default decision, and once the terminal stopped printing
-	// it this comment became the only place the shared-state warning can live —
-	// so the key has to be there even when there is nothing to list.
-	//
-	// It lives under `bwrap` because that is what it becomes: more of the same
-	// invocation the list above fills, emitted in the order written here. Two
-	// keys that have to agree about one command line belong next to each other
-	// in the file, not in two halves of it.
+	// Written unconditionally, empty case included. "twin redirected nothing" is
+	// the default decision, and once the terminal stopped printing it this
+	// comment became the only place the shared-state warning can live — so the
+	// key has to be there even when there is nothing to list.
 	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:rw|:dev][:try]`，同 Docker 的卷（:ro 只读、:rw 可读写、\n"+
 		":dev 带设备访问，单写一条路径则挂回自己；末尾的 :try 要写全模式，源不在就整条跳过、不报错）。`gen` 的第一条\n"+
-		"是根挂载 /:/:dev，整个宿主根可写 = --dev-bind / /，永远排最前，收紧成只读改成 /:/:ro。空 = 数据目录与源程序共用。")
+		"是根挂载 /:/:dev，整个宿主根可写 = --dev-bind / /，发在其余所有挂载之前。空 = 数据目录与源程序共用。")
 	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
 		binds = append(binds, b.String())
 	}
 	bw.Set("bind", binds)
-
-	// After the mappings, on purpose. `--remount-ro` re-mounts a *destination*
-	// read-only, and a destination is something a mapping above (or the base in
-	// args) made writable — put it anywhere earlier and the mount it was meant
-	// to tighten would be laid down on top of it, writable again. This is the
-	// counterpart of the writable root the base binds: `--dev-bind / /` hands
-	// over the whole host, so taking a path back is a per-path decision.
-	bw.SetComment("remountRO", "把哪些路径收回只读（bwrap --remount-ro），发在所有挂载之后（否则被它收紧\n"+
-		"的那条挂载会盖回来）。⚠️ 只对「自己就是一条挂载」的路径有效：bind 的目标端、overlay 或 tmpfs\n"+
-		"那条、或者整个 `/` —— 宿主大根挂载里的路径底下没有单独的挂载，点错了 bwrap 拒绝启动。留空 = 不收回。")
-	remount := make([]string, 0, len(i.RemountRO))
-	remount = append(remount, i.RemountRO...)
-	bw.Set("remountRO", remount)
 
 	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键=值`，后面的同名者胜；等号只在\n"+
 		"第一个处断开，所以值里可以再有等号与冒号（PATH=/a:/b）。`gen` 写的 TWIN_INSTANCE=<id> 在这一条里；\n"+
@@ -933,33 +844,21 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	}
 	bw.Set("env", env)
 
-	// Last in the file on purpose, and the only key here whose file position
-	// Build ignores: it emits this list right after the root, ahead of every
-	// shaped mount above, for two reasons — a shaped key has to be able to
-	// overrule it, and the base's leftovers in it belong beside the base. Sitting
-	// at the end is what keeps the rest of the file honest: read top-to-bottom,
-	// the shaped keys *are* the command line, and this one is not.
-	//
-	// The list is stored in the same flat-token shape the CLI and rules.d use, so
-	// merging stays "concatenate the arrays" rather than "invent a quoting rule"
-	// (设计 §3.2).
-	bw.SetComment("extras", "没有自己节点的那些 bwrap 选项，逐 token 原样排列，twin 不解析它们。它是**合并后的\n"+
-		"完整列表**：这份文件里基座剩下的那一条 → config.toml 的 [bwrap] args → rules.d 的 [bwrap] args →\n"+
-		"gen 的 `--` 之后那一段。写在最后，但命令里排在根挂载之后、上面那几个有形状的键之前。")
+	// Last of the three, and last in the command too: it is emitted after every
+	// mapping, which is what `--remount-ro` needs (it only bites on a path that
+	// is itself a mount, so it has to come after the mount it tightens). The
+	// price is paid in the one place it shows: a `--tmpfs /tmp` written *here*
+	// hides a `/tmp:/tmp` written in `bind`, so "give this program the host's
+	// /tmp" is said by writing the tmpfs line you want instead — not by
+	// out-mounting it afterwards.
+	bw.SetComment("extras", "交给 bwrap 的其余全部参数，一行一条完整命令（选项和值同一行，按空格拆开）：`--proc /proc`、\n"+
+		"`--tmpfs /dev/shm`、`--remount-ro /路径`、`--die-with-parent`。合并后的完整列表：基座 → config.toml 的\n"+
+		"[bwrap] args → rules.d 的 [bwrap] args → gen 的 `--` 之后那一段；发在 bind 之后、env 之前，twin 不解析它。")
 	if len(i.Extras) == 0 {
 		bw.Set("extras", []string{})
 	} else {
 		bw.Set("extras", i.Extras)
 	}
-
-	// Host integration. Written unconditionally: "we did not override the tray"
-	// is a decision worth seeing in the file, and an absent section would make
-	// it indistinguishable from a file written before this option existed.
-	trayT := t.Ensure("tray")
-	trayT.SetComment("override", "让不让 twin 管这个实例的托盘图标：false = 托盘还是程序自己的（有些程序的托盘\n"+
-		"id twin 预测不了）。整机开关在 config.toml 的 defaults.tray_override，两处任一关掉都写 false。\n"+
-		"走哪条路是这台机器的事：助手扩展被加载 ⇒ 写它读的文件表，否则写宿主 custom-icons 表兜底。")
-	trayT.Set("override", i.TrayOverride)
 
 	return t, nil
 }
@@ -1048,6 +947,50 @@ func Load(path string) (*Instance, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	base := filepath.Dir(path)
+	// The sections that moved, refused by name. Each of these is a whole node
+	// whose keys live somewhere else now, and every one of them would read as
+	// "not asked for" if it were merely ignored: a definition whose entry text
+	// went missing is a definition that installs half an instance, and the one
+	// whose tmpfs went missing hands the program a writable /tmp it was told to
+	// hide. Regenerating is one command, so the message is where to go rather
+	// than an attempt to read the old shape (a second reader is a second answer).
+	if root.Has("exec") {
+		return nil, fmt.Errorf("%s: `exec` 这一节拆开了：真实程序现在是 `source.exec`；"+
+			"`exec.alias` 与 `exec.argv0` 都取消了 —— 别名永远是 id（窗口 app_id 与托盘 SNI Id 都等于它）。"+
+			"`exec.env` 换到了 `bwrap.env`，而且换成了列表：一条一个 `键=值`（等号只在第一个处断开，"+
+			"所以值里可以再有等号与冒号）。请用 `twin gen` 重新生成一份", path)
+	}
+	if root.Has("desktop") {
+		return nil, fmt.Errorf("%s: `desktop` 这一节拆成了两处：源桌面项是 `source.desktop`，"+
+			"而桌面项的**正文**（显示名、说明、关键词、分类）现在装在一份纯文本文件里，由 `override.desktop` 指出 —— "+
+			"install 每次逐字复制它，改它比改这里的五个键更直接。请用 `twin gen` 重新生成一份", path)
+	}
+	if root.Has("identity") {
+		return nil, fmt.Errorf("%s: `identity` 这一节拆开了：`level` 挪到 `isolation.level`，"+
+			"`wm_class` 挪到 `override.wm_class`，`notify` 取消（StartupNotify 总是 true，写不写它本来就是一个决定）。"+
+			"把 level 那两行缩进到 `isolation:` 下面即可", path)
+	}
+	if root.Has("icon") {
+		return nil, fmt.Errorf("%s: `icon` 挪到了 `override.icon` 下面 —— "+
+			"`override` 这一节收集的是「twin 覆盖了什么」；把这一段整体缩进到 `override:` 下面即可", path)
+	}
+	if root.Has("tray") {
+		return nil, fmt.Errorf("%s: `tray.override` 挪到了 `override.tray`（同一个键、同一个意思）；"+
+			"把这一行缩进到 `override:` 下面即可", path)
+	}
+	for _, key := range []string{"name", "name_en", "comment", "comment_en", "keywords", "categories"} {
+		if root.Has(key) {
+			return nil, fmt.Errorf("%s: `%s` 这类文案现在写在 `override.desktop` 指的那份文件里（纯文本桌面项，"+
+				"install 每次逐字复制它）—— 直接改那份文件，比在配置里改一行更接近最终结果", path, key)
+		}
+	}
+	for _, key := range []string{"proc", "tmpfs", "remountRO"} {
+		if root.At("bwrap").Has(key) {
+			return nil, fmt.Errorf("%s: `bwrap.%s` 没有了 —— 这一类参数现在都在 `bwrap.extras` 里，"+
+				"一行一条完整命令（例如 `--tmpfs /dev/shm`、`--remount-ro /路径`）。extras 发在所有挂载之后，"+
+				"`--remount-ro` 因此仍然在它收紧的那条挂载后面。请用 `twin gen` 重新生成一份", path, key)
+		}
+	}
 	// The old keys are refused by name rather than read as "no option list".
 	// Neither rename is a spelling change: `extra` was only what the user
 	// appended, and `args` is the whole list including the sandbox base that twin
@@ -1057,71 +1000,52 @@ func Load(path string) (*Instance, error) {
 	// instance.toml error below: an instance twin cannot read is reported, never
 	// silently dropped.)
 	if root.At("bwrap").Has("extra") {
-		return nil, fmt.Errorf("%s: `bwrap.extra` 现在叫 `bwrap.extras`，而且语义变了 —— "+
-			"它是交给 bwrap 的**完整**选项列表（各层合并后的样子），而且名字里的「没有自己节点」"+
-			"指的是有形状的那几条已经各在 bind / proc / tmpfs / env 里。"+
-			"请用 `twin gen` 重新生成一份，再把你原来的 token 补进去", path)
+		return nil, fmt.Errorf("%s: `bwrap.extra` 现在叫 `bwrap.extras`，而且形状变了 —— "+
+			"它是交给 bwrap 的**完整**参数列表（各层合并后的样子），一行一条完整命令（`--proc /proc`），"+
+			"不是逐 token 排开。请用 `twin gen` 重新生成一份，再把你原来的参数补进去", path)
 	}
 	if root.At("bwrap").Has("args") {
-		return nil, fmt.Errorf("%s: `bwrap.args` 现在叫 `bwrap.extras`（同一个键、同一个意思，"+
-			"只是改了名字，并且写在 bwrap 节点的最后一个键的位置上）。把 `args:` 改成 `extras:` 即可"+
-			" —— 它写在哪一行都不影响命令：`twin gen` 发在根挂载之后、其余各条之前", path)
+		return nil, fmt.Errorf("%s: `bwrap.args` 现在叫 `bwrap.extras`（同一个键、同一个意思，只是改了名字）。"+
+			"把 `args:` 改成 `extras:` 即可，注意每条要写成一整条命令（`--proc /proc`，不是 `--proc` + `/proc`）", path)
 	}
-	// The entry's text lives under `desktop:`. The spelling that predates the
-	// section — the same keys at the root — is still read: it is not ambiguous
-	// (there is nowhere else a root-level `name` could have belonged), and a
-	// snapshot written before the move has to keep working until the next
-	// install rewrites it in the new shape. Refusing it would take every
-	// installed instance offline at once over a change the file can absorb.
-	dt := root.At("desktop")
-	desktop := func(key string) string {
-		if v := dt.Str(key); v != "" {
-			return v
-		}
-		return root.Str(key)
-	}
+	ov := root.At("override")
 	it := &Instance{
 		ID:         root.Str("id"),
-		Name:       desktop("name"),
-		NameEn:     desktop("name_en"),
-		Comment:    desktop("comment"),
-		CommentEn:  desktop("comment_en"),
-		Keywords:   desktop("keywords"),
-		Categories: desktop("categories"),
-		Source:     desktop("source"),
-		Level:      Level(root.At("identity").Str("level")),
-		WMClass:    root.At("identity").Str("wm_class"),
-		Notify:     root.At("identity").Bool("notify"),
-		IconSource: resolvePath(base, root.At("icon").Str("source")),
-		Badge:      root.At("icon").Str("badge"),
-		BadgeStyle: root.At("icon").Str("style"),
-		Target:     resolvePath(base, root.At("exec").Str("target")),
-		Alias:      root.At("exec").Str("alias"),
-		Argv0:      root.At("exec").Str("argv0"),
+		Target:     resolvePath(base, root.At("source").Str("exec")),
+		Source:     resolvePath(base, root.At("source").Str("desktop")),
+		Level:      Level(root.At("isolation").Str("level")),
 		Unshare:    root.At("isolation").StrList("unshare"),
 		NestedNS:   root.At("isolation").Bool("nested_ns"),
 		Extras:     root.At("bwrap").StrList("extras"),
-		// The shaped mounts resolve like every other path in this file: they are
-		// known to *be* paths, which is exactly what cannot be said about the
-		// tokens in `extras` (hence the passthrough rule).
-		Proc:      resolvePath(base, root.At("bwrap").Str("proc")),
-		Tmpfs:     resolvePaths(base, root.At("bwrap").StrList("tmpfs")),
-		RemountRO: resolvePaths(base, root.At("bwrap").StrList("remountRO")),
+		WMClass:    ov.Str("wm_class"),
+		IconSource: resolvePath(base, ov.At("icon").Str("source")),
+		Badge:      ov.At("icon").Str("badge"),
+		BadgeStyle: ov.At("icon").Str("style"),
+		// The desktop entry's text is a path like any other path in this file,
+		// and it resolves the same way: against the definition's own directory,
+		// which is what makes a bundle (definition + entry text + program)
+		// movable as a unit — and what Load and `gen` have to agree on, or gen
+		// would write one file and install would copy another.
+		DesktopOverride: resolvePath(base, ov.Str("desktop")),
 	}
-	// `isolation.tmpfs` and `exec.env` moved under `bwrap`, for the reason
-	// `bind` did: each one is a bwrap option, and the node that says "this is
-	// what bwrap is called with" should be the only place they live. They are
-	// refused by name rather than read as aliases — two keys emitting one
-	// argument is how a file starts disagreeing with itself, and the .env one
-	// also changed shape (list of `键=值`, not a mapping).
+	// `isolation.tmpfs` and `exec.env` both moved under `bwrap` for the reason
+	// the shaped mounts did: each one is a bwrap option, and the node that says
+	// "this is what bwrap is called with" should be the only place they live.
+	// `isolation.tmpfs` went one step further and stopped being a key at all —
+	// a `--tmpfs` line in the same list as every other option is the same mount,
+	// with its position readable. Both are refused by name rather than read as
+	// aliases: two keys emitting one argument is how a file starts disagreeing
+	// with itself, and the .env one also changed shape (list of `键=值`, not a
+	// mapping).
 	if root.At("isolation").Has("tmpfs") {
-		return nil, fmt.Errorf("%s: `isolation.tmpfs` 现在在 `bwrap` 节点里（bwrap.tmpfs）—— "+
-			"它就是 `--tmpfs`，和 bwrap.extras 一起决定这次调用；把它缩进到 `bwrap:` 下面即可", path)
+		return nil, fmt.Errorf("%s: `isolation.tmpfs` 和它的继任者 `bwrap.tmpfs` 都没有了 —— "+
+			"`--tmpfs` 现在写在 `bwrap.extras` 里，一行一条（`--tmpfs /tmp`）；"+
+			"它在 extras 里的位置就是命令里的位置，所以想让它被别的挂载压住/压住别人，写对行序即可", path)
 	}
-	if root.At("exec").Has("env") {
-		return nil, fmt.Errorf("%s: `exec.env` 现在是 `bwrap.env`，而且换成了列表：一条一个 `键=值`"+
-			"（等号只在第一个处断开，所以值里可以再有等号与冒号）。请把 `键: 值` 那几行改写进 `bwrap:` 下面", path)
-	}
+	// There is no `exec.env` check of its own: the whole `exec` node was refused
+	// above, and its message already says where `env` went (`bwrap.env`). A
+	// second check for one key inside a node twin will not read at all could
+	// only ever be dead code — `root.Has("exec")` is true for any node shape.
 	envSpecs, err := root.At("bwrap").StrListStrict("env")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -1165,12 +1089,12 @@ func Load(path string) (*Instance, error) {
 	if it.BadgeStyle == "" {
 		it.BadgeStyle = "corner"
 	}
-	// Absent means true: files written before the option existed all wanted the
-	// tray override, and flipping them to false would silently stop maintaining
+	// Absent means true: a definition that predates the key wanted the tray
+	// override, and flipping it to false would silently stop maintaining
 	// something that is already in the host's table.
 	it.TrayOverride = true
-	if trayT := root.Tree("tray"); trayT.Has("override") {
-		it.TrayOverride = trayT.Bool("override")
+	if ov.Has("tray") {
+		it.TrayOverride = ov.Bool("tray")
 	}
 	if it.Level == "" {
 		it.Level = LevelAlias

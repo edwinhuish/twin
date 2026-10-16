@@ -2,26 +2,26 @@
 // own name and its own data directories, and renders the thin launcher script.
 //
 // twin owns no sandbox base at launch time: every option comes from the
-// definition, and `twin gen` writes the base into it with BaseFor below — each
-// piece in the node that names its kind (`bind` / `proc` / `tmpfs` / `env`,
-// which is also where the root mount goes), the rest in `bwrap.extras`. What
-// this package still emits is only what those keys ask for — the alias overlay
-// from `exec.alias`, the mappings from `bind`, the shaped mounts and the
-// variables. For those the file's key order is the emission order, so the
-// command line a reader can reconstruct from the file is the command line that
-// runs; the root mount (`bind`, hoisted) and `extras` (written last, emitted
-// straight after the root) are the two positions the file does not decide.
+// definition, and `twin gen` writes the base into it with BaseFor below — the
+// root into `bind`, the other mounts and flags into `bwrap.extras` as the option
+// lines they are. What this package still emits is only what those keys ask for:
+// the alias overlay (which follows from the id), the mappings from `bind`, the
+// option lines from `extras`, and the variables from `env`.
 //
-// Of the argument orders, one was measured and one is structural:
+// Three positions are decided here rather than by the file, and each one was
+// measured before it was written down:
 //
-//   - the alias overlay's `--tmp-overlay DIR` must precede the
-//     `--ro-bind ... DIR/alias` that creates the renamed entry point, otherwise
-//     the mount point cannot be created ("Can't create file: Read-only file
-//     system");
-//   - the root and the file's own token list are emitted ahead of every other
-//     mount, so a mapping or an overlay can shadow a base mount exactly the way
-//     bubblewrap promises ("the later mount wins") instead of being shadowed by
-//     it.
+//   - the root mount goes down before everything, the other `bind` entries
+//     included — bind the root after the alias overlay and the host's directory
+//     is laid back over the copy the program is supposed to run from, alias and
+//     program together;
+//   - the alias overlay goes down after the root but *before* the rest of
+//     `bind`: an overlay hides what was mounted under the directory it covers
+//     (its lower layer does not follow submounts — measured), so a mapping onto
+//     a path inside the target directory has to come after it;
+//   - `extras` goes down after every mount and before `env`. That is what lets
+//     `--remount-ro` live in it at all: it only bites on a path that is itself a
+//     mount, so it has to come after the mount it tightens.
 package sandbox
 
 import (
@@ -176,75 +176,70 @@ func (p *Plan) String() string {
 	return b.String()
 }
 
-// Base is the sandbox base `twin gen` writes into a definition, split into the
-// nodes each piece belongs in.
+// Base is the sandbox base `twin gen` writes into a definition, in the pieces
+// Plan has to interleave: the mounts (`bind`), the option lines, and the
+// variables.
 //
 // It lives in Go only because it has to be written *once*, into the file where
-// the user can read and change it; Build never adds it (see Build below). What
-// has a node of its own goes to that node: the root becomes the first `bind`
-// entry (`/:/:dev` — a mount belongs with the mounts) and `proc: /proc` /
-// `tmpfs: [/dev/shm]` are the same mounts as before, but the file now says which
-// *kind* each one is without the reader having to know bubblewrap's options
-// (设计 §2.1). Args keeps what has no node: --die-with-parent (see BaseFor).
+// the user can read and change it; Build never adds it (see Build below). Each
+// piece is a line of the command that calls bwrap, and the reason they are not
+// one flat list is ordering alone — Plan has to place the caller's own `--tmpfs`
+// lines between Head and HostTmp, and everything else after them.
 type Base struct {
-	Args  []string
-	Proc  string
-	Tmpfs []string
+	// Binds holds the root mount (`/:/:dev` — a mount belongs with the mounts;
+	// Build keeps it in front of everything, see Bind.IsRootMount).
 	Binds []inst.Bind
-	Env   []inst.EnvVar
+	// Head is the option lines that go before the caller's tmpfs lines.
+	Head []string
+	// Tmpfs is what the base itself hides behind an empty directory.
+	Tmpfs []string
+	// HostTmp, when set, is a path to bind onto itself *after* every tmpfs line
+	// (that ordering is the whole point — see BaseFor).
+	HostTmp string
+	// Tail is what closes the base's own lines.
+	Tail []string
+	Env  []inst.EnvVar
 }
 
 // BaseFor builds the base for one instance.
 //
 // The root is the load-bearing choice: `--dev-bind / /` hands the program the
 // whole host including its devices, which is what an identity wrapper needs
-// (twin is not a security boundary) and what the old hard-coded `--ro-bind / /`
-// made impossible to ask for — the only way to say it was the passthrough
-// region, which lands *after* every mapping, where binding the root again
-// shadows all of them. It is written as the first `bind` entry instead of a pair
-// of tokens in `args`, and Build is what keeps it in front of every other mount
-// wherever the file lists it (see Bind.IsRootMount).
+// (twin is not a security boundary). It is written as the first `bind` entry
+// (`/:/:dev`) rather than a pair of tokens in `extras`, and Build is what keeps
+// it in front of every other mount wherever the file lists it (see
+// Bind.IsRootMount).
 //
 // privateTmp says which branch the /tmp decision takes, and twin only has to
-// write one of them: a private /tmp is a tmpfs entry, and it is already in the
-// caller's own `tmpfs` list (that is what makes this true) — so what is owed
-// here is the *other* branch, the host's /tmp bound onto itself, as one more
-// `bind` entry beside the root.
-//
-// It is a `bind` entry rather than two tokens in Args because of where the two
-// lists land in the command: `bind` goes down *after* the shaped mounts, Args
-// *before* them. This line is the answer to "把 tmpfs 里那条 /tmp 换成宿主那个"
-// —— and a swap the reader has to remember to finish elsewhere is a swap that
-// silently does nothing, because the tmpfs would simply be laid down on top of
-// it. Written here it overrules that tmpfs wherever it sits.
-//
-// The price is the one every self-mapping pays, and it is a price rather than a
-// mistake: as far as the reports are concerned `/tmp:/tmp` is one of the
-// program's own mappings — listed with them, and offered for copying into the
-// program's rules.d. `gen` therefore names it in the derivation log, where the
-// lines the user did not write are already named.
-//
-// Either branch leaves /tmp *writable*: the mount itself is a no-op under the
+// write one of them: a private /tmp is a tmpfs line, and the caller's own list
+// already carries it (that is what makes this true) — so what is owed here is
+// the *other* branch, the host's /tmp bound onto itself, as one more option
+// line. Both branches leave /tmp *writable*: the mount is a no-op under the
 // writable root of today's base, and it is the only thing keeping /tmp writable
 // if a definition tightens that root to `/:/:ro`. Writable is the point — a
 // read-only /tmp is what a read-only root quietly produces, and it makes
 // programs fail somewhere unrelated (Chromium: "Failed to create socket
 // directory"). The caller chooses from whether the program can fall back to
 // X11, because a tmpfs /tmp takes /tmp/.X11-unix/X0 with it.
+//
+// Being a line in `extras` is what makes the swap against a tmpfs work: "把 tmpfs
+// 里那条 /tmp 换成宿主那个" is now a matter of which line comes last, in one
+// list, in one file — the same file where the tmpfs line would be written by
+// hand. It also stops the line from being *reported* as one of the program's own
+// data directories: it is an option that happens to name a path, not a mapping.
 func BaseFor(id string, privateTmp bool) Base {
 	b := Base{
-		// The root mount, in the node for mounts.
 		Binds: []inst.Bind{{Source: "/", Target: "/", Dev: true}},
-		Proc:  "/proc",
+		Head:  []string{"--proc /proc"},
 		// An empty private shared memory: /dev/shm on the host is shared with
 		// every other process, which is not what an instance's own name means.
 		Tmpfs: []string{"/dev/shm"},
+		Tail:  []string{"--die-with-parent"},
 		Env:   []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: id}},
 	}
 	if !privateTmp {
-		b.Binds = append(b.Binds, inst.Bind{Source: "/tmp", Target: "/tmp"})
+		b.HostTmp = "/tmp"
 	}
-	b.Args = []string{"--die-with-parent"}
 	return b
 }
 
@@ -316,51 +311,19 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	// preference: bubblewrap applies mounts in order and the later one wins, so a
 	// root bound *after* the alias overlay puts the host's directory back over
 	// the copy the program is supposed to run from — hiding the alias path, and
-	// with it the program. It is also the surface everything below is laid on:
-	// the arg list, the shaped mounts, the data mappings, and remountRO taking
-	// single paths back out of it.
+	// with it the program.
 	for _, b := range i.Binds {
 		if b.IsRootMount() {
 			plan.Groups = append(plan.Groups, bindGroup(p, b))
 		}
 	}
 
-	// The file's `extras`, verbatim, ahead of every shaped mount. One group
-	// rather than one option per line: twin does not know any bwrap option's
-	// arity (设计 §2.1), so it cannot tell an option from its value and must not
-	// invent line breaks.
-	//
-	// Nothing but the root is emitted ahead of it — where the key sits in the
-	// file is not read: it is written last there because this is the one part of
-	// the invocation whose file position means nothing. The base — and with it
-	// the answer to "which root does this program get?" — used to be built right
-	// here, which made that the one decision the definition could not express: a
-	// program needing `--dev-bind / /` had no way to ask, and asking through the
-	// passthrough region put the new root binding *after* every mapping, where it
-	// shadows all of them. Now the answer is in the file, and everything below is
-	// a mount that may in turn shadow it (bubblewrap: the later mount wins). What
-	// is left in this list is exactly what has no node of its own:
-	// --die-with-parent (see BaseFor).
-	if len(i.Extras) > 0 {
-		plan.Groups = append(plan.Groups, append([]string(nil), i.Extras...))
-	}
-
-	// `--proc`: the definition asks for one. `gen` writes the base's `/proc`
-	// here, so empty means "no proc mount at all" rather than "the default one"
-	// — the default is the file's, written where a reader looks for a proc
-	// mount.
-	if i.Proc != "" {
-		plan.Groups = append(plan.Groups, []string{"--proc", p.Expand(i.Proc)})
-	}
-
-	// The paths the definition hides behind an empty tmpfs. The base's /dev/shm
-	// and, when the program got a private one, its /tmp are in this list too:
-	// this key is where a tmpfs is written, whichever layer asked for it (see
-	// BaseFor).
-	for _, t := range i.Tmpfs {
-		plan.Groups = append(plan.Groups, []string{"--tmpfs", p.Expand(t)})
-	}
-
+	// The alias overlay, right after the root and *before* the rest of `bind`.
+	// Both halves of that position were measured: the overlay's lower layer does
+	// not follow submounts, so a mapping onto a path inside the target directory
+	// that went down first is simply not visible through the overlay — and the
+	// `--ro-bind` that creates the alias has to follow the overlay, because it is
+	// a mount *on* the writable copy (before it, the copy would hide the alias).
 	if i.Level.Renames() {
 		dir := i.TargetDir()
 		plan.Groups = append(plan.Groups,
@@ -380,26 +343,41 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 		plan.Groups = append(plan.Groups, bindGroup(p, b))
 	}
 
-	// Last of the mounts, and the order is the whole point: `--remount-ro` has
-	// to come after every mount it could be tightening — the root, whatever the
-	// file's `args` carry, and the mappings above — or the writable mount would
-	// be laid down on top of it again. This is what lets a definition bind a
-	// writable root and still take single paths back.
+	// Everything else bwrap is called with, as the option lines the definition
+	// writes them. One group per line, split on whitespace: the line *is* the
+	// argument group, and twin does not know any bwrap option's arity, so
+	// splitting on spaces is the whole of its understanding (设计 §2.1) — which
+	// is also why a value containing a space cannot be written here.
 	//
-	// It only bites where the destination is a mount of its own (a `bind`
-	// target, an overlay, the root itself). Anywhere else there is nothing to
-	// remount and bwrap refuses to start: `Can't remount readonly on …:
-	// Unable to find … in mount table` — measured, and the reason this list
-	// lands after `bind` rather than being folded into it.
-	for _, dest := range i.RemountRO {
-		plan.Groups = append(plan.Groups, []string{"--remount-ro", p.Expand(dest)})
+	// After every mount, and that is the position `--remount-ro` needs: it only
+	// bites on a path that is itself a mount (a `bind` target, an overlay, the
+	// root), and anywhere earlier the mount it was meant to tighten would be laid
+	// down on top of it, writable again. Anywhere else bwrap refuses to start
+	// (`Can't remount readonly on …: Unable to find … in mount table` — measured).
+	// It is also the position the base's host-/tmp line needs (see BaseFor), and
+	// the two are the same statement: in one list, in one file, the line written
+	// last wins.
+	//
+	// Each token then goes through Expand, like every other path in the file: a
+	// rule's `--tmpfs ~/.cache/x` has to mean *this* machine's home, and it can
+	// only know that here — at generation time the path would have been frozen
+	// into whoever ran `gen`. Expanding a leading `~/` is not parsing the option:
+	// it is the same one-line rule the mappings get, applied to whatever the
+	// token turns out to be.
+	for _, line := range i.Extras {
+		toks := strings.Fields(line)
+		if len(toks) == 0 {
+			continue
+		}
+		for n, t := range toks {
+			toks[n] = p.Expand(t)
+		}
+		plan.Groups = append(plan.Groups, toks)
 	}
 
 	// The variables, in the order the file lists them (later `--setenv` wins on
 	// a duplicate, exactly as bwrap does it). TWIN_INSTANCE is in this list:
 	// `gen` writes it there, so a reader can see — and delete — what twin sets.
-	// --die-with-parent is left out, having no node of its own: it stays in the
-	// definition's option list (see BaseFor).
 	for _, e := range i.Env {
 		plan.Groups = append(plan.Groups, []string{"--setenv", e.Key, e.Value})
 	}
@@ -426,7 +404,6 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	b.WriteString("set -euo pipefail\n")
 	b.WriteString(": \"${HOME:?twin: HOME 未设置，拒绝启动}\"\n\n")
 	fmt.Fprintf(&b, "readonly ID=%s\n", Sh(i.ID))
-	fmt.Fprintf(&b, "readonly NAME=%s\n", Sh(displayName(i)))
 	fmt.Fprintf(&b, "readonly STATE=%s\n\n", shHome(p.Home, p.StateDir(i.ID)))
 	b.WriteString(failHelpers)
 
@@ -533,16 +510,6 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 		writeExec(&b, cmd.String(), Sh("无法启动 bwrap"), shHome(p.Home, plan.Bwrap))
 	}
 	return []byte(b.String()), nil
-}
-
-// displayName is the name a report is signed with: the instance's own name
-// when it has one, its id otherwise — the id is always there, and a report
-// reading "twin （wechat2）" would help nobody.
-func displayName(i *inst.Instance) string {
-	if i.Name != "" {
-		return i.Name
-	}
-	return i.ID
 }
 
 // writeExec renders the launcher's last command and the two lines that speak
@@ -759,7 +726,7 @@ twin_fail() {
   if [ -s "$LOG" ]; then captured=$(cat -- "$LOG"); fi
   # 一次拼好、两处使用（落盘与弹窗），为的是屏幕上那份与文件里那份逐字相同。
   report=$(
-    printf 'twin %s（%s）：启动失败（退出码 %s）\n\n哪一步没成：%s\n' "$NAME" "$ID" "$code" "$step"
+    printf 'twin %s：启动失败（退出码 %s）\n\n哪一步没成：%s\n' "$ID" "$code" "$step"
     if [ -n "$captured" ]; then
       printf '\n──── 这次启动的输出 ────\n%s\n' "$captured"
     fi
@@ -767,7 +734,7 @@ twin_fail() {
       "$0" "$LOG" "$ID"
   )
   printf '%s\n' "$report" > "$LOG"
-  printf '%s' "$report" | twin_dialog "twin $NAME：启动失败"
+  printf '%s' "$report" | twin_dialog "twin $ID：启动失败"
   printf 'twin %s：启动失败，报告在 %s\n' "$ID" "$LOG" >&2
   exit "$code"
 }

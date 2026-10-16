@@ -158,7 +158,7 @@ func TestTrayFindingHonoursTheOptOut(t *testing.T) {
 	if f.Status != StatusOK || f.Manual {
 		t.Errorf("显式关掉不该报问题：%+v", f)
 	}
-	if !strings.Contains(f.Detail, "tray.override") {
+	if !strings.Contains(f.Detail, "override.tray") {
 		t.Errorf("要说清是按设置跳过的：%q", f.Detail)
 	}
 }
@@ -296,7 +296,7 @@ func TestTrayExtFindingHonoursTheOptOut(t *testing.T) {
 	if f.Status != StatusOK || f.Manual {
 		t.Errorf("显式关掉托盘覆盖时扩展一并跳过：%+v", f)
 	}
-	if !strings.Contains(f.Detail, "tray.override") {
+	if !strings.Contains(f.Detail, "override.tray") {
 		t.Errorf("要说清是按设置跳过的：%q", f.Detail)
 	}
 }

@@ -572,19 +572,19 @@ func cmdInspect(p inst.Paths, args []string) int {
 	fmt.Printf("  多合一二进制  %s\n", yn(t.MultiCall))
 	switch {
 	case insp.Rule != nil && len(insp.Rule.Tmpfs) > 0:
-		fmt.Printf("\n📂 /tmp 策略：用应用规则 %s 里的 tmpfs（%s）—— 写进实例的 bwrap.tmpfs\n",
+		fmt.Printf("\n📂 /tmp 策略：用应用规则 %s 里的 tmpfs（%s）—— 在 bwrap.extras 里各写成一行 --tmpfs\n",
 			orBuiltin(insp.Rule), strings.Join(insp.Rule.Tmpfs, " "))
 	case t.Wayland && t.X11:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（空的私有 /tmp）—— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写一行 --tmpfs /tmp（空的私有 /tmp）—— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
 		fmt.Printf("  %s 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X；\n"+
-			"     那时在 bwrap.bind 里加一条 - /tmp:/tmp 即可（它发在 tmpfs 之后，压得住上面那条；生成时用 --no-tmpfs 就是它）。\n",
+			"     那时把那一行往下挪一行、改成 --bind /tmp /tmp 即可（同一份列表里，写在后面的压得住它；生成时用 --no-tmpfs 写的就是它）。\n",
 			outStyle.Yellow("⚠️"))
 	case t.Wayland && cfg.Defaults.TmpfsUnlessX11:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（该程序走 Wayland）\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写一行 --tmpfs /tmp（该程序走 Wayland）\n")
 	case t.Wayland:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.bind 里写 /tmp:/tmp（宿主那个，原地可写；config.toml 关掉了 tmpfs_unless_x11）\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写一行 --bind /tmp /tmp（宿主那个，原地可写；config.toml 关掉了 tmpfs_unless_x11）\n")
 	default:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.bind 里写 /tmp:/tmp（宿主那个，原地可写），%s\n",
+		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写一行 --bind /tmp /tmp（宿主那个，原地可写），%s\n",
 			outStyle.Red("**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）"))
 	}
 
@@ -616,15 +616,15 @@ func cmdGen(p inst.Paths, args []string) int {
 	var (
 		output    = fs.String("output", "", "配置写到哪（默认 "+defaultProfileLabel+"；与 -o 是同一个设置）")
 		as        = fs.String("as", "", "实例 id，同时是窗口 app_id 与托盘 SNI Id（默认 源基名 ＋ 最小空闲序号，从 2 起）")
-		name      = fs.String("name", "", "显示名（默认 源 Name[当前语言] ＋ 序号）")
+		name      = fs.String("name", "", "显示名，写进生成的桌面项正文（默认 源 Name[当前语言] ＋ 序号；那份正文一般由 gen 写一次，之后改它本身）")
 		nameEn    = fs.String("name-en", "", "英文显示名，写 Name[en]（默认 源 Name ＋ 序号；与 --name 相同时不写）")
-		comment   = fs.String("comment", "", "说明（默认 源 Comment[当前语言] → Comment）")
+		comment   = fs.String("comment", "", "说明，写进桌面项正文（默认 源 Comment[当前语言] → Comment）")
 		commentEn = fs.String("comment-en", "", "英文说明，写 Comment[en]")
 		// No backquotes in these strings: flag.UnquoteUsage takes the first
 		// backquoted run as the flag's argument name, so a quoted `;` would be
 		// printed as `-keywords ;` instead of `-keywords string`.
-		keywords   = fs.String("keywords", "", "搜索关键词，分号分隔（默认 rules.d → 源桌面项）")
-		categories = fs.String("categories", "", "分类，分号分隔（默认 rules.d → 源桌面项）")
+		keywords   = fs.String("keywords", "", "搜索关键词，分号分隔，写进桌面项正文（默认 rules.d → 源桌面项）")
+		categories = fs.String("categories", "", "分类，分号分隔，写进桌面项正文（默认 rules.d → 源桌面项）")
 		iconPath   = fs.String("icon", "", "源图标 png|svg（默认 源桌面项的 Icon=；找不到就拒绝生成，不出齿轮占位图）")
 		badge      = fs.String("badge", "", "角标文字（默认 id 尾部数字；可用字符 0-9 A-Z 与 -+.!?/ 和空格）")
 		badgeStyle = fs.String("badge-style", "", "角标风格 corner|number|dot（默认 config.toml → corner）")
@@ -632,7 +632,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		force      = fs.Bool("force", false, "覆盖已存在的输出文件（默认拒绝：那份文件正是你要改的东西）")
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（连配置正文一起打印）")
 		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、路径映射的修改粒度、规则模板）")
-		noTmpfs    = fs.Bool("no-tmpfs", false, "不把 /tmp 盖成空 tmpfs，改成在 bind 里写一条 /tmp:/tmp（宿主那个，原地可写）—— X11 程序必须如此：--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0")
+		noTmpfs    = fs.Bool("no-tmpfs", false, "不把 /tmp 盖成空 tmpfs，改成在 bwrap.extras 里写一条 --bind /tmp /tmp（宿主那个，原地可写）—— X11 程序必须如此：--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0")
 		noTray     = fs.Bool("no-tray", false, "不要把这个实例的托盘图标指给 twin（写文件表还是宿主覆盖表见 tray_override 的说明；整机开关在 config.toml 的 defaults.tray_override）")
 	)
 	// Go's flag package has no aliases, so the documented `-o` is a second
@@ -641,7 +641,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	var shortOutput string
 	fs.StringVar(&shortOutput, "o", "", "配置写到哪（--output 的简写；两个拼写同时给是用法错误）")
 	var tmpfs listFlag
-	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录（空 tmpfs），可重复，写到 bwrap.tmpfs 里（路径享受 ~/ 展开；bwrap.extras 里逐字照搬，不展开）")
+	fs.Var(&tmpfs, "tmpfs", "沙箱内屏蔽的目录（空 tmpfs），可重复，在 bwrap.extras 里写成 --tmpfs 一行（路径里的 ~ 在落盘时展开）")
 	// Cut the bwrap passthrough off before twin's own parser runs: tokens
 	// after `--` are not twin's to interpret (设计 §2.2).
 	head, bwrapTokens, err := splitPassthrough(args)
@@ -710,7 +710,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	// force is left out on purpose: it means "overwrite the file I asked for",
 	// and letting it also mean "yes, shadow that other program's desktop entry"
 	// would make one flag do two unrelated destructive things by accident.
-	it, der, err := planInstance(p, o, insp, false)
+	it, body, der, err := planInstance(p, o, insp, false)
 	if err != nil {
 		fail(err.Error())
 		return exitFail
@@ -726,6 +726,11 @@ func cmdGen(p inst.Paths, args []string) int {
 	// be worked out after Plan has said which instance this is. One file per id
 	// is also why two wraps of two programs do not collide any more.
 	outPath := firstNonEmpty(*output, shortOutput, p.Profile(it.ID))
+	// The entry's text lands beside the definition, under the name the
+	// definition points at (override.desktop) — resolved with the very function
+	// Load uses, so `./<id>.desktop` means one file to both of them (AGENTS §5).
+	txtPath := inst.ResolveAgainst(filepath.Dir(outPath), it.DesktopOverride)
+	txtNew := !sysx.Exists(txtPath)
 
 	if !*dryRun {
 		// A definition that is already at the default place is not "another
@@ -737,17 +742,27 @@ func cmdGen(p inst.Paths, args []string) int {
 				"或 -o 写到别处、--force 覆盖它）", outPath, it.ID, it.ID))
 			return exitFail
 		}
-		body, err := renderDefinition(p, it, outPath)
+		config, err := renderDefinition(p, it, outPath)
 		if err != nil {
 			fail(err.Error())
 			return exitFail
 		}
-		if err := writeConfigFile(outPath, body, *force); err != nil {
+		if err := writeConfigFile(outPath, config, *force); err != nil {
 			fail(err.Error())
 			return exitFail
 		}
+		// Only when it is not there yet, and never overwritten: this file is
+		// the desktop entry itself, and `gen` exists to hand the user something
+		// to read and edit. Rewriting it would throw those edits away — which is
+		// the same rule the definition gets, for the same reason.
+		if txtNew {
+			if err := sysx.WriteFileAtomic(txtPath, generate.EntryBytes(p, it, body), 0o644); err != nil {
+				fail(err.Error())
+				return exitFail
+			}
+		}
 	}
-	printGenResult(p, it, insp, outPath, *dryRun, *explain, der)
+	printGenResult(p, it, insp, outPath, txtPath, *dryRun, *explain, txtNew, der, body)
 	return exitOK
 }
 
@@ -790,12 +805,24 @@ func writeConfigFile(path string, body []byte, force bool) error {
 // in this or any later step reports that consequence again, and the programs it
 // happens to are exactly the ones that fight each other over a lock file.
 func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
-	outPath string, dry, explain bool, der []generate.Derivation) {
+	outPath, txtPath string, dry, explain, txtNew bool, der []generate.Derivation, body generate.EntryBody) {
 	lead := outStyle.Green(style.Glyph(style.LevelOK) + " 已写出配置")
 	if dry {
 		lead = title("🔍 将要写出配置（--dry-run，未写盘）")
 	}
 	fmt.Printf("%s %s\n", lead, outStyle.Bold(outPath))
+	// The second file is named on the spot: it is where a user renames the
+	// program, and walking them into an editor for the wrong file is the one
+	// mistake this line prevents. When it already exists it is *not* rewritten,
+	// and saying so here is cheaper than an FAQ.
+	switch {
+	case txtNew && dry:
+		fmt.Printf("  桌面项正文（将写出）%s\n", txtPath)
+	case txtNew:
+		fmt.Printf("  桌面项正文（已写出）%s\n", txtPath)
+	default:
+		fmt.Printf("  桌面项正文 %s（已存在，未改动 —— 改它、install 就照它装）\n", txtPath)
+	}
 	if explain {
 		printDerived(der)
 		// "This instance" is the definition the user is holding, and gen has
@@ -814,12 +841,23 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 			"（Electron / Qt / GTK 系常见），两个实例会互相干扰 —— 见配置里的 bwrap.bind"))
 	}
 	if dry {
-		body, err := renderDefinition(p, it, outPath)
+		config, err := renderDefinition(p, it, outPath)
 		if err != nil {
 			fail(err.Error())
 			return
 		}
-		fmt.Printf("\n%s\n%s", title("📄 实例定义（profile.yml）"), indent(body, "  "))
+		fmt.Printf("\n%s\n%s", title("📄 实例定义（"+filepath.Base(outPath)+"）"), indent(config, "  "))
+		// The entry's own text, shown the way install will see it: an existing
+		// file is copied as it stands (so *it* is what is previewed), and a
+		// missing one is what gen just rendered above.
+		text := generate.EntryBytes(p, it, body)
+		if !txtNew {
+			if onDisk, err := os.ReadFile(txtPath); err == nil {
+				text = onDisk
+			}
+		}
+		fmt.Printf("\n%s\n%s", title("📄 桌面项正文（"+filepath.Base(txtPath)+"，install 逐字复制它）"),
+			indent(text, "  "))
 	}
 	fmt.Printf("\n%s\n", title("👉 下一步"))
 	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也能装）\n", outPath)
@@ -1077,23 +1115,25 @@ func ensureProfile(p inst.Paths, rt sandbox.Runtime, dry bool) int {
 // Only `twin gen` calls it now. `twin install` and `twin reinstall` do not
 // re-derive anything: one reads a configuration, the other replays a snapshot,
 // and both of those already say which instance they are.
-func planInstance(p inst.Paths, o generate.Options, insp *generate.Inspection, force bool) (*inst.Instance, []generate.Derivation, error) {
-	it, der, err := generate.Plan(p, o, insp)
+func planInstance(p inst.Paths, o generate.Options, insp *generate.Inspection, force bool) (*inst.Instance, generate.EntryBody, []generate.Derivation, error) {
+	it, body, der, err := generate.Plan(p, o, insp)
 	if err != nil {
-		return nil, nil, err
+		return nil, generate.EntryBody{}, nil, err
 	}
 	// Keywords are derived rather than demanded now, so this should never fire —
 	// which is exactly why it is worth stating: if it ever does, the search
-	// index would silently lose this instance.
-	if it.Keywords == "" {
+	// index would silently lose this instance. What is checked is the *entry
+	// text*, because that is where keywords end up (override.desktop); the
+	// definition no longer carries them.
+	if body.Keywords == "" {
 		warn("推不出搜索关键词（源桌面项既无 Keywords，也没有可用的 Name/程序名）——" +
 			"搜索结果里可能找不到这个实例，建议补 --keywords 'k1;k2'")
 	}
 	// This only guards an explicit --as: a derived id is free by construction.
 	if err := generate.CheckCollision(p, it.ID, force); err != nil {
-		return nil, nil, err
+		return nil, generate.EntryBody{}, nil, err
 	}
-	return it, der, nil
+	return it, body, der, nil
 }
 
 // mapsOrigin names the layer a path map came from, or "" when no layer claims
@@ -1146,7 +1186,7 @@ func cmdVerify(p inst.Paths, args []string) int {
 		return exitFail
 	}
 	rep := verify.Run(it, p)
-	fmt.Printf("%s %s（level=%s，别名=%s）\n\n", outStyle.Bold("🪪 实例"), it.ID, it.Level, it.EffectiveAlias())
+	fmt.Printf("%s %s（level=%s）\n\n", outStyle.Bold("🪪 实例"), it.ID, it.Level)
 	fmt.Print(formatFindings(rep))
 	return exitFor(rep)
 }
@@ -1225,7 +1265,10 @@ func cmdList(p inst.Paths) int {
 		return exitOK
 	}
 	fmt.Printf("%s\n", title("📋 实例"))
-	fmt.Printf("%-16s %-10s %-8s %-24s %s\n", "id", "level", "别名", "程序", "桌面项")
+	// One id column, not two: the alias *is* the id now (窗口 app_id 与托盘
+	// SNI Id 都等于它), and a column that always repeats its neighbour teaches
+	// the reader to skip both.
+	fmt.Printf("%-16s %-10s %-24s %s\n", "id", "level", "程序", "桌面项")
 	broken := 0
 	for _, it := range items {
 		desktop := filepath.Base(p.Desktop(it.ID))
@@ -1238,7 +1281,7 @@ func cmdList(p inst.Paths) int {
 			mark = "  " + outStyle.Yellow("← 还没落盘")
 			broken++
 		}
-		fmt.Printf("%-16s %-10s %-8s %-24s %s%s\n", it.ID, it.Level, it.EffectiveAlias(),
+		fmt.Printf("%-16s %-10s %-24s %s%s\n", it.ID, it.Level,
 			filepath.Base(it.Target), desktop, mark)
 	}
 	if broken > 0 {
@@ -1502,7 +1545,7 @@ func printNextSteps(p inst.Paths, it *inst.Instance, verbose bool) {
 		fmt.Printf("  1. 桌面项是后写的，GNOME 不会给已经存在的窗口重算归属 —— 请**重新启动**这个实例。\n")
 		fmt.Printf("  2. 托盘图标已就位：上面「托盘覆盖」那条说了这次走的是哪条路（助手扩展，或宿主表兜底）。\n")
 		fmt.Printf("     两条都是热生效，不用重登；🔍 自检 那一段里若有 ⚠️，按它给的那条命令跑一次。\n")
-		fmt.Printf("  3. 想确认身份，看这两个值是否都等于 %q：\n", it.EffectiveAlias())
+		fmt.Printf("  3. 想确认身份，看这两个值是否都等于 %q：\n", it.ID)
 		fmt.Printf("     窗口 app_id ：WAYLAND_DEBUG=1 bash %s 2>&1 | grep set_app_id\n", p.Launch(it.ID))
 		fmt.Printf("     托盘 SNI Id ：busctl --user list | grep -i statusnotifier  （名字里带 pid）\n")
 		return
@@ -1540,7 +1583,7 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 		fmt.Printf("  跳板脚本  %s\n", plan.Bootstrap)
 	}
 	fmt.Printf("\n%s\n  level=%s  app_id / 托盘 Id = %q\n",
-		title("🪪 身份"), it.Level, it.EffectiveAlias())
+		title("🪪 身份"), it.Level, it.ID)
 	// The tray override is host state (or the helper's file), not one of the
 	// artefacts above, but it is still part of what a real run would change —
 	// so the rehearsal has to show it, and it has to show *which mechanism*
@@ -1548,7 +1591,7 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 	// takes: previewing a different branch than the one that runs would be a
 	// lie about the only part of a wrap that depends on the machine.
 	if !it.TrayOverride {
-		fmt.Printf("\n%s\n  跳过（tray.override = false）：宿主表与助手扩展读的那份表都不写\n",
+		fmt.Printf("\n%s\n  跳过（override.tray = false）：宿主表与助手扩展读的那份表都不写\n",
 			title("🔔 托盘覆盖"))
 	} else {
 		plan := planTray(p, it)
@@ -1596,8 +1639,20 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 		}
 		fmt.Printf("\n%s\n%s", title("📄 存档记录（"+p.Profile(it.ID)+"）"), indent(body, "  "))
 	}
-	fmt.Printf("\n%s\n%s", title("📄 桌面项（"+filepath.Base(p.Desktop(it.ID))+"）"),
-		indent(generate.DesktopEntry(p, it, insp).Bytes(), "  "))
+	// The desktop entry is a copy of a file this time, not something rendered
+	// from the instance: so the rehearsal shows the bytes that would be copied —
+	// the file on disk when it is there, the text install would generate when it
+	// is not. Rendering it from the instance instead would preview a file that
+	// install never writes.
+	entry, _ := generate.DeriveBody(insp, it.ID, generate.Options{})
+	text := generate.EntryBytes(p, it, entry)
+	if it.DesktopOverride != "" {
+		if onDisk, err := os.ReadFile(it.DesktopOverride); err == nil {
+			text = onDisk
+		}
+	}
+	fmt.Printf("\n%s\n%s", title("📄 桌面项（"+filepath.Base(p.Desktop(it.ID))+"，逐字复制 "+it.DesktopOverride+"）"),
+		indent(text, "  "))
 	if it.Level == inst.LevelRedirect {
 		rule, err := generate.RuleJSON(it, p)
 		if err != nil {
@@ -1828,7 +1883,7 @@ func readConfirmation(in io.Reader) (bool, error) {
 // the command plus exit code 3, which `verify` supplies.
 func applyTray(p inst.Paths, it *inst.Instance) string {
 	if !it.TrayOverride {
-		return "托盘覆盖 跳过（tray.override = false）"
+		return "托盘覆盖 跳过（override.tray = false）"
 	}
 	// level=none does not rename anything, so the program's StatusNotifierItem
 	// id is whatever the program chose — the row is a guess. It is still worth
@@ -2010,9 +2065,9 @@ func dropTray(id string, dry bool) string {
 // with the reason. A default nobody can see is a default nobody can correct.
 //
 // The key column is sized to the batch rather than fixed: these are dotted
-// config paths (`desktop.keywords`, `isolation.nested_ns`) whose width follows
-// the schema, and a fixed column turns "one key got longer" into a table where
-// the values no longer line up.
+// config paths (`override.desktop Keywords`, `isolation.nested_ns`) whose width
+// follows the schema, and a fixed column turns "one key got longer" into a table
+// where the values no longer line up.
 func printDerived(der []generate.Derivation) {
 	if len(der) == 0 {
 		return

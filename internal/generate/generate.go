@@ -231,7 +231,7 @@ type Derivation struct {
 
 // Plan turns options plus an inspection into an instance definition, deriving
 // every default it can from the source program and recording the reason.
-func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivation, error) {
+func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, EntryBody, []Derivation, error) {
 	base := strings.TrimSuffix(filepath.Base(insp.SourceDesktop), ".desktop")
 
 	var der []Derivation
@@ -251,10 +251,9 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		note("id", id, fmt.Sprintf("源桌面项基名 %s + 最小空闲序号", base))
 	}
 	if err := inst.ValidateID(id); err != nil {
-		return nil, nil, err
+		return nil, EntryBody{}, nil, err
 	}
 	seq := seqOf(id)
-	tags := desk.LocaleTags()
 
 	// Level: CLI > rules.d > config.toml > built-in. Each layer names its
 	// origin when it wins, because "which file set this to redirect?" is the
@@ -265,14 +264,14 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		case rule != nil && rule.Level != "":
 			lvl, err := inst.ParseLevel(rule.Level)
 			if err != nil {
-				return nil, nil, err
+				return nil, EntryBody{}, nil, err
 			}
 			level = lvl
 			note("level", string(level), "应用规则 "+ruleOrigin(rule))
 		case cfg.Defaults.Level != "":
 			lvl, err := inst.ParseLevel(cfg.Defaults.Level)
 			if err != nil {
-				return nil, nil, err
+				return nil, EntryBody{}, nil, err
 			}
 			level = lvl
 			note("level", string(level), "config.toml defaults.level")
@@ -281,72 +280,16 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		}
 	}
 	if !level.Implemented() {
-		return nil, nil, fmt.Errorf("level=%s 还没实现：阶梯上只有 none 与 alias 通过了实测", level)
+		return nil, EntryBody{}, nil, fmt.Errorf("level=%s 还没实现：阶梯上只有 none 与 alias 通过了实测", level)
 	}
 
-	// The display name: the source's localised name when it has one for this
-	// locale, otherwise its ASCII Name — either way with the sequence number, so
-	// the instance reads as a sibling of the original rather than a stranger.
-	name := o.Name
-	if name == "" {
-		if loc, tag := insp.Entry.LocalizedName(tags...); loc != "" {
-			name = loc + seq
-			note("desktop.name", name, fmt.Sprintf("源 Name[%s]=%q + 序号 %s", tag, loc, seq))
-		} else {
-			name = insp.Entry.Name + seq
-			note("desktop.name", name, "源 Name + 序号 "+seq)
-		}
-	}
-
-	nameEn := o.NameEn
-	if nameEn == "" {
-		nameEn = insp.Entry.Name + seq
-		note("desktop.name_en", nameEn, "源 Name + 序号 "+seq)
-	}
-	if nameEn == name {
-		nameEn = "" // Name[en] identical to Name would only add noise
-	}
-
-	comment := o.Comment
-	if comment == "" {
-		if loc, tag := insp.Entry.LocalizedComment(tags...); loc != "" {
-			comment = loc
-			note("desktop.comment", comment, "源 Comment["+tag+"]")
-		} else if insp.Entry.Comment != "" {
-			comment = insp.Entry.Comment
-			note("desktop.comment", comment, "源 Comment")
-		} else {
-			comment = "由 twin 生成的第二个 " + insp.Entry.Name
-		}
-	}
-
-	// Search keywords: explicit flag > rules.d > the source entry's own
-	// Keywords > a list synthesised from the names the program already answers
-	// to. Deriving them is the difference between `twin gen wechat` working
-	// as-is and the user having to retype "微信;wechat" on every instance.
-	//
-	// o.Name != "" is passed separately from name because the two are not the
-	// same thing: an inherited list only gains the instance's own name when the
-	// user typed that name, never when twin derived it (see Keywords).
-	kwExplicit := o.Keywords
-	kwWhy := ""
-	if kwExplicit == "" && rule != nil && rule.Keywords != "" {
-		kwExplicit = rule.Keywords
-		kwWhy = "应用规则 " + ruleOrigin(rule) + " 里的 keywords"
-	}
-	keywords, why := Keywords(insp, kwExplicit, name, o.Name != "")
-	if kwWhy != "" {
-		why = kwWhy
-	}
-	if o.Keywords == "" && keywords != "" {
-		note("desktop.keywords", keywords, why)
-	}
-
-	categories := o.Categories
-	if categories == "" && rule != nil && rule.Categories != "" {
-		categories = rule.Categories
-		note("desktop.categories", categories, "应用规则 "+ruleOrigin(rule))
-	}
+	// The prose of the entry — the part that ends up inside the generated
+	// desktop file rather than in this definition. It is derived here (and
+	// derived the same way at install time, when the file is missing) so that a
+	// definition and its entry text can never disagree about what the program
+	// is called.
+	body, bodyDer := DeriveBody(insp, id, o)
+	der = append(der, bodyDer...)
 
 	badge := o.Badge
 	if badge == "" && seq != "" {
@@ -355,28 +298,25 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	}
 
 	it := &inst.Instance{
-		ID:         id,
-		Name:       name,
-		NameEn:     nameEn,
-		Comment:    comment,
-		CommentEn:  o.CommentEn,
-		Keywords:   keywords,
-		Categories: categories,
-		Source:     insp.SourceDesktop,
-		Level:      level,
+		ID:     id,
+		Target: insp.Target,
+		Source: insp.SourceDesktop,
+		// One file per id, beside the definition. The spelling is relative on
+		// purpose: the text is configuration, and a bundle (definition + entry
+		// text + program) then moves or gets committed as a unit. `gen` writes
+		// it, Load resolves it, and both do it with inst.ResolveAgainst — the
+		// file gen creates and the file install copies have to be one file.
+		DesktopOverride: "./" + id + ".desktop",
+		// Left empty on purpose. The entry twin generates fills StartupWMClass
+		// with the id when the level renames the program (and only then), and
+		// writing the same value here as well would give a reader two places to
+		// change one line.
 		WMClass:    "",
-		Notify:     true,
 		IconSource: firstNonEmpty(o.Icon, insp.IconSource),
 		Badge:      badge,
 		BadgeStyle: firstNonEmpty(o.BadgeStyle, cfg.Defaults.BadgeStyle, icon.StyleCorner),
-		Target:     insp.Target,
-		Alias:      id,
+		Level:      level,
 		NestedNS:   insp.Traits.NeedsNestedNS,
-	}
-	if level.Renames() {
-		// StartupWMClass is harmless and does matter on X11/XWayland, but the
-		// basename is what actually claims a Wayland window.
-		it.WMClass = id
 	}
 
 	// A program that builds a sandbox of its own needs a bubblewrap that can
@@ -396,9 +336,9 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	it.TrayOverride = cfg.Defaults.TrayOverride && !o.NoTray
 	switch {
 	case o.NoTray:
-		note("tray.override", "false", "--no-tray")
+		note("override.tray", "false", "--no-tray")
 	case !cfg.Defaults.TrayOverride:
-		note("tray.override", "false", "config.toml defaults.tray_override")
+		note("override.tray", "false", "config.toml defaults.tray_override")
 	}
 
 	// Refuse a missing icon *before* anything is written. A desktop entry
@@ -408,14 +348,14 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// first, so failing at the icon would leave a half-built instance behind
 	// (and the next wrap would then refuse with "建议先 unwrap").
 	if it.IconSource == "" {
-		return nil, nil, fmt.Errorf("找不到可用的源图标：请用 --icon <png|svg> 指定（拒绝静默生成齿轮占位图）")
+		return nil, EntryBody{}, nil, fmt.Errorf("找不到可用的源图标：请用 --icon <png|svg> 指定（拒绝静默生成齿轮占位图）")
 	}
 
 	// A multi-call binary cannot survive a rename: it dispatches on argv[0],
 	// which under LevelAlias is the alias path. Refusing beats shipping an
 	// instance that prints "unknown program '<alias>'" every launch.
 	if level.Renames() && insp.Traits.MultiCall {
-		return nil, nil, fmt.Errorf("目标是多合一二进制（BusyBox / coreutils），靠 argv[0] 分派子命令：" +
+		return nil, EntryBody{}, nil, fmt.Errorf("目标是多合一二进制（BusyBox / coreutils），靠 argv[0] 分派子命令：" +
 			"alias 改名后它会不认识自己（实测报 unknown program）。这个程序暂时没有可用的身份级别")
 	}
 
@@ -423,33 +363,33 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// safe for a program that actually talks Wayland. `tmpfs_unless_x11` in
 	// config.toml turns the guess off for machines where the trait scan is
 	// known to be wrong.
+	var tmpfs []string
 	switch {
 	case o.NoTmpfs:
-		it.Tmpfs = nil
+		tmpfs = nil
 	case len(o.Tmpfs) > 0:
-		it.Tmpfs = append([]string(nil), o.Tmpfs...)
+		tmpfs = append([]string(nil), o.Tmpfs...)
 	case rule != nil && len(rule.Tmpfs) > 0:
-		it.Tmpfs = append([]string(nil), rule.Tmpfs...)
-		note("bwrap.tmpfs", strings.Join(rule.Tmpfs, " "), "应用规则 "+ruleOrigin(rule))
+		tmpfs = append([]string(nil), rule.Tmpfs...)
+		note("bwrap.extras", strings.Join(tmpfsLines(tmpfs), " / "), "应用规则 "+ruleOrigin(rule))
 	case insp.Traits.Wayland && cfg.Defaults.TmpfsUnlessX11:
-		it.Tmpfs = []string{"/tmp"}
+		tmpfs = []string{"/tmp"}
 	default:
-		it.Tmpfs = nil
+		tmpfs = nil
 	}
-	// Which node each half of that decision belongs in is the base's call,
-	// because the two branches are two different kinds of mount: an empty
-	// private tmpfs stays right here (this is the node that names tmpfs mounts),
-	// while the host's own /tmp becomes one more `bind` entry beside the root —
-	// it has to be emitted after that tmpfs to be able to overrule it, see
-	// sandbox.BaseFor. Both branches have to leave /tmp *writable*, and which one
-	// it is says so in the file instead of being decided invisibly at launch.
-	privateTmp := tmpfsCovers(it.Tmpfs, "/tmp")
-	// There is no branch to take when there is no base: `level none` runs the
-	// program untouched, so an entry here would describe a mount that never
-	// happens — and SessionWarning reads this list to warn about X11 sessions.
+	// There is no branch to take when there is no sandbox: `level none` runs the
+	// program untouched, so a line here would describe a mount that never
+	// happens — and SessionWarning reads the same lines to warn about X11
+	// sessions.
 	if !level.Renames() {
-		it.Tmpfs = withoutPath(it.Tmpfs, "/tmp")
+		tmpfs = withoutPath(tmpfs, "/tmp")
 	}
+	// The two branches of the /tmp decision are two different lines, and the
+	// base owns the other one (see sandbox.BaseFor): a private /tmp is a tmpfs
+	// line — already in the list above — while the host's /tmp is a
+	// `--bind /tmp /tmp` line the base adds *after* every tmpfs line. Both leave
+	// /tmp writable, and the file says which one this instance got.
+	privateTmp := tmpfsCovers(tmpfs, "/tmp")
 
 	// Path maps come from the rule and from nowhere else. There is deliberately
 	// no CLI flag for them: a mapping is the one thing in a wrap that varies
@@ -460,6 +400,8 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 			Source:   expandID(pr.Source, id),
 			Target:   expandID(pr.Target, id),
 			ReadOnly: pr.ReadOnly,
+			Dev:      pr.Dev,
+			Try:      pr.Try,
 		})
 	}
 
@@ -478,34 +420,41 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// at the *end*, where binding the root again shadows every mapping before
 	// it. Writing it here is what makes the option list the file's business.
 	//
-	// Each piece of it lands in the node that names its kind: `--tmpfs /dev/shm`
-	// inside a token list and `tmpfs: [/dev/shm]` are the same mount, but only
-	// one of the two tells the reader what kind of mount it is — and the root
-	// mount is written as `/:/:dev`, a mapping in the node for mappings (设计
-	// §2.1). `extras` keeps what has no node of its own: --die-with-parent.
-	// Base-first inside every node too, so the layers above
-	// can still overrule the base. The notes follow the *file's* order, so the
-	// row for each key sits where a reader will find the key.
+	// Its pieces are interleaved on purpose: the host's /tmp line only does
+	// anything if it comes after every tmpfs line, and this is the one place
+	// that knows both lists. Base-first inside every list too, so the layers
+	// above can still overrule the base.
 	if level.Renames() {
 		base := sandbox.BaseFor(id, privateTmp)
 		it.Binds = append(base.Binds, it.Binds...)
-		it.Extras = append(it.Extras, base.Args...)
-		it.Proc = base.Proc
-		it.Tmpfs = append(base.Tmpfs, it.Tmpfs...)
-		it.Env = append(base.Env, it.Env...)
-		note("bwrap.bind", base.Binds[0].String(), "gen 写的沙箱基座：根挂载（排在最前，写在第几行都一样）")
-		// The host's /tmp is a base line sitting among the rule's own mappings,
-		// and no report can tell the two apart — so it is named here, where the
-		// lines the user did not write are named.
-		if len(base.Binds) > 1 {
-			note("bwrap.bind", base.Binds[1].String(),
-				"gen 写的沙箱基座：宿主 /tmp 原地可写（发在 tmpfs 之后，压得住那里的一条 /tmp）")
+		it.Extras = append(it.Extras, base.Head...)
+		it.Extras = append(it.Extras, tmpfsLines(base.Tmpfs)...)
+		it.Extras = append(it.Extras, tmpfsLines(tmpfs)...)
+		hostTmp := ""
+		if base.HostTmp != "" {
+			hostTmp = "--bind " + base.HostTmp + " " + base.HostTmp
+			it.Extras = append(it.Extras, hostTmp)
 		}
-		note("bwrap.proc", base.Proc, "gen 写的沙箱基座")
-		note("bwrap.tmpfs", strings.Join(base.Tmpfs, " "), "gen 写的沙箱基座")
+		it.Extras = append(it.Extras, base.Tail...)
+		it.Env = append(base.Env, it.Env...)
+		note("bwrap.bind", base.Binds[0].String(),
+			"gen 写的沙箱基座：根挂载（发在其余所有挂载之前，写在第几行都一样）")
 		note("bwrap.env", base.Env[0].String(), "gen 写的沙箱基座")
-		note("bwrap.extras", strings.Join(base.Args, " "),
-			"gen 写的沙箱基座：没有自己节点的那些（config.toml / rules.d / `--` 的 token 也并进这一份）")
+		own := append([]string{}, base.Head...)
+		own = append(own, tmpfsLines(base.Tmpfs)...)
+		if hostTmp != "" {
+			// A line of its own, sitting where nothing distinguishes it from a
+			// line the user wrote — so it is named here, where the lines the
+			// user did not write are already named.
+			own = append(own, hostTmp)
+		}
+		own = append(own, base.Tail...)
+		why := "gen 写的沙箱基座：proc、私有 /dev/shm"
+		if hostTmp != "" {
+			why += "，以及宿主 /tmp 原地可写（排在 tmpfs 之后，压得住那里的一条 /tmp）"
+		}
+		why += "；config.toml / rules.d / `--` 的参数也并进这一份"
+		note("bwrap.extras", strings.Join(own, " / "), why)
 	}
 	it.Extras = append(it.Extras, cfg.Args...)
 	if rule != nil {
@@ -515,16 +464,33 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	if len(it.Extras) == 0 {
 		it.Extras = nil
 	}
-	for _, tok := range it.Extras {
-		if err := inst.CheckBwrapToken(tok); err != nil {
-			return nil, nil, fmt.Errorf("%s：%w", bwrapSource(o, rule, cfg), err)
+	for n, line := range it.Extras {
+		for _, tok := range strings.Fields(line) {
+			if err := inst.CheckBwrapToken(tok); err != nil {
+				return nil, EntryBody{}, nil, fmt.Errorf("%s（bwrap.extras[%d] %q）：%w",
+					bwrapSource(o, rule, cfg), n, line, err)
+			}
 		}
 	}
 
 	if err := it.Check(); err != nil {
-		return nil, nil, err
+		return nil, EntryBody{}, nil, err
 	}
-	return it, der, nil
+	return it, body, der, nil
+}
+
+// tmpfsLines renders paths as the `--tmpfs` lines the definition carries.
+//
+// The paths are written the way the file writes paths, `~` included: Build
+// expands a leading `~` in every token it hands over, so a rule's
+// `~/.cache/x` stays the user's own answer to "which home" instead of being
+// frozen into this machine's home directory the moment it is generated.
+func tmpfsLines(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, t := range paths {
+		out = append(out, "--tmpfs "+t)
+	}
+	return out
 }
 
 // ruleOrigin names where a rule came from, for the derivation log.
@@ -685,10 +651,47 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 		}
 	}
 
-	// 4. the icon.
+	// 4. the entry's own text. It is a file of its own (override.desktop), and
+	//    from the first byte on it is the user's document: generated once —
+	//    usually by `twin gen` — and then copied verbatim at every install, so
+	//    that editing what the menu shows is editing a text file rather than
+	//    five keys in a config. A missing one is regenerated here, because a
+	//    bundle may carry the definition without it — with the defaults derived
+	//    from the source entry, which is all install has.
+	//
+	//    This runs before the icon and the copy below, and the icon is why:
+	//    the fallback glyph is the display name, and that name is in here.
+	txt := it.DesktopOverride
+	if txt == "" {
+		return nil, fmt.Errorf("这份定义没有 override.desktop：install 不知道桌面项的正文在哪")
+	}
+	if !sysx.Exists(txt) {
+		body, _ := DeriveBody(insp, it.ID, Options{})
+		if err := sysx.WriteFileAtomic(txt, EntryBytes(p, it, body), 0o644); err != nil {
+			return nil, err
+		}
+		res.Notes = append(res.Notes, "桌面项正文（按源桌面项新生成）"+txt)
+	} else {
+		res.Notes = append(res.Notes, "桌面项正文 "+txt+"（install 逐字复制它）")
+	}
+	entry, err := desk.Parse(txt)
+	if err != nil {
+		return nil, fmt.Errorf("桌面项正文 %s 读不了：%w", txt, err)
+	}
+	// Not an error, because the file is the user's: they may have pointed Exec
+	// somewhere on purpose. But an entry whose Exec is not our launcher is
+	// either a hand-edit or a file generated on another machine (its Exec and
+	// Icon carry that machine's home), and both end the same way — a menu entry
+	// that does not run this instance — so it is said out loud.
+	if !strings.Contains(entry.Exec, p.Launch(it.ID)) {
+		res.Notes = append(res.Notes, "⚠️ 这份正文里的 Exec= 不是本实例的启动器（"+p.Launch(it.ID)+
+			"）—— 装出来的桌面项会去跑别的程序；换过家目录的话，删掉 "+txt+" 让 twin 重新生成")
+	}
+
+	// 5. the icon.
 	iconSpec := icon.Spec{
 		Source: it.IconSource,
-		Name:   it.Name,
+		Name:   entry.Name,
 		Badge:  it.Badge,
 		Style:  it.BadgeStyle,
 		Home:   p.Home,
@@ -702,13 +705,18 @@ func Materialize(p inst.Paths, it *inst.Instance, insp *Inspection, plan *sandbo
 	}
 	res.Notes = append(res.Notes, iconRep.Notes...)
 
-	// 5. the desktop entry — the anchor of the identity.
-	render := DesktopEntry(p, it, insp)
-	if err := sysx.WriteFileAtomic(p.Desktop(it.ID), render.Bytes(), 0o644); err != nil {
+	// 6. the desktop entry — the anchor of the identity. A byte-for-byte copy of
+	//    the text above, twins' own lines included: `--dry-run` shows those very
+	//    bytes, and what gets installed is what the user read.
+	body, err := os.ReadFile(txt)
+	if err != nil {
+		return nil, err
+	}
+	if err := sysx.WriteFileAtomic(p.Desktop(it.ID), body, 0o644); err != nil {
 		return nil, err
 	}
 
-	// 6. the L5 rule. Written last so a rule can never outlive the desktop
+	// 7. the L5 rule. Written last so a rule can never outlive the desktop
 	//    entry it points at: the extension would keep redirecting windows to
 	//    an app that no longer exists.
 	if it.Level == inst.LevelRedirect {
@@ -869,25 +877,154 @@ func DerivedKeywords(insp *Inspection) (value, source string) {
 		"源无 Keywords；由 " + strings.Join(used, "、") + " 推得"
 }
 
-// DesktopEntry builds the desktop entry for an instance. Exported because
-// `--dry-run` has to show byte-for-byte what would land on disk — a preview
-// rendered by different code than the real thing is a lie.
-func DesktopEntry(p inst.Paths, it *inst.Instance, insp *Inspection) desk.Render {
-	var categ, kw string
-	if insp.Entry != nil {
-		categ, kw = insp.Entry.Categories, insp.Entry.Keywords
+// EntryBody is the prose of a generated desktop entry: what the program is
+// called, what it says about itself, and how it wants to be found.
+//
+// It is a value of its own rather than six fields on inst.Instance because it is
+// not part of the definition: the definition says *where* the entry's text lives
+// (override.desktop), and these are the words twin puts in it when it has to
+// write that file. Keeping them off the instance is what stops a reader from
+// thinking "edit profile.yml to rename the program" — that file is the text.
+type EntryBody struct {
+	Name       string
+	NameEn     string
+	Comment    string
+	CommentEn  string
+	Keywords   string
+	Categories string
+}
+
+// DeriveBody fills in the entry's prose for one id, recording where each part
+// came from. It is the single derivation, used by `gen` (which then writes the
+// file) and by `install` when the file has gone missing — two derivations would
+// eventually disagree, and the disagreement would be a program whose menu entry
+// renames itself the next time it is installed.
+//
+// The flags are consulted only when they are given: at install time there are no
+// flags, so what comes back is the source entry's own words plus the sequence
+// number. Anything a user typed at `gen` time lives on in the file itself.
+func DeriveBody(insp *Inspection, id string, o Options) (EntryBody, []Derivation) {
+	var der []Derivation
+	// The key is the file *and* the line inside it: the prose moved from six
+	// config keys into a file of its own, so "where does this value go" is now
+	// two answers, and a table of five identical rows would hide the one the
+	// reader needs (which line to edit in that file).
+	note := func(key, val, src string) {
+		der = append(der, Derivation{Key: "override.desktop " + key, Value: val, Source: src})
+	}
+	seq := seqOf(id)
+	tags := desk.LocaleTags()
+	body := EntryBody{
+		CommentEn:  o.CommentEn,
+		Categories: o.Categories,
+	}
+	entry := insp.Entry
+	if entry == nil {
+		entry = &desk.Entry{}
+	}
+
+	// The display name: the source's localised name when it has one for this
+	// locale, otherwise its ASCII Name — either way with the sequence number, so
+	// the instance reads as a sibling of the original rather than a stranger.
+	body.Name = o.Name
+	if body.Name == "" {
+		if loc, tag := entry.LocalizedName(tags...); loc != "" {
+			body.Name = loc + seq
+			note("Name", body.Name, fmt.Sprintf("源 Name[%s]=%q + 序号 %s", tag, loc, seq))
+		} else {
+			body.Name = entry.Name + seq
+			note("Name", body.Name, "源 Name + 序号 "+seq)
+		}
+	}
+
+	body.NameEn = o.NameEn
+	if body.NameEn == "" {
+		body.NameEn = entry.Name + seq
+		note("Name[en]", body.NameEn, "源 Name + 序号 "+seq)
+	}
+	if body.NameEn == body.Name {
+		body.NameEn = "" // Name[en] identical to Name would only add noise
+	}
+
+	body.Comment = o.Comment
+	if body.Comment == "" {
+		if loc, tag := entry.LocalizedComment(tags...); loc != "" {
+			body.Comment = loc
+			note("Comment", body.Comment, "源 Comment["+tag+"]")
+		} else if entry.Comment != "" {
+			body.Comment = entry.Comment
+			note("Comment", body.Comment, "源 Comment")
+		} else {
+			body.Comment = "由 twin 生成的第二个 " + entry.Name
+		}
+	}
+
+	// Search keywords: explicit flag > rules.d > the source entry's own
+	// Keywords > a list synthesised from the names the program already answers
+	// to. Deriving them is the difference between `twin gen wechat` working
+	// as-is and the user having to retype "微信;wechat" on every instance.
+	//
+	// o.Name != "" is passed separately from body.Name because the two are not
+	// the same thing: an inherited list only gains the instance's own name when
+	// the user typed that name, never when twin derived it (see Keywords).
+	kwExplicit := o.Keywords
+	kwWhy := ""
+	if kwExplicit == "" && insp.Rule != nil && insp.Rule.Keywords != "" {
+		kwExplicit = insp.Rule.Keywords
+		kwWhy = "应用规则 " + ruleOrigin(insp.Rule) + " 里的 keywords"
+	}
+	keywords, why := Keywords(insp, kwExplicit, body.Name, o.Name != "")
+	if kwWhy != "" {
+		why = kwWhy
+	}
+	body.Keywords = keywords
+	if o.Keywords == "" && keywords != "" {
+		note("Keywords", keywords, why)
+	}
+
+	if body.Categories == "" && insp.Rule != nil && insp.Rule.Categories != "" {
+		body.Categories = insp.Rule.Categories
+		note("Categories", body.Categories, "应用规则 "+ruleOrigin(insp.Rule))
+	}
+	if body.Categories == "" && entry.Categories != "" {
+		body.Categories = entry.Categories
+	}
+	return body, der
+}
+
+// EntryBytes renders the desktop entry twin generates for an instance — the
+// text of the file `override.desktop` points at. Exported because `--dry-run`
+// has to show byte-for-byte what would land on disk: a preview rendered by
+// different code than the real thing is a lie.
+//
+// The whole entry is here, twins' own lines included (Exec, Icon, StartupWMClass,
+// StartupNotify): it is generated once and copied verbatim from then on, so a
+// file that is missing cannot be completed by patching it up at install time.
+func EntryBytes(p inst.Paths, it *inst.Instance, body EntryBody) []byte {
+	return RenderEntry(p, it, body).Bytes()
+}
+
+// RenderEntry is EntryBytes as the structured form.
+func RenderEntry(p inst.Paths, it *inst.Instance, body EntryBody) desk.Render {
+	wmClass := it.WMClass
+	if wmClass == "" && it.Level.Renames() {
+		// StartupWMClass is harmless and does matter on X11/XWayland, but the
+		// basename is what actually claims a Wayland window. Empty in the
+		// definition means "the id", so the default lives here rather than being
+		// written out twice.
+		wmClass = it.ID
 	}
 	return desk.Render{
-		Name:      it.Name,
-		NameEn:    it.NameEn,
-		Comment:   it.Comment,
-		CommentEn: it.CommentEn,
+		Name:      body.Name,
+		NameEn:    body.NameEn,
+		Comment:   body.Comment,
+		CommentEn: body.CommentEn,
 		Exec:      desk.ExecLine(p.Launch(it.ID), "%U"),
 		Icon:      p.Icon(it.ID),
-		Categ:     firstNonEmpty(it.Categories, categ),
-		Keywords:  firstNonEmpty(it.Keywords, kw),
-		WMClass:   it.WMClass,
-		Notify:    it.Notify,
+		Categ:     body.Categories,
+		Keywords:  body.Keywords,
+		WMClass:   wmClass,
+		Notify:    true,
 	}
 }
 
@@ -992,8 +1129,12 @@ func Unwrap(p inst.Paths, id string, purge bool) (*Removed, error) {
 	return out, nil
 }
 
-// Refresh re-reads the config layers and fills in the fields a snapshot left
-// empty, returning one human-readable line per change.
+// Refresh re-reads the config layers and appends what a snapshot is missing,
+// returning one human-readable line per change.
+//
+// What that can be is now only the bwrap option lines: the entry's prose moved
+// into a file of its own, where "empty" is not a state a key can be in — the
+// file either exists or is regenerated whole (see Materialize).
 //
 // It never overwrites a value the snapshot already holds. `regen` exists to
 // make the derived files agree with the snapshot; a "helpful" rewrite of a
@@ -1003,36 +1144,14 @@ func Refresh(it *inst.Instance, insp *Inspection, cfg *config.Config) ([]string,
 	var notes []string
 	rule := insp.Rule
 
-	if it.Keywords == "" {
-		var kw, why string
-		switch {
-		case rule != nil && rule.Keywords != "":
-			kw, why = rule.Keywords, "keywords（应用规则 "+ruleOrigin(rule)+"）"
-		default:
-			kw, why = Keywords(insp, "", it.Name, false)
-			if why != "" {
-				why = "keywords（" + why + "）"
-			} else {
-				why = "keywords"
-			}
-		}
-		if kw != "" {
-			it.Keywords = kw
-			notes = append(notes, why+" = "+kw)
-		}
-	}
-
-	if it.Categories == "" {
-		switch {
-		case rule != nil && rule.Categories != "":
-			it.Categories = rule.Categories
-			notes = append(notes, "categories（应用规则 "+ruleOrigin(rule)+"）= "+rule.Categories)
-		case insp.Entry != nil && insp.Entry.Categories != "":
-			it.Categories = insp.Entry.Categories
-			notes = append(notes, "categories（源桌面项）= "+insp.Entry.Categories)
-		}
-	}
-
+	// The entry's prose is not refreshed any more, and cannot be: it lives in
+	// the file `override.desktop` points at, which from the first byte on is the
+	// user's document (install copies it verbatim). Filling in a "missing"
+	// Keywords there would mean rewriting a file twin does not own — the same
+	// round trip through the parser that loses hand-made comments. A missing
+	// file is regenerated wholesale instead, by install, where an absent file is
+	// the only signal there is.
+	//
 	// The bwrap region is additive by nature, so refreshed tokens are appended
 	// rather than substituted; a token that is already in the list is skipped,
 	// which keeps the operation idempotent. The base is not touched: it is part
@@ -1075,21 +1194,19 @@ func SessionWarning(it *inst.Instance) string {
 
 // tmpfsHidesTmp asks whether the definition hides /tmp behind an empty tmpfs.
 //
-// Two spellings have to be read, because the definition may hold it either way:
-// the entry `twin gen` writes into bwrap.tmpfs, or the line someone wrote into
-// bwrap.extras by hand — every definition written before the base was split by
-// node carries it there, and this warning has to keep finding it.
-//
-// Matching one literal pair is not the arity table the passthrough region
-// refuses to build (设计 §2.1): the pattern is one option name twin itself
-// writes, nothing is derived from the match, and the only thing it feeds is the
-// session warning above.
+// There is exactly one place it can be said now — a `--tmpfs /tmp` line in
+// bwrap.extras — so the line is split on whitespace and the option's own value
+// looked at. Matching that one literal pair is not the arity table the
+// passthrough region refuses to build (设计 §2.1): the pattern is one option
+// name twin itself writes, nothing is derived from the match, and the only
+// thing it feeds is the session warning above.
 func tmpfsHidesTmp(it *inst.Instance) bool {
-	if tmpfsCovers(it.Tmpfs, "/tmp") {
-		return true
-	}
-	for n, tok := range it.Extras {
-		if tok == "--tmpfs" && n+1 < len(it.Extras) && strings.TrimRight(it.Extras[n+1], "/") == "/tmp" {
+	for _, line := range it.Extras {
+		toks := strings.Fields(line)
+		if len(toks) < 2 {
+			continue
+		}
+		if toks[0] == "--tmpfs" && strings.TrimRight(toks[1], "/") == "/tmp" {
 			return true
 		}
 	}

@@ -282,13 +282,13 @@ func TestPathMapsShortFormIsJustTheMap(t *testing.T) {
 // to say. `twin verify` still lists them all — enumerating them is its job.
 func TestProblemsAreQuietWhenNothingIsWrong(t *testing.T) {
 	ok := &verify.Report{Findings: []verify.Finding{
-		{Name: "exec.target", Status: verify.StatusOK, Detail: "/opt/wechat/wechat"},
+		{Name: "source.exec", Status: verify.StatusOK, Detail: "/opt/wechat/wechat"},
 	}}
 
 	if got := formatProblems(ok); got != "" {
 		t.Errorf("全绿时不该有输出：\n%s", got)
 	}
-	if got := formatFindings(ok); !strings.Contains(got, "exec.target") {
+	if got := formatFindings(ok); !strings.Contains(got, "source.exec") {
 		t.Errorf("verify 应当照旧列全部：\n%s", got)
 	}
 
@@ -368,10 +368,10 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 	p := inst.Paths{Home: "/nonexistent-twin-home"}
 	it := &inst.Instance{ID: "demo", Binds: []inst.Bind{{Source: "~/a", Target: "~/b"}}}
 	insp := &generate.Inspection{SourceDesktop: "/usr/share/applications/fakeapp.desktop"}
-	work := p.Profile("demo")
+	work, txt := p.Profile("demo"), p.InstanceDir("demo")+"/demo.desktop"
 
 	short := captureStdout(t, func() {
-		printGenResult(p, it, insp, work, false, false, nil)
+		printGenResult(p, it, insp, work, txt, false, false, false, nil, generate.EntryBody{})
 	})
 	if strings.Contains(short, "路径映射") {
 		t.Errorf("gen 的默认输出不该带路径映射：\n%s", short)
@@ -380,7 +380,7 @@ func TestGenShortFormIsPathAndNextStep(t *testing.T) {
 		t.Errorf("gen 的默认输出应当只有「已写出配置」与「下一步」：\n%s", short)
 	}
 	long := captureStdout(t, func() {
-		printGenResult(p, it, insp, work, false, true, nil)
+		printGenResult(p, it, insp, work, txt, false, true, false, nil, generate.EntryBody{})
 	})
 	if !strings.Contains(long, "路径映射") {
 		t.Errorf("--explain 应当展开路径映射：\n%s", long)
@@ -629,8 +629,11 @@ func TestInstallWithAnIDReadsThatInstancesDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The option list is part of the definition now (twin keeps no base of its
-	// own), so a minimal-but-valid one carries a root mount.
-	body := "id: wechat2\nexec:\n  target: /bin/true\nbwrap:\n  extras: [--dev-bind, /, /]\n"
+	// own), so a minimal-but-valid one carries a root mount — and the desktop
+	// entry's text has to live in a file of its own, which is where `install`
+	// reads the entry from.
+	body := "id: wechat2\nsource:\n  exec: /bin/true\noverride:\n  desktop: ./wechat2.desktop\n" +
+		"bwrap:\n  extras: [--dev-bind, /, /]\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

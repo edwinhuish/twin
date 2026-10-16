@@ -95,11 +95,11 @@ func Run(i *inst.Instance, p inst.Paths) *Report {
 
 	// ---- 1. the source program -------------------------------------------------
 	if !sysx.Exists(i.Target) {
-		add("exec.target 存在", StatusFail, i.Target+" 不存在", "")
+		add("source.exec 存在", StatusFail, i.Target+" 不存在", "")
 	} else if !sysx.IsExecutableFile(i.Target) {
-		add("exec.target 可执行", StatusFail, i.Target+" 没有执行位", "")
+		add("source.exec 可执行", StatusFail, i.Target+" 没有执行位", "")
 	} else {
-		add("exec.target", StatusOK, i.Target, "")
+		add("source.exec", StatusOK, i.Target, "")
 	}
 
 	if i.Level.Renames() {
@@ -390,7 +390,7 @@ func PNGSize(path string) (int, int, error) {
 func TrayFinding(p inst.Paths, i *inst.Instance, iconPath string) Finding {
 	f := Finding{Name: "托盘图标", Status: StatusOK}
 	if !i.TrayOverride {
-		f.Detail = "按设置跳过（tray.override = false）"
+		f.Detail = "按设置跳过（override.tray = false）"
 		return f
 	}
 	// A replay is the one command that fixes every branch below: it re-takes
@@ -494,7 +494,7 @@ func warnFinding(f Finding, detail, fix string) Finding {
 func TrayExtFinding(p inst.Paths, i *inst.Instance) Finding {
 	f := Finding{Name: "托盘扩展", Status: StatusOK}
 	if !i.TrayOverride {
-		f.Detail = "按设置跳过（tray.override = false）"
+		f.Detail = "按设置跳过（override.tray = false）"
 		return f
 	}
 	st := tray.CheckExt(p)

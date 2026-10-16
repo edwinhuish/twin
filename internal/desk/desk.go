@@ -227,7 +227,7 @@ func (e *Entry) LocalizedGenericName(tags ...string) (string, string) {
 // Command tokenises Exec and strips field codes, giving the real argv prefix.
 //
 // A desktop Exec value is not a shell line: the spec defines its own quoting.
-// Getting this wrong would silently produce a wrong exec.target, which is the
+// Getting this wrong would silently produce a wrong source.exec, which is the
 // first link in the identity chain.
 func (e *Entry) Command() ([]string, error) {
 	args, err := Tokenize(e.Exec)

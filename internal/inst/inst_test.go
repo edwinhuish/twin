@@ -10,25 +10,18 @@ import (
 
 func base() *Instance {
 	return &Instance{
-		ID:         "wechat2",
-		Name:       "微信2",
-		NameEn:     "WeChat 2",
-		Comment:    "第二个微信",
-		CommentEn:  "Second WeChat",
-		Keywords:   "wechat;微信;im",
-		Categories: "Network;InstantMessaging;",
-		Source:     "/usr/share/applications/wechat.desktop",
-		Level:      LevelAlias,
-		WMClass:    "wechat2",
-		Notify:     true,
-		IconSource: "/usr/share/icons/hicolor/512x512/apps/wechat.png",
-		Badge:      "2",
-		BadgeStyle: "corner",
-		Target:     "/opt/wechat/wechat",
-		Alias:      "wechat2",
-		Proc:       "/proc",
-		Tmpfs:      []string{"/tmp"},
-		RemountRO:  []string{"~/.ssh"},
+		ID:              "wechat2",
+		Target:          "/opt/wechat/wechat",
+		Source:          "/usr/share/applications/wechat.desktop",
+		DesktopOverride: "./wechat2.desktop",
+		WMClass:         "",
+		IconSource:      "/usr/share/icons/hicolor/512x512/apps/wechat.png",
+		Badge:           "2",
+		BadgeStyle:      "corner",
+		TrayOverride:    true,
+		Level:           LevelAlias,
+		NestedNS:        true,
+		Unshare:         []string{"ipc"},
 		// The values carry the two things a separator must not touch: a colon
 		// (`PATH=/a:/b`) and another `=` (`OPTS=--a=b`) both have to come back
 		// as written — the split is at the first `=` and nowhere else.
@@ -37,12 +30,20 @@ func base() *Instance {
 			{Key: "PATH", Value: "/a:/b"},
 			{Key: "OPTS", Value: "--a=b"},
 		},
-		// The old spelling of the root, kept in the fixture on purpose: an
-		// installed definition written before the root moved into `bind` still
-		// has to load and run (see inst.hasRootMount).
-		Extras: []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar"},
+		// One line per argument group, and the fixture keeps a `~` in one of
+		// them: that spelling has to survive the round trip untouched (Build is
+		// what folds it into this machine's home, at launch time).
+		Extras: []string{
+			"--proc /proc",
+			"--tmpfs /dev/shm",
+			"--tmpfs ~/.cache/wechat",
+			"--die-with-parent",
+		},
 		Binds: []Bind{
+			{Source: "/", Target: "/", Dev: true},
 			{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
+			{Source: "/usr/share/wechat/theme.conf", Target: "~/.config/wechat/theme.conf", ReadOnly: true},
+			{Source: "~/.config/wechat/pending.conf", Target: "~/pending.conf", ReadOnly: true, Try: true},
 		},
 	}
 }
@@ -91,94 +92,136 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	path := filepath.Join(dir, "profile.yml")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load:\n%s\n%v", data, err)
-	}
-	if out.ID != in.ID || out.Name != in.Name || out.Level != in.Level {
+	out, first := loadRender(t, dir, data)
+	if out.ID != in.ID || out.Level != in.Level || out.NestedNS != in.NestedNS {
 		t.Errorf("scalars lost: %+v", out)
 	}
-	if out.Target != in.Target || out.Alias != in.Alias {
-		t.Errorf("exec lost: %q / %q", out.Target, out.Alias)
+	if out.Target != in.Target || out.Source != in.Source {
+		t.Errorf("source lost: exec=%q desktop=%q", out.Target, out.Source)
 	}
-	if len(out.Binds) != 1 || out.Binds[0].Source != in.Binds[0].Source {
+	// The entry's text is the one field the round trip is *supposed* to move:
+	// the file keeps `./wechat2.desktop` — the spelling that lets a bundle be
+	// picked up and moved to another machine — while every reader downstream
+	// gets the absolute path, because Load resolves relative paths once, against
+	// the definition's own directory, and nobody resolves them again (see Load).
+	if want := filepath.Join(dir, "wechat2.desktop"); out.DesktopOverride != want {
+		t.Errorf("override.desktop = %q, want %q", out.DesktopOverride, want)
+	}
+	if out.WMClass != in.WMClass || out.IconSource != in.IconSource || out.Badge != in.Badge ||
+		out.BadgeStyle != in.BadgeStyle || out.TrayOverride != in.TrayOverride {
+		t.Errorf("override lost: %+v", out)
+	}
+	if !reflect.DeepEqual(out.Binds, in.Binds) {
 		t.Errorf("binds lost: %+v", out.Binds)
 	}
-	if len(out.Tmpfs) != 1 || out.Tmpfs[0] != "/tmp" {
-		t.Errorf("tmpfs lost: %+v", out.Tmpfs)
+	if !reflect.DeepEqual(out.Unshare, in.Unshare) {
+		t.Errorf("isolation.unshare lost: %+v", out.Unshare)
 	}
 	if !reflect.DeepEqual(out.Env, in.Env) {
 		t.Errorf("bwrap.env lost: %+v", out.Env)
 	}
-	if strings.Join(out.Extras, " ") != strings.Join(in.Extras, " ") {
+	if !reflect.DeepEqual(out.Extras, in.Extras) {
 		t.Errorf("bwrap extras lost: %q", out.Extras)
 	}
-	if out.CommentEn != in.CommentEn || out.Keywords != in.Keywords || out.Categories != in.Categories {
-		t.Errorf("desktop overrides lost: comment_en=%q keywords=%q categories=%q",
-			out.CommentEn, out.Keywords, out.Categories)
-	}
-	// Re-rendering must be byte-identical, otherwise `regen` would produce a
-	// diff on every run.
-	again, err := out.Render()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(again) != string(data) {
-		t.Errorf("re-render is not stable:\n--- first ---\n%s\n--- second ---\n%s", data, again)
+	// Byte-stability is what keeps a rewrite from drifting, and it starts at the
+	// *second* pass: the first one is the pass that resolved the relative path
+	// above, and nothing writes that resolved form back anywhere.
+	_, second := loadRender(t, t.TempDir(), first)
+	if string(second) != string(first) {
+		t.Errorf("re-render is not stable:\n--- first ---\n%s\n--- second ---\n%s", first, second)
 	}
 }
 
-// The generated entry's text is one `desktop:` section. Seven keys at the root
-// answered the same question seven lines apart, and every one of them means
-// "inherit from the source" when empty — a group reads as one decision.
-func TestSnapshotPutsTheEntryTextInOneSection(t *testing.T) {
+// loadRender does the two steps a human does: it writes a definition into the
+// given directory, reads it back, and renders it again. It returns both the
+// value and the second document, so a test can say which bytes must not move
+// between the two.
+func loadRender(t *testing.T, dir string, data []byte) (*Instance, []byte) {
+	t.Helper()
+	path := filepath.Join(dir, ProfileName)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load:\n%s\n%v", data, err)
+	}
+	again, err := it.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return it, again
+}
+
+// The entry's text is not in the definition at all any more: it is a file of
+// its own, named by `override.desktop`. Five keys here answered "what does the
+// menu say?", which is a question about a text file — and every one of them
+// stopped being changeable the moment the file existed.
+func TestSnapshotKeepsTheEntryTextOutOfTheDefinition(t *testing.T) {
 	data, err := base().Render()
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "\ndesktop:\n") {
-		t.Errorf("没有 desktop: 一节：\n%s", text)
+	if !strings.Contains(text, "\n  desktop: ./wechat2.desktop\n") {
+		t.Errorf("override.desktop 没有写进 override 节点：\n%s", text)
 	}
-	// Anchored on a newline so the indented copies inside `desktop:` do not
-	// count: the assertion is about what is at the *root*.
-	for _, key := range []string{"name", "name_en", "comment", "comment_en", "keywords", "categories", "source"} {
-		if strings.Contains(text, "\n"+key+":") {
-			t.Errorf("%s 还留在根上：\n%s", key, text)
+	for _, key := range []string{"name", "name_en", "comment", "comment_en", "keywords", "categories"} {
+		if strings.Contains(text, "\n"+key+":") || strings.Contains(text, "\n  "+key+":") {
+			t.Errorf("%s 还在定义里 —— 它属于 override.desktop 那份正文：\n%s", key, text)
 		}
-		if !strings.Contains(text, "\n  "+key+":") {
-			t.Errorf("%s 没有缩进进 desktop: 一节：\n%s", key, text)
-		}
+	}
+	// wm_class is the one knob about that text that stays here, and it is
+	// written even when empty: "the id" is a decision, not a missing value.
+	if !strings.Contains(text, "\n  wm_class:") {
+		t.Errorf("override.wm_class 应当无条件写出（留空 = 用 id）：\n%s", text)
+	}
+	if !strings.Contains(text, "\n  tray: true\n") {
+		t.Errorf("override.tray 应当在 override 节点里：\n%s", text)
 	}
 }
 
-// A snapshot written before the keys moved must keep loading. The old spelling
-// is not ambiguous — there is nowhere else a root-level `name` could have
-// belonged — and refusing it would take every installed instance offline at
-// once, over a change the file itself absorbs on the next install.
-func TestLoadReadsThePreSectionSpelling(t *testing.T) {
-	legacy := "id: wechat2\n" +
-		"name: 微信2\n" +
-		"comment: 第二个微信\n" +
-		"keywords: wechat;微信;\n" +
-		"source: /usr/share/applications/wechat.desktop\n" +
-		"exec:\n" +
-		"  target: /opt/wechat/wechat\n"
-	path := filepath.Join(t.TempDir(), "profile.yml")
+// A snapshot written in the old shape does not load, and that is deliberate:
+// the keys that moved are refused *by name*, with the place they moved to. Read
+// as "not asked for", a definition whose entry text went missing installs half
+// an instance — and the half it loses is the identity.
+func TestLoadRefusesTheOldSections(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		body string
+		// The name the reader has to be given: every one of these keys lives
+		// somewhere else now, and a message that only said "unknown key" would
+		// leave them to guess which of the two halves of the node it went to.
+		want string
+	}{
+		// One stale node per case, everything else already in the new spelling:
+		// reading only ever reports the first thing it finds, so a body with the
+		// whole old schema in it would test the *order* of these messages
+		// instead of each message.
+		{"desktop", "id: wechat2\ndesktop:\n  name: 微信2\n  source: /usr/share/applications/wechat.desktop\nsource:\n  exec: /opt/wechat/wechat\n", "source.desktop"},
+		{"identity", "id: wechat2\nidentity:\n  level: alias\n  wm_class: wechat2\nsource:\n  exec: /opt/wechat/wechat\n", "isolation.level"},
+		{"icon", "id: wechat2\nicon:\n  source: /usr/share/icons/x.png\nsource:\n  exec: /opt/wechat/wechat\n", "override.icon"},
+		{"exec", "id: wechat2\nexec:\n  target: /opt/wechat/wechat\n", "source.exec"},
+		{"tray", "id: wechat2\ntray:\n  override: false\nsource:\n  exec: /opt/wechat/wechat\n", "override.tray"},
+	} {
+		path := filepath.Join(t.TempDir(), ProfileName)
+		if err := os.WriteFile(path, []byte(c.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("旧写法 %s 必须指名报错并给出新位置 %s，得到 %v", c.name, c.want, err)
+		}
+	}
+	// The pre-section spelling of the entry text — the same keys at the root —
+	// is refused for the same reason, not read as "inherit from the source".
+	legacy := "id: wechat2\nname: 微信2\nkeywords: wechat;微信;\nsource:\n  exec: /opt/wechat/wechat\n"
+	path := filepath.Join(t.TempDir(), ProfileName)
 	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Name != "微信2" || out.Comment != "第二个微信" || out.Keywords != "wechat;微信;" ||
-		out.Source != "/usr/share/applications/wechat.desktop" {
-		t.Errorf("旧写法的桌面项文案没读回来：%+v", out)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "override.desktop") {
+		t.Errorf("根上的 name 必须指向 override.desktop，得到 %v", err)
 	}
 }
 
@@ -241,16 +284,18 @@ func TestRenderAlwaysWritesBwrapExtras(t *testing.T) {
 func TestLoadReadsABareKeyAsNoEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ProfileName)
-	body := `id: demo
-exec:
-  target: /opt/demo/demo
-  alias: demo2
+	// The id has to differ from the real program's file name, or Check refuses
+	// it as a no-op rename and this test would be reading the wrong failure.
+	body := `id: demo2
+source:
+  exec: /opt/demo/demo
+override:
+  desktop: ./demo2.desktop
+  tray: false
 bwrap:
   bind:
     - /:/:dev
   extras:
-tray:
-  override: false
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -271,10 +316,11 @@ tray:
 
 	// 空 bind 与漏写 bind 给出的是同一个事实：这份定义什么都没有挂。
 	bare := filepath.Join(dir, "no-root.yml")
-	noRootBody := `id: demo
-exec:
-  target: /opt/demo/demo
-  alias: demo2
+	noRootBody := `id: demo2
+source:
+  exec: /opt/demo/demo
+override:
+  desktop: ./demo2.desktop
 bwrap:
   bind:
 `
@@ -296,21 +342,24 @@ bwrap:
 // which file to fix.
 //
 // The root can be said in two places and both count: the `bind` entry `gen`
-// writes, and the `--dev-bind / /` an older definition keeps in `extras`. What
-// is refused is having neither.
+// writes, and the `--dev-bind / /` line a hand-written definition may keep in
+// `extras`. What is refused is having neither.
 func TestCheckRefusesADefinitionWithoutARootMount(t *testing.T) {
-	noRoot := base() // its `bind` holds a data mapping, not the root
+	noRoot := base()
+	// The root is one of the `bind` entries (the fixture's first line), so both
+	// places that can hold it have to be cleared before this means anything.
+	noRoot.Binds = nil
 	noRoot.Extras = nil
 	if err := noRoot.Check(); err == nil || !strings.Contains(err.Error(), "根挂载") {
 		t.Fatalf("没有根挂载必须被拒绝并指名那个键，得到 %v", err)
 	}
 	viaBind := base()
-	viaBind.Binds = append([]Bind{{Source: "/", Target: "/", Dev: true}}, viaBind.Binds...)
 	if err := viaBind.Check(); err != nil {
 		t.Errorf("bind 里有 /:/:dev 就该通过：%v", err)
 	}
 	viaExtras := base()
-	viaExtras.Extras = []string{"--dev-bind", "/", "/"}
+	viaExtras.Binds = nil
+	viaExtras.Extras = []string{"--dev-bind / /", "--proc /proc"}
 	if err := viaExtras.Check(); err != nil {
 		t.Errorf("旧写法的 --dev-bind / / 也该通过：%v", err)
 	}
@@ -334,13 +383,31 @@ func TestLoadRefusesTheOldExtraKey(t *testing.T) {
 	} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, ProfileName)
-		body := "id: demo\nexec:\n  target: /opt/demo/demo\nbwrap:\n  " + key + ":\n    - --unshare-pid\n"
+		body := "id: demo\nsource:\n  exec: /opt/demo/demo\noverride:\n  desktop: ./demo.desktop\n" +
+			"bwrap:\n  " + key + ":\n    - --unshare-pid\n"
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		_, err := Load(path)
 		if err == nil || !strings.Contains(err.Error(), "bwrap.extras") {
 			t.Errorf("旧键 %s（%s）必须指名报错并给出新名字，得到 %v", key, why, err)
+		}
+	}
+}
+
+// `proc` / `tmpfs` / `remountRO` 是三个折进 `extras` 的键。读成"没有这些挂载"会让
+// 一份写明了「把这里盖空」的定义装出一个什么都没盖的实例 —— 而终端上一个字都不说。
+func TestLoadRefusesTheFoldedBwrapKeys(t *testing.T) {
+	head := "id: demo\nsource:\n  exec: /opt/demo/demo\noverride:\n  desktop: ./demo.desktop\nbwrap:\n"
+	for _, key := range []string{"proc", "tmpfs", "remountRO"} {
+		path := filepath.Join(t.TempDir(), ProfileName)
+		body := head + "  " + key + ":\n    - /var/cache/demo\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "bwrap.extras") {
+			t.Errorf("旧键 bwrap.%s 必须指名报错并给出新位置，得到 %v", key, err)
 		}
 	}
 }
@@ -352,8 +419,10 @@ func TestLoadRefusesTheTopLevelBindKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ProfileName)
 	body := `id: demo
-exec:
-  target: /opt/demo/demo
+source:
+  exec: /opt/demo/demo
+override:
+  desktop: ./demo.desktop
 bind:
   - ~/.local/state/twin/demo/x:~/.x
 `
@@ -366,24 +435,26 @@ bind:
 	}
 }
 
-func TestCheckRejectsSplitIdentity(t *testing.T) {
+// The alias is the id, so the identity cannot split any more — what is left to
+// refuse is the id colliding with the real file name: renaming to it would be a
+// no-op while the desktop entry, the launcher and the tray table all claim it
+// happened.
+func TestCheckRejectsIDEqualToRealName(t *testing.T) {
 	it := base()
-	it.Argv0 = "somethingelse"
-	err := it.Check()
-	if err == nil {
-		t.Fatal("argv0 differing from the alias must be refused: the window app_id follows " +
-			"the real path while the tray id follows argv[0]")
-	}
-	if !strings.Contains(err.Error(), "argv0") {
-		t.Errorf("unhelpful error: %v", err)
+	it.ID = "wechat"
+	if err := it.Check(); err == nil {
+		t.Fatal("id == target basename is a no-op and must be refused")
 	}
 }
 
-func TestCheckRejectsAliasEqualToRealName(t *testing.T) {
+// The entry's text has to come from somewhere, and the only somewhere is the
+// file override.desktop names: an empty value would send the copy at the
+// instance directory itself, failing at the last possible moment.
+func TestCheckRejectsAMissingDesktopOverride(t *testing.T) {
 	it := base()
-	it.Alias = "wechat"
-	if err := it.Check(); err == nil {
-		t.Fatal("alias == target basename is a no-op and must be refused")
+	it.DesktopOverride = ""
+	if err := it.Check(); err == nil || !strings.Contains(err.Error(), "override.desktop") {
+		t.Fatalf("空 override.desktop 必须被拒绝并指名那个键，得到 %v", err)
 	}
 }
 
@@ -422,14 +493,18 @@ func TestCheckAcceptsRedirect(t *testing.T) {
 	if err := it.Check(); err != nil {
 		t.Errorf("redirect 应当被接受：%v", err)
 	}
-	// redirect 也要写 exec.alias：改名是它拿到进程级证据的前提，少了这一行
-	// 快照回放时就会退化成「目标原名」（这个坑真实存在过）。
+	// The alias is the id, and the id is the first line of the definition —
+	// which is all a replay needs to know which name to build. Nothing else
+	// may spell it: a second spelling is a second answer.
 	data, err := it.Render()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "alias") {
-		t.Errorf("redirect 的 exec.alias 没写进快照：\n%s", data)
+	if !strings.Contains(string(data), "id: wechat2\n") {
+		t.Errorf("id 没写进快照：\n%s", data)
+	}
+	if strings.Contains(string(data), "alias:") {
+		t.Errorf("别名还是 id，定义里不该有第二个键说它：\n%s", data)
 	}
 	if !LevelRedirect.Implemented() || !LevelRedirect.Renames() {
 		t.Error("redirect 必须同时是「已实现」与「会改名」")
@@ -454,7 +529,7 @@ func TestCheckRefusesForbiddenPassthrough(t *testing.T) {
 		it := base()
 		// The root is kept, so the refusal cannot come from "no root mount" and
 		// quietly pass for the wrong reason.
-		it.Extras = []string{"--dev-bind", "/", "/", c.tok}
+		it.Extras = []string{"--dev-bind / /", c.tok}
 		err := it.Check()
 		if err == nil {
 			t.Errorf("CheckBwrapToken(%q) must be refused: %s", c.tok, c.why)
@@ -468,9 +543,9 @@ func TestCheckRefusesForbiddenPassthrough(t *testing.T) {
 
 func TestCheckAcceptsOrdinaryPassthrough(t *testing.T) {
 	it := base()
-	it.Extras = []string{"--dev-bind", "/", "/", "--unshare-pid", "--setenv", "TWIN_FOO", "bar", "--chdir", "/tmp"}
+	it.Extras = []string{"--dev-bind / /", "--unshare-pid", "--setenv TWIN_FOO bar", "--chdir /tmp"}
 	if err := it.Check(); err != nil {
-		t.Fatalf("ordinary bwrap tokens must pass: %v", err)
+		t.Fatalf("ordinary bwrap option lines must pass: %v", err)
 	}
 }
 
@@ -496,25 +571,26 @@ func TestRelativePathsResolveAgainstTheDefinitionDirectory(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ProfileName)
 	body := `id: demo
-exec:
-  target: ./bin/demo
-icon:
-  source: assets/demo.png
+source:
+  exec: ./bin/demo
+  desktop: ./share/demo.desktop
+override:
+  desktop: ./demo.desktop
+  icon:
+    source: assets/demo.png
 bwrap:
-  proc: proc-mirror
-  tmpfs:
-    - cache
-    - /tmp
   bind:
     - ./state/demo:~/.demo
     - /abs/data:~/abs
     - ~/data:~/data-in-home
-  remountRO:
-    - secrets
-    - ~/.ssh
   env:
     - DEMO_MODE=on
     - PATH=/a:/b
+  extras:
+    - --proc proc-mirror
+    - --tmpfs cache
+    - --tmpfs /tmp
+    - --remount-ro secrets
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -524,19 +600,26 @@ bwrap:
 		t.Fatal(err)
 	}
 	if want := filepath.Join(dir, "bin/demo"); it.Target != want {
-		t.Errorf("exec.target = %q, want %q", it.Target, want)
+		t.Errorf("source.exec = %q, want %q", it.Target, want)
+	}
+	if want := filepath.Join(dir, "share/demo.desktop"); it.Source != want {
+		t.Errorf("source.desktop = %q, want %q", it.Source, want)
 	}
 	if want := filepath.Join(dir, "assets/demo.png"); it.IconSource != want {
-		t.Errorf("icon.source = %q, want %q", it.IconSource, want)
+		t.Errorf("override.icon.source = %q, want %q", it.IconSource, want)
 	}
-	if len(it.Tmpfs) != 2 || it.Tmpfs[0] != filepath.Join(dir, "cache") || it.Tmpfs[1] != "/tmp" {
-		t.Errorf("bwrap.tmpfs = %v（/tmp 这类绝对路径不该被动）", it.Tmpfs)
+	// The entry's text resolves the same way, and that is what makes a bundle
+	// (definition + entry text) movable: `gen` and Load have to agree about
+	// `./demo.desktop`, or gen writes one file and install copies another.
+	if want := filepath.Join(dir, "demo.desktop"); it.DesktopOverride != want {
+		t.Errorf("override.desktop = %q, want %q", it.DesktopOverride, want)
 	}
-	if want := filepath.Join(dir, "proc-mirror"); it.Proc != want {
-		t.Errorf("bwrap.proc = %q, want %q", it.Proc, want)
-	}
-	if len(it.RemountRO) != 2 || it.RemountRO[0] != filepath.Join(dir, "secrets") || it.RemountRO[1] != "~/.ssh" {
-		t.Errorf("bwrap.remountRO = %v（~ 留给 Expand，绝对路径不该被动）", it.RemountRO)
+	// Nothing inside `extras` is resolved: it is a bwrap option list, and a
+	// relative path in it is a path relative to the *launcher's* working
+	// directory — an answer nobody chose. Only `~` is folded, at launch time.
+	wantExtras := []string{"--proc proc-mirror", "--tmpfs cache", "--tmpfs /tmp", "--remount-ro secrets"}
+	if !reflect.DeepEqual(it.Extras, wantExtras) {
+		t.Errorf("bwrap.extras = %q, want %q（twin 不解析它）", it.Extras, wantExtras)
 	}
 	wantEnv := []EnvVar{{Key: "DEMO_MODE", Value: "on"}, {Key: "PATH", Value: "/a:/b"}}
 	if !reflect.DeepEqual(it.Env, wantEnv) {
@@ -636,8 +719,8 @@ func TestTrayOverrideIsPartOfTheSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "override: false") {
-		t.Fatalf("关掉的状态必须看得见：\n%s", data)
+	if !strings.Contains(string(data), "\n  tray: false\n") {
+		t.Fatalf("关掉的状态必须看得见（override.tray）：\n%s", data)
 	}
 
 	dir := t.TempDir()
@@ -650,11 +733,11 @@ func TestTrayOverrideIsPartOfTheSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if out.TrayOverride {
-		t.Error("override = false 读回来变成了 true")
+		t.Error("override.tray = false 读回来变成了 true")
 	}
 }
 
-// 没有 tray 段的老快照等于"要覆盖"：它们全都写于这个选项存在之前，
+// 没有 override.tray 那份键的老快照等于"要覆盖"：它们全都写于这个选项存在之前，
 // 把它们的语义翻成"不管"会让已经写进宿主表的条目悄悄失去维护。
 func TestTrayOverrideDefaultsToTrueForOldSnapshots(t *testing.T) {
 	it := base()
@@ -663,14 +746,12 @@ func TestTrayOverrideDefaultsToTrueForOldSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := dropBlock(t, string(data), "tray")
+	old := dropLine(t, string(data), "  tray: true")
 	if old == string(data) {
-		t.Fatalf("测试前提不成立：快照里没有 tray 段\n%s", data)
+		t.Fatalf("测试前提不成立：快照里没有 override.tray\n%s", data)
 	}
-	// The section must be gone with its keys *and* its comment — a file that
-	// still carried the `override:` line would not be an old file at all.
-	if strings.Contains(old, "override:") {
-		t.Fatalf("tray 段没删干净：\n%s", old)
+	if strings.Contains(old, "  tray:") {
+		t.Fatalf("tray 行没删干净：\n%s", old)
 	}
 
 	dir := t.TempDir()
@@ -683,27 +764,20 @@ func TestTrayOverrideDefaultsToTrueForOldSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !out.TrayOverride {
-		t.Error("缺 tray 段应当按 true 处理")
+		t.Error("缺 override.tray 应当按 true 处理")
 	}
 }
 
-// dropBlock returns doc without the top-level `key:` mapping and everything
-// indented under it — the shape a file written before that section existed has.
-// It walks lines rather than matching text because the section now carries
-// multi-line comments of its own.
-func dropBlock(t *testing.T, doc, key string) string {
+// dropLine returns doc without one indented line — the shape a file written
+// before that key existed has. It matches the whole line, so a comment that
+// mentions the key does not count as the key.
+func dropLine(t *testing.T, doc, line string) string {
 	t.Helper()
 	var out []string
-	dropping := false
 	for _, ln := range strings.Split(doc, "\n") {
-		if ln == key+":" {
-			dropping = true
+		if ln == line {
 			continue
 		}
-		if dropping && (ln == "" || ln[0] == ' ' || ln[0] == '#') {
-			continue
-		}
-		dropping = false
 		out = append(out, ln)
 	}
 	return strings.Join(out, "\n")
@@ -821,25 +895,16 @@ func TestSnapshotWritesBindEvenWhenEmpty(t *testing.T) {
 	if !strings.Contains(string(data), "数据目录与源程序共用") {
 		t.Errorf("空的 bind 必须把共享状态的后果写在文件里：\n%s", data)
 	}
-	// 而且空映射必须能原样读回来（往返稳定是 `regen` 不做无谓 diff 的前提）。
-	dir := t.TempDir()
-	path := filepath.Join(dir, "profile.yml")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 而且空映射必须能原样读回来：定义里那份相对路径（override.desktop）在 Load
+	// 那一步被解析成绝对路径，所以往返的稳定性从第二份起成立 —— 谁也不会把解析后
+	// 的形式写回盘上（见 Load）。
+	out, first := loadRender(t, t.TempDir(), data)
 	if len(out.Binds) != 0 {
 		t.Errorf("空映射读回来变成 %+v", out.Binds)
 	}
-	again, err := out.Render()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(again) != string(data) {
-		t.Errorf("空映射的往返不稳定：\n--- 第一次 ---\n%s\n--- 第二次 ---\n%s", data, again)
+	_, second := loadRender(t, t.TempDir(), first)
+	if string(second) != string(first) {
+		t.Errorf("空映射的往返不稳定：\n--- 第一次 ---\n%s\n--- 第二次 ---\n%s", first, second)
 	}
 }
 
@@ -962,33 +1027,36 @@ func TestParseEnvVarRefusesUnusableKeys(t *testing.T) {
 	}
 }
 
-// 两个键从别的节点搬进了 `bwrap`（tmpfs 来自 isolation、env 来自 exec）。读成"没设置"
-// 会让两份定义各表一套：一份把目录盖空、另一份什么都没盖，而终端上一个字都不说。
+// 两个键从别的节点搬进了 `bwrap`（--tmpfs 来自 isolation、env 来自 exec），而
+// `isolation.tmpfs` 更是连键都没有了。读成"没设置"会让两份定义各表一套：一份把目录
+// 盖空、另一份什么都没盖，而终端上一个字都不说 —— 所以每一处都指名报错，并且要说清
+// 搬到哪去了，否则读者只知道"它不在这儿"。
 func TestLoadRefusesTheMovedTmpfsAndEnvKeys(t *testing.T) {
-	cases := map[string]string{
-		"isolation.tmpfs": `id: demo
-exec:
-  target: /opt/demo/demo
+	cases := map[string]struct{ body, want string }{
+		"isolation.tmpfs": {`id: demo
+source:
+  exec: /opt/demo/demo
 isolation:
   tmpfs:
     - /var/cache/demo
-`,
-		"exec.env": `id: demo
+`, "bwrap.extras"},
+		"exec.env": {`id: demo
+source:
+  exec: /opt/demo/demo
 exec:
-  target: /opt/demo/demo
   env:
     FOO: bar
-`,
+`, "bwrap.env"},
 	}
-	for key, body := range cases {
+	for key, c := range cases {
 		dir := t.TempDir()
 		path := filepath.Join(dir, ProfileName)
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(c.body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		_, err := Load(path)
-		if err == nil || !strings.Contains(err.Error(), "bwrap.") {
-			t.Errorf("旧键 %s 必须指名报错并给出新位置，得到 %v", key, err)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("旧键 %s 必须指名报错并给出新位置（%s），得到 %v", key, c.want, err)
 		}
 	}
 }
@@ -1011,7 +1079,7 @@ func TestCheckRefusesReadOnlyDeviceBind(t *testing.T) {
 // "mount the host root at /ro", which leaves the sandbox with no root at all —
 // the program then cannot find itself, and nothing on the way says why.
 func TestCheckRefusesRootMountedSomewhereElse(t *testing.T) {
-	i := &Instance{ID: "x", Level: LevelNone, Target: "/bin/true",
+	i := &Instance{ID: "x", Level: LevelNone, Target: "/bin/true", DesktopOverride: "./x.desktop",
 		Binds: []Bind{{Source: "/", Target: "/ro"}}}
 	if err := i.Check(); err == nil {
 		t.Errorf("把根挂到别处应当报错，得到 %+v", i.Binds[0])

@@ -9,7 +9,6 @@ import (
 	"github.com/edwinhuish/twin/internal/config"
 	"github.com/edwinhuish/twin/internal/desk"
 	"github.com/edwinhuish/twin/internal/inst"
-	"github.com/edwinhuish/twin/internal/sandbox"
 	"github.com/edwinhuish/twin/internal/sysx"
 )
 
@@ -168,26 +167,27 @@ func TestPlanDerivesFromSource(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{}, wechatInspection())
+	it, body, der, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if it.ID != "wechat2" {
 		t.Errorf("id = %q, want wechat2", it.ID)
 	}
-	if it.Name != "微信2" {
-		t.Errorf("name = %q, want 微信2 (derived from Name[zh_CN])", it.Name)
+	if body.Name != "微信2" {
+		t.Errorf("name = %q, want 微信2 (derived from Name[zh_CN])", body.Name)
 	}
-	if it.NameEn != "wechat2" {
-		t.Errorf("name_en = %q, want wechat2", it.NameEn)
+	if body.NameEn != "wechat2" {
+		t.Errorf("name_en = %q, want wechat2", body.NameEn)
 	}
-	if it.Comment != "微信桌面版" {
-		t.Errorf("comment = %q, want 微信桌面版 (from Comment[zh_CN])", it.Comment)
+	if body.Comment != "微信桌面版" {
+		t.Errorf("comment = %q, want 微信桌面版 (from Comment[zh_CN])", body.Comment)
 	}
 	if it.Badge != "2" {
 		t.Errorf("badge = %q, want 2 (trailing digit of the id)", it.Badge)
 	}
-	for _, key := range []string{"id", "desktop.name", "desktop.name_en", "desktop.comment", "badge"} {
+	for _, key := range []string{"id", "override.desktop Name", "override.desktop Name[en]",
+		"override.desktop Comment", "badge"} {
 		if !hasDerivation(der, key) {
 			t.Errorf("no derivation recorded for %q: %+v", key, der)
 		}
@@ -200,16 +200,16 @@ func TestPlanFallsBackToASCIIName(t *testing.T) {
 	clearLocale(t, "de_DE.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, _, err := Plan(p, Options{}, wechatInspection())
+	_, body, _, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Name != "wechat2" {
-		t.Errorf("name = %q, want wechat2", it.Name)
+	if body.Name != "wechat2" {
+		t.Errorf("name = %q, want wechat2", body.Name)
 	}
 	// Name[en] would be identical to Name here, so it must be dropped.
-	if it.NameEn != "" {
-		t.Errorf("name_en = %q, want empty (identical to name)", it.NameEn)
+	if body.NameEn != "" {
+		t.Errorf("name_en = %q, want empty (identical to name)", body.NameEn)
 	}
 }
 
@@ -226,7 +226,7 @@ func TestPlanSkipsTakenIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	it, _, err := Plan(p, Options{}, wechatInspection())
+	it, _, _, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,17 +240,21 @@ func TestPlanExplicitOptionsWin(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{ID: "wx", Name: "我的微信", Badge: "A"}, wechatInspection())
+	it, body, der, err := Plan(p, Options{ID: "wx", Name: "我的微信", Badge: "A"}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.ID != "wx" || it.Name != "我的微信" || it.Badge != "A" {
-		t.Fatalf("explicit options were overridden: id=%q name=%q badge=%q", it.ID, it.Name, it.Badge)
+	if it.ID != "wx" || body.Name != "我的微信" || it.Badge != "A" {
+		t.Fatalf("explicit options were overridden: id=%q name=%q badge=%q", it.ID, body.Name, it.Badge)
 	}
+	// The name is not in the table — the other lines of the entry still are,
+	// because they are derived, so the check is on the value, not on the key.
 	for _, d := range der {
-		switch d.Key {
-		case "id", "name", "badge":
+		switch {
+		case d.Key == "id" || d.Key == "badge":
 			t.Errorf("%q must not be reported as derived when given explicitly: %+v", d.Key, d)
+		case d.Value == "我的微信":
+			t.Errorf("an explicit value must not be reported as derived: %+v", d)
 		}
 	}
 }
@@ -272,19 +276,14 @@ func TestKeywordsDerivedWhenSourceHasNone(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{}, wechatInspection())
+	_, body, der, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "微信;wechat;" {
-		t.Errorf("keywords = %q, want 微信;wechat;", it.Keywords)
+	if body.Keywords != "微信;wechat;" {
+		t.Errorf("keywords = %q, want 微信;wechat;", body.Keywords)
 	}
-	var why string
-	for _, d := range der {
-		if d.Key == "desktop.keywords" {
-			why = d.Source
-		}
-	}
+	why := derivationFor(der, "override.desktop Keywords")
 	if !strings.Contains(why, "源无 Keywords") {
 		t.Errorf("a synthesised list must say so: %q", why)
 	}
@@ -299,14 +298,14 @@ func TestKeywordsInheritedFromSource(t *testing.T) {
 	insp.Entry.KeywordLists = map[string]string{"zh_CN": "微信;聊天;"}
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{}, insp)
+	_, body, der, err := Plan(p, Options{}, insp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "微信;聊天;" {
-		t.Errorf("keywords = %q, want the source's Keywords[zh_CN] verbatim", it.Keywords)
+	if body.Keywords != "微信;聊天;" {
+		t.Errorf("keywords = %q, want the source's Keywords[zh_CN] verbatim", body.Keywords)
 	}
-	if !hasDerivation(der, "desktop.keywords") {
+	if !hasDerivation(der, "override.desktop Keywords") {
 		t.Errorf("inheritance should still be reported: %+v", der)
 	}
 }
@@ -318,12 +317,12 @@ func TestKeywordsTreatsBareSemicolonAsAbsent(t *testing.T) {
 	insp.Entry.Keywords = ";"
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, _, err := Plan(p, Options{}, insp)
+	_, body, _, err := Plan(p, Options{}, insp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "微信;wechat;" {
-		t.Errorf("keywords = %q, want the derived list", it.Keywords)
+	if body.Keywords != "微信;wechat;" {
+		t.Errorf("keywords = %q, want the derived list", body.Keywords)
 	}
 }
 
@@ -331,17 +330,15 @@ func TestKeywordsExplicitWins(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{Keywords: "k1;k2"}, wechatInspection())
+	_, body, der, err := Plan(p, Options{Keywords: "k1;k2"}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "k1;k2" {
-		t.Errorf("keywords = %q, want the explicit value verbatim", it.Keywords)
+	if body.Keywords != "k1;k2" {
+		t.Errorf("keywords = %q, want the explicit value verbatim", body.Keywords)
 	}
-	for _, d := range der {
-		if d.Key == "desktop.keywords" {
-			t.Errorf("an explicit value must not be reported as derived: %+v", d)
-		}
+	if why := derivationFor(der, "override.desktop Keywords"); why != "" {
+		t.Errorf("an explicit value must not be reported as derived: %q", why)
 	}
 }
 
@@ -417,19 +414,19 @@ func TestKeywordsDerivedNameLeavesEnglishSourceAlone(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{}, vlcInspection("Player;Capture;DVD;"))
+	_, body, der, err := Plan(p, Options{}, vlcInspection("Player;Capture;DVD;"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The display name is still derived and still Chinese — that is not in
 	// question; only the keyword list stays as the source wrote it.
-	if it.Name != "VLC 媒体播放器2" {
-		t.Errorf("name = %q, want VLC 媒体播放器2", it.Name)
+	if body.Name != "VLC 媒体播放器2" {
+		t.Errorf("name = %q, want VLC 媒体播放器2", body.Name)
 	}
-	if it.Keywords != "Player;Capture;DVD;" {
-		t.Errorf("keywords = %q, want the source list untouched", it.Keywords)
+	if body.Keywords != "Player;Capture;DVD;" {
+		t.Errorf("keywords = %q, want the source list untouched", body.Keywords)
 	}
-	if why := derivationFor(der, "desktop.keywords"); strings.Contains(why, "前置") {
+	if why := derivationFor(der, "override.desktop Keywords"); strings.Contains(why, "前置") {
 		t.Errorf("nothing was prepended, so nothing may claim it was: %q", why)
 	}
 }
@@ -440,14 +437,14 @@ func TestKeywordsExplicitNamePrependedToEnglishSource(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("Player;Capture;DVD;"))
+	_, body, der, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("Player;Capture;DVD;"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "我的播放器;Player;Capture;DVD;"; it.Keywords != want {
-		t.Errorf("keywords = %q, want %q", it.Keywords, want)
+	if want := "我的播放器;Player;Capture;DVD;"; body.Keywords != want {
+		t.Errorf("keywords = %q, want %q", body.Keywords, want)
 	}
-	why := derivationFor(der, "desktop.keywords")
+	why := derivationFor(der, "override.desktop Keywords")
 	if !strings.Contains(why, "源 Keywords") || !strings.Contains(why, "我的播放器") {
 		t.Errorf("the reason must name both halves of the result: %q", why)
 	}
@@ -458,12 +455,12 @@ func TestKeywordsExplicitNameSkippedWhenSourceHasCJK(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, _, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("播放器;Player;"))
+	_, body, _, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("播放器;Player;"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "播放器;Player;" {
-		t.Errorf("keywords = %q, want the source list untouched", it.Keywords)
+	if body.Keywords != "播放器;Player;" {
+		t.Errorf("keywords = %q, want the source list untouched", body.Keywords)
 	}
 }
 
@@ -473,12 +470,12 @@ func TestKeywordsExplicitNameSkippedWhenAlreadyListed(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, _, err := Plan(p, Options{Name: "vlc"}, vlcInspection("Player;VLC;"))
+	_, body, _, err := Plan(p, Options{Name: "vlc"}, vlcInspection("Player;VLC;"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "Player;VLC;" {
-		t.Errorf("keywords = %q, want the source list untouched", it.Keywords)
+	if body.Keywords != "Player;VLC;" {
+		t.Errorf("keywords = %q, want the source list untouched", body.Keywords)
 	}
 }
 
@@ -488,12 +485,12 @@ func TestKeywordsPrependedListIsWellFormed(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, _, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("Player;Capture"))
+	_, body, _, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("Player;Capture"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "我的播放器;Player;Capture;"; it.Keywords != want {
-		t.Errorf("keywords = %q, want %q", it.Keywords, want)
+	if want := "我的播放器;Player;Capture;"; body.Keywords != want {
+		t.Errorf("keywords = %q, want %q", body.Keywords, want)
 	}
 }
 
@@ -548,28 +545,28 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{}, ruleInspection())
+	it, body, der, err := Plan(p, Options{}, ruleInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "wechat;微信;im" {
-		t.Errorf("keywords = %q, want the rule's list verbatim", it.Keywords)
+	if body.Keywords != "wechat;微信;im" {
+		t.Errorf("keywords = %q, want the rule's list verbatim", body.Keywords)
 	}
-	if got := derivationFor(der, "desktop.keywords"); got == "" {
+	if got := derivationFor(der, "override.desktop Keywords"); got == "" {
 		t.Error("规则提供的 keywords 必须出现在推导来源里")
 	}
-	if it.Categories != "Utility;Chat;" {
-		t.Errorf("categories = %q, want the rule's", it.Categories)
+	if body.Categories != "Utility;Chat;" {
+		t.Errorf("categories = %q, want the rule's", body.Categories)
 	}
-	if got := derivationFor(der, "desktop.categories"); got == "" {
+	if got := derivationFor(der, "override.desktop Categories"); got == "" {
 		t.Error("规则提供的 categories 必须出现在推导来源里")
 	}
-	// The rule's /tmp stays in the node that names what it is — a tmpfs — and
-	// the base's own /dev/shm is written there beside it.
-	if got := strings.Join(it.Tmpfs, " "); got != "/dev/shm /tmp" {
-		t.Errorf("bwrap.tmpfs = %q, want %q", got, "/dev/shm /tmp")
+	// The rule's /tmp becomes the line that hides it, written beside the base's
+	// own /dev/shm: one list, where the order itself is readable.
+	if got := strings.Join(it.Extras, " / "); !strings.Contains(got, "--tmpfs /tmp") {
+		t.Errorf("bwrap.extras = %q，规则那条 --tmpfs /tmp 应当在里面", got)
 	}
-	if got := derivationFor(der, "bwrap.tmpfs"); got == "" {
+	if got := derivationFor(der, "bwrap.extras"); got == "" {
 		t.Error("规则提供的 tmpfs 必须出现在推导来源里")
 	}
 	// The base's root mount is written first in this node, then the rule's own
@@ -587,14 +584,14 @@ func TestPlanExplicitKeywordsBeatRule(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{Keywords: "only;this;"}, ruleInspection())
+	_, body, der, err := Plan(p, Options{Keywords: "only;this;"}, ruleInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.Keywords != "only;this;" {
-		t.Errorf("keywords = %q, want the explicit list", it.Keywords)
+	if body.Keywords != "only;this;" {
+		t.Errorf("keywords = %q, want the explicit list", body.Keywords)
 	}
-	if got := derivationFor(der, "desktop.keywords"); got != "" {
+	if got := derivationFor(der, "override.desktop Keywords"); got != "" {
 		t.Errorf("显式给了 --keywords 就不该有推导来源，得到 %q", got)
 	}
 }
@@ -605,7 +602,7 @@ func TestPlanLevelFromRuleThenConfig(t *testing.T) {
 	// rules.d wins over config.toml.
 	insp := ruleInspection()
 	insp.Rule.Level = "none"
-	it, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "alias", BadgeStyle: "corner", TmpfsUnlessX11: true}}}, insp)
+	it, _, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "alias", BadgeStyle: "corner", TmpfsUnlessX11: true}}}, insp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +616,7 @@ func TestPlanLevelFromRuleThenConfig(t *testing.T) {
 	// With no rule value, the environment layer decides.
 	insp2 := ruleInspection()
 	insp2.Rule.Level = ""
-	it2, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "none", BadgeStyle: "corner"}}}, insp2)
+	it2, _, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "none", BadgeStyle: "corner"}}}, insp2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,12 +635,17 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	cfg := config.Builtin()
 	cfg.Args = []string{"--from-config"}
 
-	it, der, err := Plan(p, Options{Cfg: cfg, Args: []string{"--from-cli"}}, ruleInspection())
+	it, _, der, err := Plan(p, Options{Cfg: cfg, Args: []string{"--from-cli"}}, ruleInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := sandbox.BaseFor(it.ID, true).Args
-	want := append(append(append([]string(nil), base...), "--from-config"), "--rule-flag", "--from-cli")
+	// Written out rather than rebuilt from sandbox.BaseFor: this is the command
+	// line, and the base is the first half of it — the root mount is in `bind`,
+	// and this fixture's rule asks for a private /tmp, so no host-/tmp line.
+	want := []string{
+		"--proc /proc", "--tmpfs /dev/shm", "--tmpfs /tmp", "--die-with-parent",
+		"--from-config", "--rule-flag", "--from-cli",
+	}
 	if strings.Join(it.Extras, " ") != strings.Join(want, " ") {
 		t.Fatalf("bwrap.extras = %v, want %v", it.Extras, want)
 	}
@@ -655,22 +657,18 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	}
 }
 
-// Every piece of the base goes into the node that names its kind. `--tmpfs
-// /dev/shm` inside a token list and `tmpfs: [/dev/shm]` are the same mount, but
-// only the node tells a reader what kind of mount it is without knowing
-// bubblewrap's options — and that is what those keys are for.
+// Every piece of the base goes where it can be read as what it is: the root
+// mount into `bind` (it is a mount), and the rest as the very option lines the
+// command gets — `--proc /proc` next to `--tmpfs /dev/shm` next to the host's
+// `/tmp` line, in the order they are applied. One list is also what makes
+// "which line wins" a question the file itself answers.
 func TestPlanWritesTheBaseByNode(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, der, err := Plan(p, Options{}, wechatInspection())
+	it, _, der, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, tok := range []string{"--proc", "--tmpfs", "--setenv", "--dev-bind"} {
-		if containsToken(it.Extras, tok) {
-			t.Errorf("bwrap.extras 里还留着 %s，它有自己那个节点：%v", tok, it.Extras)
-		}
 	}
 	// The root is a mount, so it is written in the node for mounts — as the
 	// first entry there, because the layers above (the rule's mappings) are
@@ -678,28 +676,20 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	if len(it.Binds) == 0 || !it.Binds[0].IsRootMount() {
 		t.Errorf("bwrap.bind = %v，want 第一条是基座那条根挂载", it.Binds)
 	}
-	// This fixture has no Wayland trait and no rule, so the host's /tmp is the
-	// branch — written as a mapping right after the root: `bind` is emitted
-	// after the shaped mounts, and that is what lets this one line overrule a
-	// `tmpfs: [/tmp]` without the reader having to delete it there too.
-	if len(it.Binds) != 2 || it.Binds[1].Source != "/tmp" || it.Binds[1].Target != "/tmp" {
-		t.Errorf("宿主 /tmp 那一支要写成 bind 里的一条自映射：%v", it.Binds)
-	}
-	if containsToken(it.Extras, "--bind") {
-		t.Errorf("宿主 /tmp 不该留在 extras 里：%v", it.Extras)
-	}
-	if it.Proc != "/proc" {
-		t.Errorf("bwrap.proc = %q, want /proc", it.Proc)
-	}
-	if got := strings.Join(it.Tmpfs, " "); got != "/dev/shm" {
-		t.Errorf("bwrap.tmpfs = %q, want /dev/shm", got)
+	// Everything else the base contributes is an option line, in command order:
+	// this fixture has no Wayland trait and no rule, so the host's /tmp is the
+	// branch — a line of its own, *after* every tmpfs line, which is what lets
+	// it replace a `--tmpfs /tmp` without deleting that line as well.
+	want := []string{"--proc /proc", "--tmpfs /dev/shm", "--bind /tmp /tmp", "--die-with-parent"}
+	if got := strings.Join(it.Extras, " / "); got != strings.Join(want, " / ") {
+		t.Errorf("bwrap.extras = %q, want %q", got, strings.Join(want, " / "))
 	}
 	if len(it.Env) != 1 || it.Env[0].Key != "TWIN_INSTANCE" || it.Env[0].Value != "wechat2" {
 		t.Errorf("bwrap.env = %+v", it.Env)
 	}
 	// Every node the base filled has to name its source: this is the part the
 	// user did not write.
-	for _, key := range []string{"bwrap.bind", "bwrap.proc", "bwrap.tmpfs", "bwrap.env", "bwrap.extras"} {
+	for _, key := range []string{"bwrap.bind", "bwrap.env", "bwrap.extras"} {
 		if !hasDerivation(der, key) {
 			t.Errorf("%s 的推导来源没记下来", key)
 		}
@@ -715,13 +705,12 @@ func TestPlanNoneLevelTakesNoTmpDecision(t *testing.T) {
 	insp := wechatInspection()
 	insp.Traits.Wayland = true
 
-	it, _, err := Plan(p, Options{Cfg: config.Builtin(), Level: inst.LevelNone}, insp)
+	it, _, _, err := Plan(p, Options{Cfg: config.Builtin(), Level: inst.LevelNone}, insp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(it.Extras) != 0 || len(it.Tmpfs) != 0 || it.Proc != "" || len(it.Env) != 0 || len(it.Binds) != 0 {
-		t.Errorf("level none 没有基座：bind=%v args=%v tmpfs=%v proc=%q env=%v",
-			it.Binds, it.Extras, it.Tmpfs, it.Proc, it.Env)
+	if len(it.Extras) != 0 || len(it.Env) != 0 || len(it.Binds) != 0 {
+		t.Errorf("level none 没有基座：bind=%v extras=%v env=%v", it.Binds, it.Extras, it.Env)
 	}
 }
 
@@ -734,7 +723,7 @@ func TestPlanBlamesTheLayerForABadToken(t *testing.T) {
 	cfg.Path = "/home/x/.config/twin/config.toml"
 	cfg.Args = []string{"--argv0"}
 
-	_, _, err := Plan(p, Options{Cfg: cfg}, ruleInspection())
+	_, _, _, err := Plan(p, Options{Cfg: cfg}, ruleInspection())
 	if err == nil {
 		t.Fatal("配置里的 --argv0 应当被拒绝")
 	}
@@ -742,38 +731,36 @@ func TestPlanBlamesTheLayerForABadToken(t *testing.T) {
 		t.Errorf("错误应指出是 config.toml 里的，得到 %v", err)
 	}
 
-	_, _, err = Plan(p, Options{Args: []string{"--argv0"}}, ruleInspection())
+	_, _, _, err = Plan(p, Options{Args: []string{"--argv0"}}, ruleInspection())
 	if err == nil || !strings.Contains(err.Error(), "命令行") {
 		t.Errorf("命令行透传的错误应点名命令行，得到 %v", err)
 	}
 }
 
-// Refresh fills the gaps and leaves every value the snapshot already holds
-// alone — regen must not quietly rewrite a hand-edited instance.
-func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
-	t.Setenv("LC_ALL", "")
-	t.Setenv("LC_MESSAGES", "")
-	t.Setenv("LANG", "zh_CN.UTF-8")
-
+// Refresh only ever *adds*: the option lines the environment layers contribute
+// and the snapshot does not carry yet. Everything already in the file is left
+// byte for byte — regen must not quietly rewrite a hand-edited instance.
+//
+// The entry's prose is not refreshed at all any more, and cannot be: it lives in
+// the file `override.desktop` points at, which from the first byte on is the
+// user's document (see Materialize).
+func TestRefreshAppendsOnlyWhatIsMissing(t *testing.T) {
 	it := &inst.Instance{
-		ID:       "wechat2",
-		Keywords: "keep;me;", // hand-edited, must survive
-		Target:   "/opt/wechat/wechat",
-		Alias:    "wechat2",
+		ID:              "wechat2",
+		Target:          "/opt/wechat/wechat",
+		DesktopOverride: "./wechat2.desktop",
+		Level:           inst.LevelAlias,
+		// Hand-written, and config.toml wants the same line: appending it a
+		// second time would be the "helpful" rewrite that makes the list grow
+		// on every run.
+		Extras: []string{"--from-config"},
 	}
-	it.Level = inst.LevelAlias
 	cfg := config.Builtin()
 	cfg.Args = []string{"--from-config"}
 
 	notes, err := Refresh(it, ruleInspection(), cfg)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if it.Keywords != "keep;me;" {
-		t.Errorf("快照里的 keywords 被改写了：%q", it.Keywords)
-	}
-	if it.Categories == "" {
-		t.Error("空的 categories 应当被补上")
 	}
 	if strings.Join(it.Extras, " ") != "--from-config --rule-flag" {
 		t.Fatalf("bwrap.extras = %v, want config + rule（基座属于定义本身，--refresh 不碰它）", it.Extras)
@@ -792,30 +779,28 @@ func TestRefreshOnlyFillsEmptyFields(t *testing.T) {
 	}
 }
 
-// Both spellings have to be read: the entry `twin gen` writes into bwrap.tmpfs,
-// and the line an older or hand-written definition keeps in bwrap.extras. Missing
-// that second one would let the warning go quiet exactly where it matters — a
-// Wayland instance replayed in an X11 session.
+// The warning has to find the line that hides /tmp — there is exactly one place
+// it can be said (a `--tmpfs /tmp` line in bwrap.extras), and missing it would
+// let the warning go quiet exactly where it matters: a Wayland instance
+// replayed in an X11 session.
 func TestSessionWarning(t *testing.T) {
-	fromExtras := &inst.Instance{ID: "x", Target: "/bin/true",
-		Extras: []string{"--dev-bind", "/", "/", "--tmpfs", "/tmp"}}
-	fromTmpfs := &inst.Instance{ID: "x", Tmpfs: []string{"/tmp"}, Target: "/bin/true"}
-	neither := &inst.Instance{ID: "x", Target: "/bin/true",
-		Extras: []string{"--dev-bind", "/", "/", "--bind", "/tmp", "/tmp"}}
+	hidesTmp := &inst.Instance{ID: "x", Target: "/bin/true",
+		Extras: []string{"--proc /proc", "--tmpfs /tmp"}}
+	// The other branch of the same decision: the host's /tmp, bound onto
+	// itself. No warning — /tmp/.X11-unix is exactly what it keeps reachable.
+	hostTmp := &inst.Instance{ID: "x", Target: "/bin/true",
+		Extras: []string{"--proc /proc", "--bind /tmp /tmp"}}
 
-	for name, it := range map[string]*inst.Instance{"bwrap.extras": fromExtras, "bwrap.tmpfs": fromTmpfs} {
-		t.Setenv("WAYLAND_DISPLAY", "")
-		if SessionWarning(it) == "" {
-			t.Errorf("%s 里有 tmpfs /tmp 而会话没有 WAYLAND_DISPLAY，应当警告", name)
-		}
-		t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-		if SessionWarning(it) != "" {
-			t.Errorf("%s：Wayland 会话下不该警告", name)
-		}
-	}
 	t.Setenv("WAYLAND_DISPLAY", "")
-	if SessionWarning(neither) != "" {
+	if SessionWarning(hidesTmp) == "" {
+		t.Error("盖住了 /tmp 而会话没有 WAYLAND_DISPLAY，应当警告")
+	}
+	if SessionWarning(hostTmp) != "" {
 		t.Error("没有盖住 /tmp 时不该警告")
+	}
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	if SessionWarning(hidesTmp) != "" {
+		t.Error("Wayland 会话下不该警告")
 	}
 }
 
@@ -828,40 +813,40 @@ func TestPlanTrayOverrideSwitches(t *testing.T) {
 	p := inst.Paths{Home: t.TempDir()}
 
 	// 默认（config 内置 = 开）
-	it, der, err := Plan(p, Options{}, wechatInspection())
+	it, _, der, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !it.TrayOverride {
 		t.Error("默认应当覆盖托盘图标")
 	}
-	if got := derivationFor(der, "tray.override"); got != "" {
+	if got := derivationFor(der, "override.tray"); got != "" {
 		t.Errorf("默认值不该出现在推导列表里，得到 %q", got)
 	}
 
 	// config.toml 关掉
 	cfg := config.Builtin()
 	cfg.Defaults.TrayOverride = false
-	it, der, err = Plan(p, Options{Cfg: cfg}, wechatInspection())
+	it, _, der, err = Plan(p, Options{Cfg: cfg}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if it.TrayOverride {
 		t.Error("defaults.tray_override = false 之后不该再写宿主表")
 	}
-	if got := derivationFor(der, "tray.override"); !strings.Contains(got, "config.toml") {
+	if got := derivationFor(der, "override.tray"); !strings.Contains(got, "config.toml") {
 		t.Errorf("要说清是 config.toml 关的，得到 %q", got)
 	}
 
 	// CLI 关掉（config 是开的）
-	it, der, err = Plan(p, Options{NoTray: true}, wechatInspection())
+	it, _, der, err = Plan(p, Options{NoTray: true}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if it.TrayOverride {
 		t.Error("--no-tray 之后不该再写宿主表")
 	}
-	if got := derivationFor(der, "tray.override"); !strings.Contains(got, "--no-tray") {
+	if got := derivationFor(der, "override.tray"); !strings.Contains(got, "--no-tray") {
 		t.Errorf("要说清是命令行关的，得到 %q", got)
 	}
 }

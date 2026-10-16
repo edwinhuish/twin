@@ -220,29 +220,26 @@ func TestEnsureMountPointsCreatesFilesForFileMappings(t *testing.T) {
 // ---------------------------------------------------------------- option list
 
 func passthroughInstance(extra ...string) *inst.Instance {
-	b := BaseFor("wechat2", false)
+	// A real instance carries the base `gen` wrote into it — the root mount in
+	// `bind` and the rest as the option lines of bwrap.extras, in the order
+	// they reach the command. twin adds none of it at launch, so an instance
+	// without it is one bwrap would start with nothing mounted.
+	lines := []string{"--proc /proc", "--tmpfs /dev/shm", "--bind /tmp /tmp", "--die-with-parent"}
 	return &inst.Instance{
-		ID:         "wechat2",
-		Name:       "微信2",
-		Level:      inst.LevelAlias,
-		BadgeStyle: "corner",
-		Target:     "/opt/wechat/wechat",
-		Alias:      "wechat2",
-		// A real instance carries a base, split across the nodes that name each
-		// mount's kind — the root mount included. twin adds none of it at launch,
-		// so an instance without it is one bwrap would start with nothing
-		// mounted.
-		Binds:  append([]inst.Bind(nil), b.Binds...),
-		Extras: append(b.Args, extra...),
-		Proc:   b.Proc,
-		Tmpfs:  b.Tmpfs,
-		Env:    b.Env,
+		ID:              "wechat2",
+		Level:           inst.LevelAlias,
+		BadgeStyle:      "corner",
+		Target:          "/opt/wechat/wechat",
+		DesktopOverride: "./wechat2.desktop",
+		Binds:           []inst.Bind{{Source: "/", Target: "/", Dev: true}},
+		Extras:          append(lines, extra...),
+		Env:             []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: "wechat2"}},
 	}
 }
 
-// The base twin writes into the definition, each piece in the node that names
-// its kind — the root mount included, as `/:/:dev` (which *is* `--dev-bind / /`).
-// What is left in the option list is only what has no node: --die-with-parent.
+// The base twin writes into the definition: the one piece that is a mount (the
+// root, as `/:/:dev` — which *is* `--dev-bind / /`) in `bind`, and everything
+// else as the option lines `Plan` interleaves into bwrap.extras.
 //
 // Both branches of the /tmp decision have to leave /tmp *writable*, because a
 // read-only /tmp is what a read-only root quietly produced — Chromium reports it
@@ -251,36 +248,33 @@ func passthroughInstance(extra ...string) *inst.Instance {
 // has to be visible in the file, so both spellings are asserted here rather than
 // left to a launch-time decision.
 func TestBaseIsWrittenByNode(t *testing.T) {
-	// The host's /tmp is a mapping of its own: `bind` goes down after the shaped
-	// mounts, so this one line overrules a `tmpfs: [/tmp]` wherever it sits —
-	// see BaseFor.
-	root := inst.Bind{Source: "/", Target: "/", Dev: true}
-	hostTmp := inst.Bind{Source: "/tmp", Target: "/tmp"}
 	for _, c := range []struct {
-		name       string
-		privateTmp bool
-		wantBinds  []inst.Bind
+		name        string
+		privateTmp  bool
+		wantHostTmp string
 	}{
-		{"私有 /tmp", true, []inst.Bind{root}},
-		{"宿主 /tmp", false, []inst.Bind{root, hostTmp}},
+		{"私有 /tmp", true, ""},
+		{"宿主 /tmp", false, "/tmp"},
 	} {
 		b := BaseFor("wechat2", c.privateTmp)
-		if got := strings.Join(b.Args, " "); got != "--die-with-parent" {
-			t.Errorf("%s：args = %q，want --die-with-parent（基座每条都该有自己那个节点）", c.name, got)
+		if len(b.Binds) != 1 || !b.Binds[0].IsRootMount() {
+			t.Errorf("%s：bind = %v，want 只有那条根挂载（/:/:dev）", c.name, b.Binds)
 		}
-		if len(b.Binds) != len(c.wantBinds) {
-			t.Fatalf("%s：bind = %v，want %v", c.name, b.Binds, c.wantBinds)
-		}
-		for i, want := range c.wantBinds {
-			if b.Binds[i] != want {
-				t.Errorf("%s：bind[%d] = %s，want %s", c.name, i, b.Binds[i], want)
-			}
-		}
-		if b.Proc != "/proc" {
-			t.Errorf("%s：proc = %q", c.name, b.Proc)
+		if got := strings.Join(b.Head, " "); got != "--proc /proc" {
+			t.Errorf("%s：head = %q", c.name, got)
 		}
 		if len(b.Tmpfs) != 1 || b.Tmpfs[0] != "/dev/shm" {
 			t.Errorf("%s：tmpfs = %v，want [/dev/shm]（私有 /tmp 那条是调用方自己列表里的一条）", c.name, b.Tmpfs)
+		}
+		if got := strings.Join(b.Tail, " "); got != "--die-with-parent" {
+			t.Errorf("%s：tail = %q", c.name, got)
+		}
+		// The host's /tmp is the branch that has to be *written*: under a tmpfs
+		// the caller's own list already carries /tmp, and what is owed is the
+		// line that swaps it back — which is why it is a path here and a line in
+		// extras after that list (see BaseFor).
+		if b.HostTmp != c.wantHostTmp {
+			t.Errorf("%s：hostTmp = %q，want %q", c.name, b.HostTmp, c.wantHostTmp)
 		}
 		if len(b.Env) != 1 || b.Env[0].Key != "TWIN_INSTANCE" || b.Env[0].Value != "wechat2" {
 			t.Errorf("%s：env = %+v", c.name, b.Env)
@@ -288,8 +282,8 @@ func TestBaseIsWrittenByNode(t *testing.T) {
 	}
 }
 
-// The root goes down before everything, and the definition's option list comes
-// right after it — whatever the file's own order is.
+// The root goes down before everything, and the definition's option lines come
+// after every mount — whatever the file's own order is.
 //
 // That order is the whole reason Build hoists the root instead of just emitting
 // `bind` where it sits: bubblewrap applies mounts in order and the later one
@@ -308,13 +302,19 @@ func TestBuildPutsTheRootBeforeEverything(t *testing.T) {
 	if got := strings.Join(plan.Groups[0], " "); got != "--dev-bind / /" {
 		t.Fatalf("第一组应当是根挂载，得到 %q", got)
 	}
-	if got := strings.Join(plan.Groups[1], " "); got != strings.Join(i.Extras, " ") {
-		t.Fatalf("第二组应当就是定义里那份选项列表，得到 %q，want %q", got, i.Extras)
+	// The definition's option lines reach the command after every mount, in the
+	// order the file writes them — one group per line, all of them.
+	var rest []string
+	for _, g := range plan.Groups[1:] {
+		rest = append(rest, strings.Join(g, " "))
 	}
-	// Everything twin derives comes after them, so a mapping can overrule a base
-	// mount the way bwrap promises (the later mount wins) — and the root is not
-	// repeated down there.
-	for _, g := range plan.Groups[2:] {
+	if joined, want := strings.Join(rest, "\n"), strings.Join(i.Extras, "\n"); !strings.Contains(joined, want) {
+		t.Fatalf("定义里那份选项列表没有按原序出现在根挂载之后：\n%s\nwant %s", joined, want)
+	}
+	// Everything twin derives comes after the root, so a mapping can overrule a
+	// base mount the way bwrap promises (the later mount wins) — and the root is
+	// not repeated down there.
+	for _, g := range plan.Groups[1:] {
 		if len(g) == 0 {
 			continue
 		}
@@ -331,7 +331,8 @@ func TestBuildPutsTheRootBeforeEverything(t *testing.T) {
 
 // Without a sandbox there is no bwrap to separate from, so no `--` either.
 func TestBuildNoSeparatorWithoutBwrap(t *testing.T) {
-	i := &inst.Instance{ID: "app2", Level: inst.LevelNone, Target: "/opt/app/app"}
+	i := &inst.Instance{ID: "app2", Level: inst.LevelNone, Target: "/opt/app/app",
+		DesktopOverride: "./app2.desktop"}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{})
 	if err != nil {
 		t.Fatal(err)
@@ -341,20 +342,21 @@ func TestBuildNoSeparatorWithoutBwrap(t *testing.T) {
 	}
 }
 
-// Extra tmpfs entries are the definition's, and they land *after* the option
-// list. /tmp is deliberately not among them: it is a decision about the root the
-// base binds, so it is written in the file where the root is — twin adding one
-// here would be exactly the invisible argument this design removed.
-func TestBuildEmitsExtraTmpfsButNeverInventsTmp(t *testing.T) {
+// Extra tmpfs lines are the definition's, and Build passes them through
+// verbatim. /tmp is deliberately not among them: which /tmp this instance gets
+// is a decision about the root the base binds, so it is written in the file
+// where that decision is — twin adding one here would be exactly the invisible
+// argument this design removed.
+func TestBuildEmitsTheDefinitionsTmpfsButNeverInventsTmp(t *testing.T) {
 	i := passthroughInstance()
-	i.Tmpfs = []string{"/var/cache/wechat"}
+	i.Extras = append(i.Extras, "--tmpfs /var/cache/wechat")
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := strings.Join(plan.Args(), " ")
 	if !strings.Contains(args, "--tmpfs /var/cache/wechat") {
-		t.Errorf("argv 里没有那份 tmpfs 列表：%s", args)
+		t.Errorf("argv 里没有定义里那条 tmpfs：%s", args)
 	}
 	if strings.Contains(args, "--tmpfs /tmp") {
 		t.Errorf("Build 自己补了 /tmp 的 tmpfs —— 那一条只该来自定义：%s", args)
@@ -393,17 +395,18 @@ func TestBuildMapsEachModeToItsFlag(t *testing.T) {
 	}
 }
 
-// 形状化的挂载出现在它们必须出现的位置上：tmpfs 在映射之前（先盖空，再把数据挂进去），
-// remount-ro 在所有挂载之后（否则它收紧的那条挂载会把它盖回去，又变回可写），
-// 而 setenv 与顺序无关，收在最后。
-func TestBuildEmitsTheShapedMountsInOrder(t *testing.T) {
+// 顺序全部来自定义：根挂载排在最前（Build 把它从文件里的位置提到所有挂载之前），
+// 别名 overlay 紧跟其后，其余映射按文件顺序，然后才是 bwrap.extras 那几行（行序即命令序），
+// setenv 收在最后。--remount-ro 之所以能排在最后，是因为它只作用在已经存在的挂载上；
+// 基座那条"把宿主 /tmp 换回来"的 --bind 也是靠这个位置压过前面那条 --tmpfs /tmp。
+func TestBuildEmitsTheOptionLinesInFileOrder(t *testing.T) {
 	i := passthroughInstance()
-	i.Extras = []string{"--dev-bind", "/", "/"}
-	i.Proc = "/proc"
-	i.Tmpfs = []string{"/var/cache/wechat"}
-	i.RemountRO = []string{"/var/cache/secrets"}
+	i.Extras = []string{"--proc /proc", "--tmpfs /var/cache/wechat", "--die-with-parent"}
 	i.Env = []inst.EnvVar{{Key: "TWIN_FOO", Value: "bar"}}
-	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
+	i.Binds = []inst.Bind{
+		{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
+		{Source: "/", Target: "/", Dev: true},
+	}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)
@@ -413,11 +416,11 @@ func TestBuildEmitsTheShapedMountsInOrder(t *testing.T) {
 	// is what this test is about.
 	order := []string{
 		"--dev-bind / /",
-		"--proc /proc",
-		"--tmpfs /var/cache/wechat",
 		"--overlay-src /opt/wechat",
 		"--bind /home/edwin/.local/state/twin/wechat2/xwechat /home/edwin/.xwechat",
-		"--remount-ro /var/cache/secrets",
+		"--proc /proc",
+		"--tmpfs /var/cache/wechat",
+		"--die-with-parent",
 		"--setenv TWIN_FOO bar",
 	}
 	at := -1
@@ -433,21 +436,23 @@ func TestBuildEmitsTheShapedMountsInOrder(t *testing.T) {
 	}
 }
 
-// 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在定义里（bind / proc /
-// tmpfs / env / extras），是文件里看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其
-// 不能再被凭空加回来。
-func TestBuildEmitsNothingForEmptyShapedMounts(t *testing.T) {
+// 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在定义里（bind / env /
+// extras），是文件里看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其不能再被凭空加回来。
+func TestBuildAddsNoOptionOfItsOwn(t *testing.T) {
 	i := passthroughInstance()
-	i.Extras = []string{"--ro-bind", "/", "/"}
-	i.Proc, i.Tmpfs, i.RemountRO, i.Env = "", nil, nil, nil
+	i.Extras = nil
+	i.Env = nil
+	i.Binds = []inst.Bind{{Source: "/", Target: "/", Dev: true}}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	argv := strings.Join(plan.Args(), " ")
-	for _, unwanted := range []string{"--proc", "--tmpfs", "--remount-ro", "--setenv"} {
+	// The root is the definition's, so it is the whole command; twin's own
+	// additions are the alias overlay (identity, not an option) and nothing else.
+	for _, unwanted := range []string{"--proc", "--tmpfs", "--remount-ro", "--setenv", "--bind /tmp /tmp"} {
 		if strings.Contains(argv, unwanted) {
-			t.Errorf("空的 %s 不该发出任何东西：%s", unwanted, argv)
+			t.Errorf("定义里没有 %s，Build 不该自己补上：%s", unwanted, argv)
 		}
 	}
 }
@@ -626,7 +631,7 @@ func TestLauncherShowsTheFailureInAGuiSession(t *testing.T) {
 	report := filepath.Join(home, ".local/state/twin/wechat2/launch-error.log")
 	shown := readText(t, out)
 	for _, want := range []string{
-		"twin 微信2（wechat2）：启动失败（退出码 1）",
+		"twin wechat2：启动失败（退出码 1）",
 		"哪一步没成：建立挂载点失败：" + filepath.Join(home, "blocker", "sub") + " → ~/data",
 		// The captured stderr is the "why": this is the line a user pastes.
 		"mkdir:",
@@ -651,7 +656,8 @@ func TestLauncherShowsTheFailureInAGuiSession(t *testing.T) {
 func TestLauncherReportsAProgramThatCannotRun(t *testing.T) {
 	home, bin, out := launchSandbox(t)
 	gone := filepath.Join(home, "gone", "wechat")
-	i := &inst.Instance{ID: "wechat2", Name: "微信2", Level: inst.LevelNone, Target: gone}
+	i := &inst.Instance{ID: "wechat2", Level: inst.LevelNone, Target: gone,
+		DesktopOverride: "./wechat2.desktop"}
 	p := inst.Paths{Home: home}
 	res, _ := runLauncher(t, i, p, Runtime{}, home, bin, out, true)
 
@@ -747,7 +753,8 @@ func TestLauncherIsValidBash(t *testing.T) {
 	}
 	home := t.TempDir()
 	p := inst.Paths{Home: home}
-	plain := &inst.Instance{ID: "app2", Name: "app", Level: inst.LevelNone, Target: "/opt/app/app"}
+	plain := &inst.Instance{ID: "app2", Level: inst.LevelNone, Target: "/opt/app/app",
+		DesktopOverride: "./app2.desktop"}
 	sandboxed := mountInstance()
 	trampolined := mountInstance()
 	trampolined.Binds = nil
