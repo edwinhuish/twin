@@ -4,6 +4,8 @@ version: '3'
 
 vars:
   BINARY: twin
+  # 产物落 bin/：仓库根下的 ./twin 和源码混在一起，`ls` 里看不出哪个是产物、哪个是文件。
+  BINDIR: bin
   # Go 不在 PATH 上时覆盖（如本机 ~/.g/go/bin/go）：task build GO=$HOME/.g/go/bin/go
   GO: 'go'
   # 版本号进 main.version —— 里面的默认值只在不是 git 仓库时才用得上
@@ -22,9 +24,17 @@ tasks:
       - task --list
 
   build:
-    desc: 构建 ./{{.BINARY}}，把 git describe 的结果注入 main.version
+    desc: 构建 ./{{.BINDIR}}/{{.BINARY}}，把 git describe 的结果注入 main.version
     cmds:
-      - '{{.GO}} build -ldflags "-X main.version={{.VERSION}}" -o {{.BINARY}} ./cmd/twin'
+      - '{{.GO}} build -ldflags "-X main.version={{.VERSION}}" -o {{.BINDIR}}/{{.BINARY}} ./cmd/twin'
+
+  install:
+    desc: 构建并装进 $HOME/.local/bin/{{.BINARY}}（依赖 build）
+    deps: [build]
+    # install(1) 的 -D 顺带建出 ~/.local/bin —— 这一步的目的就是"装好之后敲 twin 能跑"，
+    # 因为目录不存在而失败不算装好了。755：它要能从桌面项启动器里被直接执行。
+    cmds:
+      - 'install -Dm755 {{.BINDIR}}/{{.BINARY}} "$HOME/.local/bin/{{.BINARY}}"'
 
   fmt:
     desc: 按 gofmt 格式化（改文件）
@@ -72,9 +82,9 @@ tasks:
       - task: test
 
   clean:
-    desc: 删掉构建产物 ./{{.BINARY}}
+    desc: 删掉构建产物 ./{{.BINDIR}}/{{.BINARY}}
     cmds:
-      - rm -f {{.BINARY}}
+      - rm -f {{.BINDIR}}/{{.BINARY}}
 
   # 只被 test 依赖：GOTMPDIR 指向的目录不存在时，Go 建临时目录会直接失败。
   gotmp:

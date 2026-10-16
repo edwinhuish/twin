@@ -42,7 +42,8 @@ gofmt -l . && go vet ./... && go test ./...
 
 ```bash
 task check          # = gofmt -l ＋ go vet ＋ go test
-task build          # = go build -ldflags "-X main.version=$(git describe …)" -o twin ./cmd/twin
+task build          # = go build -ldflags "-X main.version=$(git describe …)" -o bin/twin ./cmd/twin
+task install        # 构建并装进 $HOME/.local/bin/twin
 ```
 
 已知的环境坑（**不是**代码问题，别去改代码修它们）：

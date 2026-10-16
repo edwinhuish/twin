@@ -319,13 +319,13 @@ twin config > ~/.config/twin/config.toml   # 生成一份带注释的模板
 
 ```bash
 git clone <this repo> && cd twin
-go build -o ~/.local/bin/twin ./cmd/twin     # 或 task build（见 Taskfile.yml）
+go build -o ~/.local/bin/twin ./cmd/twin     # 或 task install（见 Taskfile.yml）
 
 # 或者装到系统目录
-sudo install -m755 twin /usr/local/bin/twin
+task build && sudo install -m755 bin/twin /usr/local/bin/twin
 
 # 版本号可以在构建时注入
-go build -ldflags "-X main.version=$(git describe --tags --always)" -o twin ./cmd/twin
+go build -ldflags "-X main.version=$(git describe --tags --always)" -o bin/twin ./cmd/twin
 ```
 
 ## 常见问题

@@ -34,4 +34,4 @@ jobs:
       - name: 构建并冒烟
         run: |
           task build
-          ./twin version
+          ./bin/twin version

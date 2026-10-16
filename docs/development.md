@@ -19,9 +19,10 @@ gofmt -l . && go vet ./... && go test ./...
 ```bash
 task --list         # 全部任务
 task check          # = 上面那一条：gofmt ＋ vet ＋ test，按顺序遇错即停
-task build          # 构建 ./twin，版本号取 git describe 注入 main.version
+task build          # 构建 bin/twin，版本号取 git describe 注入 main.version
+task install        # 构建并装进 $HOME/.local/bin/twin
 task fmt            # gofmt -w .
-task clean          # 删掉 ./twin
+task clean          # 删掉 bin/twin
 task test:real      # 依赖真实机器状态的诊断测试（默认不跑）
 ```
 
@@ -29,7 +30,7 @@ task test:real      # 依赖真实机器状态的诊断测试（默认不跑）
 手写那串环境变量。Go 不在 PATH 上时：`task build GO=$HOME/.g/go/bin/go`。
 
 `.github/workflows/ci.yml` 只做三件事：装 Go（版本**读 `go.mod`**，不另写一个）、装 task、跑
-`task check` 与 `task build`（后者顺带冒烟一次 `./twin version`）。质量门本身定义在 `Taskfile.yml` 里，
+`task check` 与 `task build`（后者顺带冒烟一次 `./bin/twin version`）。质量门本身定义在 `Taskfile.yml` 里，
 CI 不再抄第二份。
 
 ⚠️ **`/tmp` 是小容量 tmpfs 的机器上，`go test` 会报 `no space left on device`** ——
