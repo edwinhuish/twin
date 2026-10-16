@@ -42,8 +42,8 @@ $ twin install wechat2  # 读它们，落盘，然后自检这条身份链路的
   "内核不放行非特权 userns、机器上又没有跳板"时的唯一退路，`twin install` 会问你密码去装它，
   **不给密码就用不了它**（那时打印 profile 全文，你自己决定）。
 - ❌ 不隔离网络（`isolation.unshare` 里出现 `net` 会被直接拒绝）
-- ❌ 不做"权限沙箱" —— 它给的是**身份**，不是安全边界。定义里的根挂载就是整个宿主根
-  （`bwrap.bind` 里那条 `/:/:dev`，就是 `--dev-bind / /`，可写、设备可用）：沙箱在这里的职责是
+- ❌ 不做"权限沙箱" —— 它给的是**身份**，不是安全边界。定义里的根就是整个宿主根
+  （`bwrap.root: dev`，就是 `--dev-bind / /`，可写、设备可用；想收紧改成 `ro`）：沙箱在这里的职责是
   "换名字 ＋ 分开数据目录"，不是拦住不受信任的代码
 - ❌ 不提供 GUI（为什么不做，见 [`docs/architecture.md`](docs/architecture.md) §7）
 
@@ -192,22 +192,22 @@ exec /usr/bin/bwrap \
 ```
 
 （上面省掉了两个挂载点助手的正文 —— 生成器会把它们的定义连同理由一起写进脚本，每条映射一行调用；
-`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端，根挂载不建，它两端都是 `/`。这些 token
-全部**来自 `profile.yml`**：`--dev-bind / /` 是 `bwrap.bind` 里那条根挂载 `/:/:dev`，三条 `--bind`
-是同一个键里的路径映射，`--proc` 到 `--die-with-parent` 那几行就是 `bwrap.extras` 的内容（**行序即
-命令序**），`--setenv` 来自 `bwrap.env`。想换根、想加减隔离，改的就是那份定义。）
+`mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端，根不建，它两端都是 `/`。这些 token
+全部**来自 `profile.yml`**：`--dev-bind / /` 是 `bwrap.root: dev` 那一个词，三条 `--bind` 是
+`bwrap.bind` 里的路径映射，`--proc` 到 `--die-with-parent` 那几行就是 `bwrap.extras` 的内容
+（**行序即命令序**），`--setenv` 来自 `bwrap.env`。想换根、想加减隔离，改的就是那份定义。）
 
 几处关键点，每一条都对应一次实测：
 
 1. `--overlay-src` 必须排在 `--ro-bind … 别名` **之前**，否则挂载点建不出来；
 2. 根挂载排在**所有映射之前**：映射要能覆盖基座，就不能被基座覆盖（bubblewrap 的规则是"后挂载
-   遮蔽前者"）。它写在 `bwrap.bind` 里（`/:/:dev`），位置由生成器保证 —— 写在文件的第几行都一样；
+   遮蔽前者"）。它写在 `bwrap.root` 里，位置由生成器保证 —— 它在哪个键里都一样，永远第一条；
    反过来 `bwrap.extras` 那份列表整份排在**所有映射之后**（所以其中 `--remount-ro` 收得紧、宿主
    `/tmp` 那行也压得住上面那条 `--tmpfs /tmp`），而它内部的行序就是文件里的行序；
 3. 程序名写成 `/opt/wechat/wechat2`（别名，只在命名空间里存在）⇒ `/proc/self/exe` 的
    basename 就是 `wechat2`，`argv[0]` 默认也是它 ⇒ **窗口与托盘的 id 天然一致**；
 4. 每个 bind 的**两端**都要先在宿主机上存在。`--dev-bind / /` 之后 bwrap 其实建得出来，但它会把
-   挂载点建在**宿主的家目录**里；换成只读的 `/:/:ro` 时更是完全建不了
+   挂载点建在**宿主的家目录**里；换成只读的 `root: ro` 时更是完全建不了
    （`Can't mkdir parents …: Read-only file system`）。而**形态要判**：一条映射的两端必须
    同形（bwrap：`Can't create file at <目录>: Is a directory`），而 `mkdir -p` 打在**文件**上会报
    `Already exists` 并让这份脚本死在 `set -e` 上 —— 所以形态按磁盘上**已有的那一端**决定，两端
