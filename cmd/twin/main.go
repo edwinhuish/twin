@@ -2161,14 +2161,15 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 // dataMaps is the instance's list of data mappings: `bind` without the root
 // mount.
 //
-// The root is written into that node because that is where mounts are written,
-// but it is not one of the directories this program's data lives in — and this
-// report counts them, prints them, and hands them over for pasting into
-// rules.d. Left in, `/:/:dev` would be twin's own base line wearing the user's
-// data layout as a disguise. It also has to go before uncoverHints, which
-// compares candidate paths against a mapping's *target*: the root's target is
-// `/`, every path on the machine sits under that, and the "state directories you
-// may want to isolate" section would go quiet for good.
+// New definitions have no root in this list at all — it lives in `bwrap.root` —
+// so what this drops is the older spelling, a `/:/:dev` entry. Dropping it
+// matters because the root is not one of the directories this program's data
+// lives in, while this report counts them, prints them, and hands them over for
+// pasting into rules.d: left in, `/:/:dev` would be twin's own base line wearing
+// the user's data layout as a disguise. It also has to go before uncoverHints,
+// which compares candidate paths against a mapping's *target*: the root's target
+// is `/`, every path on the machine sits under that, and the "state directories
+// you may want to isolate" section would go quiet for good.
 func dataMaps(it *inst.Instance) []inst.Bind {
 	out := make([]inst.Bind, 0, len(it.Binds))
 	for _, b := range it.Binds {

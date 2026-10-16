@@ -92,8 +92,8 @@ type Bind struct {
 	ReadOnly bool
 	// Dev renders `--dev-bind`, which bubblewrap describes as "bind mount the
 	// host path SRC on DEST, allowing device access". It is here because the
-	// root a program runs under stopped being twin's constant: the root mount
-	// itself is `/:/:dev` (that *is* `--dev-bind / /`), and a definition that
+	// root a program runs under stopped being twin's constant: the root itself
+	// is `--dev-bind / /` (written as `bwrap.root: dev`), and a definition that
 	// tightens it to `--ro-bind / /` needs a way to say which bindings are meant
 	// to hand over devices — a distinction only the mapping's own line can
 	// carry.
@@ -120,8 +120,8 @@ type Bind struct {
 }
 
 // IsRootMount reports whether this entry is the base's root mount: the whole
-// host root bound onto itself — `/:/:dev`, what `twin gen` writes, or `/:/:ro`
-// when a definition tightens it.
+// host root bound onto itself — `/:/:dev`, the way every definition written
+// before `bwrap.root` carries it (that *is* `--dev-bind / /`).
 //
 // It is recognised by shape rather than by a flag of its own, and three places
 // depend on that: Build emits it *before* every other mount (it is the surface
@@ -130,7 +130,33 @@ type Bind struct {
 // reports that read `bind` as "the program's data directories" leave it out
 // (the root is not one of them), and the launcher's mount points skip it (both
 // of its ends are `/`, which is already there).
+//
+// New definitions do not reach here: the root is `bwrap.root`, and only the
+// old spelling keeps it in this list — see Instance.RootBind, which is what
+// tells the two sources apart.
 func (b Bind) IsRootMount() bool { return b.Source == "/" && b.Target == "/" }
+
+// RootBind is `bwrap.root` as the mapping it stands for, and whether that key
+// said anything at all.
+//
+// It renders as a Bind because that is what it is — the four modes a mapping
+// can have, applied to a path bound onto itself — and going through the same
+// value keeps the two spellings from drifting: `root: dev` and `/:/:dev` reach
+// bwrap by the same code (sandbox.bindGroup). The three accepted words are
+// deliberately the bind modes verbatim (`isBindMode`), so there is no fourth
+// list of words to keep in step.
+func (i *Instance) RootBind() (Bind, bool) {
+	switch i.Root {
+	case "":
+		return Bind{}, false
+	case "ro":
+		return Bind{Source: "/", Target: "/", ReadOnly: true}, true
+	case "rw":
+		return Bind{Source: "/", Target: "/"}, true
+	default: // "dev", the only one Check lets through besides the two above
+		return Bind{Source: "/", Target: "/", Dev: true}, true
+	}
+}
 
 // String renders the one-line form the config files carry.
 //
@@ -328,15 +354,29 @@ type Instance struct {
 	// internal/userns).
 	NestedNS bool
 
-	// Binds, Env and Extras are the bubblewrap invocation, and they are all of
-	// it: the base is not in Go anywhere (see sandbox.BaseFor), so what the
-	// program gets is readable in this file.
+	// Root, Binds, Env and Extras are the bubblewrap invocation, and they are
+	// all of it: the base is not in Go anywhere (see sandbox.BaseFor), so what
+	// the program gets is readable in this file.
 	//
+	// Root is `bwrap.root`: which root the program runs under, as one of the
+	// bind modes (`ro` → `--ro-bind / /`, `rw` → `--bind / /`, `dev` →
+	// `--dev-bind / /`, what `gen` writes). It is a key of its own rather than
+	// an entry in Binds because the root is the one mount whose *position* is
+	// not its own: it goes down before everything, wherever the file lists it
+	// (see Bind.IsRootMount) — so as a mapping it was a line that taught the
+	// reader a wrong lesson about the file's order, spelled `/:/:dev`.
+	//
+	// Empty means "this key says nothing about the root", which is what every
+	// definition written before it means — those carry the mount in Binds (or
+	// `--dev-bind / /` in Extras) and are still read. Either way the root can
+	// only be said once: Check refuses a definition that says it twice.
+	Root string
 	// Binds is `--bind` / `--ro-bind` / `--dev-bind` / `--bind-try` and so on,
-	// in the order written. The first entry is the root mount (`/:/:dev`); Build emits it
-	// before every other mount wherever it sits in the file, and the reports
-	// that read this list as "the program's data directories" leave it out —
-	// see Bind.IsRootMount.
+	// in the order written — the program's data, not the surface it runs on.
+	// Older definitions keep the root mount in here (`/:/:dev`); Build still
+	// emits that one before every other mount, and the reports that read this
+	// list as "the program's data directories" leave it out — see
+	// Bind.IsRootMount.
 	Binds []Bind
 	// Env is `--setenv` pairs, in the order written (later pairs win, as bwrap
 	// does it). The instance's own TWIN_INSTANCE is one of them: `twin gen`
@@ -591,12 +631,17 @@ func (i *Instance) AliasPath() string {
 	return filepath.Join(i.TargetDir(), i.ID)
 }
 
-// hasRootMount reports whether anything in the file asks for a root. The `bind`
-// side is exact — `/:/` is the root by shape — while the `extras` side can only
-// be a proxy, because twin knows no bwrap option's arity and must not start
-// parsing them. Every definition `gen` writes keeps its root in `bind`, so what
-// this really guards is a file that lost its base altogether.
+// hasRootMount reports whether anything in the file asks for a root. The two
+// file-side answers are exact — `bwrap.root` says so by being there, and a
+// `bind` entry whose two ends are `/` says it by shape — while the `extras`
+// side can only be a proxy, because twin knows no bwrap option's arity and must
+// not start parsing them. Every definition `gen` writes says it in the key, so
+// what the last two really guard are files that predate the key and a file that
+// lost its base altogether.
 func (i *Instance) hasRootMount() bool {
+	if i.Root != "" {
+		return true
+	}
 	for _, b := range i.Binds {
 		if b.IsRootMount() {
 			return true
@@ -642,9 +687,29 @@ func (i *Instance) Check() error {
 				"abstract-socket single-instance locks, which bwrap cannot isolate anyway")
 		}
 	}
+	// The three words are the bind modes, which is the whole reason there is no
+	// fourth list of them to keep in step (see RootBind). Anything else is a
+	// mount type somebody would then have to implement.
+	switch i.Root {
+	case "", "ro", "rw", "dev":
+	default:
+		return fmt.Errorf("bwrap.root %q 不是 ro / rw / dev 之一：ro = --ro-bind / /（整个宿主根只读，"+
+			"代价是设备与 /run/user 要自己补回来），rw = --bind / /，dev = --dev-bind / /（带设备访问，"+
+			"`gen` 写的就是它）", i.Root)
+	}
 	for n, b := range i.Binds {
 		if b.Source == "" || b.Target == "" {
 			return fmt.Errorf("bwrap.bind[%d] %q: 源和目标是两条路径，都要写", n, b)
+		}
+		// The root said twice, so which one wins would be decided by where the
+		// two land in the command (the key's goes first, the entry's right
+		// after it) — an answer nobody wrote down. Refused by name instead,
+		// because the fix is one deletion and the symptom otherwise is "the
+		// root is not what I asked for" long after this edit.
+		if b.IsRootMount() && i.Root != "" {
+			return fmt.Errorf("bwrap.bind[%d] %q 和 bwrap.root: %s 说的是同一处挂载 —— "+
+				"两条都会发出去，后发的那条胜出，「这个程序拿到哪个根」就由发射顺序决定了；"+
+				"删掉 bind 里这一条，根只用 `root` 说", n, b, i.Root)
 		}
 		// Both flags at once is not expressible in bubblewrap, and String()
 		// would have to drop one of them when writing the file back — so it is
@@ -684,14 +749,15 @@ func (i *Instance) Check() error {
 	// mounted, which reads at the far end as "the program cannot find itself" —
 	// a failure with no trace of twin in it.
 	//
-	// The root can be said in two places, so both are read: the base writes it
-	// into `bind` as `/:/:dev` (a mount belongs in the node for mounts), while a
-	// hand-written or older definition keeps `--dev-bind / /` in `extras`. Empty
-	// `extras` on its own is therefore fine now — that is exactly what a
-	// definition whose root is in `bind` looks like.
+	// The root can be said in three places, so all three are read: `bwrap.root`
+	// (what `gen` writes — the mount's own key), a `bind` entry whose two ends
+	// are `/` (what every definition written before that key carries), or
+	// `--dev-bind / /` hand-written in `extras`. Empty `extras` on its own is
+	// therefore fine — that is exactly what a definition whose root is in the
+	// key looks like.
 	if i.Level.Renames() && !i.hasRootMount() {
-		return fmt.Errorf("这份定义没有根挂载：bwrap.bind 里没有 /:/:dev，bwrap.extras 也是空的 —— " +
-			"bwrap 至少要有一个根挂载（/:/:dev 或 --dev-bind / /），twin 不再自己补一个；" +
+		return fmt.Errorf("这份定义没有根挂载：bwrap.root 是空的，bwrap.bind 里没有 /:/:dev，" +
+			"bwrap.extras 里也没有 --dev-bind / / —— bwrap 至少要有一个根挂载，twin 不再自己补一个；" +
 			"请用 `twin gen` 重新生成，或照它的注释手写一份")
 	}
 	for n, line := range i.Extras {
@@ -814,21 +880,37 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"用哪个跳板是机器属性，留在 config.toml 里。")
 	iso.Set("nested_ns", i.NestedNS)
 
-	// The invocation, all of it. Three keys, because a bwrap command line is
-	// three kinds of thing: mounts with two ends (`bind`), environment
+	// The invocation, all of it. Four keys, because a bwrap command line is four
+	// kinds of thing once the root is counted on its own: the surface the
+	// program runs on (`root`), mounts with two ends (`bind`), environment
 	// (`env`), and everything else as the option lines themselves (`extras`).
 	// The base is not in Go anywhere — `gen` writes it into these same keys
 	// (see sandbox.BaseFor) — so what the program gets can be read here, and
-	// which root it gets is a line in this file rather than a constant.
+	// which root it gets is a key in this file rather than a constant.
 	bw := t.Ensure("bwrap")
+
+	// First, and written unconditionally: it is the first mount of the command
+	// and the one decision every reader looks for. "Empty" would have to mean
+	// something — either "no root" (a sandbox where the program cannot find
+	// itself) or "the default one" — and both readings are worse than writing
+	// the value out (see inst.RootBind and Check, which refuses a definition
+	// that says the root twice).
+	bw.SetComment("root", "程序运行在哪个根下：ro = --ro-bind / /（整个宿主根只读，代价是设备与 /run/user\n"+
+		"要自己用 extras 补回来），rw = --bind / /，dev = --dev-bind / /（带设备访问，`gen` 写的就是它）。\n"+
+		"发在其余所有挂载之前（这一条的位置不由文件决定），整个沙箱里只有这一个根。")
+	if i.Root == "" {
+		bw.Set("root", "")
+	} else {
+		bw.Set("root", i.Root)
+	}
 
 	// Written unconditionally, empty case included. "twin redirected nothing" is
 	// the default decision, and once the terminal stopped printing it this
 	// comment became the only place the shared-state warning can live — so the
 	// key has to be there even when there is nothing to list.
 	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:rw|:dev][:try]`，同 Docker 的卷（:ro 只读、:rw 可读写、\n"+
-		":dev 带设备访问，单写一条路径则挂回自己；末尾的 :try 要写全模式，源不在就整条跳过、不报错）。`gen` 的第一条\n"+
-		"是根挂载 /:/:dev，整个宿主根可写 = --dev-bind / /，发在其余所有挂载之前。空 = 数据目录与源程序共用。")
+		":dev 带设备访问，单写一条路径则挂回自己；末尾的 :try 要写全模式，源不在就整条跳过、不报错）。\n"+
+		"根不在这里 —— 它是 `root` 那个键。空 = 数据目录与源程序共用。")
 	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
 		binds = append(binds, b.String())
@@ -1057,6 +1139,12 @@ func Load(path string) (*Instance, error) {
 		}
 		it.Env = append(it.Env, e)
 	}
+	// The root, read as the word it is: `ro` / `rw` / `dev` are the bind modes,
+	// and which of them this file names is checked in Check (so a bad value is
+	// reported by the same code that reports every other semantic failure, not
+	// by the parser).
+	it.Root = root.At("bwrap").Str("root")
+
 	// `bind` lives under `bwrap`: it is one more thing that ends up in the same
 	// invocation as `extras`, which is written right there. A top-level `bind` is
 	// refused rather than ignored — the two readings do not describe the same

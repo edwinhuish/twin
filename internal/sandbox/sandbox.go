@@ -177,7 +177,7 @@ func (p *Plan) String() string {
 }
 
 // Base is the sandbox base `twin gen` writes into a definition, in the pieces
-// Plan has to interleave: the mounts (`bind`), the option lines, and the
+// Plan has to interleave: the root, the mounts, the option lines, and the
 // variables.
 //
 // It lives in Go only because it has to be written *once*, into the file where
@@ -186,9 +186,12 @@ func (p *Plan) String() string {
 // one flat list is ordering alone — Plan has to place the caller's own `--tmpfs`
 // lines between Head and HostTmp, and everything else after them.
 type Base struct {
-	// Binds holds the root mount (`/:/:dev` — a mount belongs with the mounts;
-	// Build keeps it in front of everything, see Bind.IsRootMount).
-	Binds []inst.Bind
+	// Root is the value `gen` writes into `bwrap.root`: `dev`, because an
+	// identity wrapper needs the whole host including its devices (twin is not
+	// a security boundary). It is the mount's own key rather than an entry in
+	// the mounts, and Build puts it in front of everything wherever the file
+	// would have placed it — see inst.Instance.RootBind.
+	Root string
 	// Head is the option lines that go before the caller's tmpfs lines.
 	Head []string
 	// Tmpfs is what the base itself hides behind an empty directory.
@@ -205,10 +208,9 @@ type Base struct {
 //
 // The root is the load-bearing choice: `--dev-bind / /` hands the program the
 // whole host including its devices, which is what an identity wrapper needs
-// (twin is not a security boundary). It is written as the first `bind` entry
-// (`/:/:dev`) rather than a pair of tokens in `extras`, and Build is what keeps
-// it in front of every other mount wherever the file lists it (see
-// Bind.IsRootMount).
+// (twin is not a security boundary). It goes into `bwrap.root` rather than a
+// pair of tokens in `extras` — one word, in the key that says what it is, since
+// a definition may only name its root in one place (see inst.Check).
 //
 // privateTmp says which branch the /tmp decision takes, and twin only has to
 // write one of them: a private /tmp is a tmpfs line, and the caller's own list
@@ -229,8 +231,8 @@ type Base struct {
 // data directories: it is an option that happens to name a path, not a mapping.
 func BaseFor(id string, privateTmp bool) Base {
 	b := Base{
-		Binds: []inst.Bind{{Source: "/", Target: "/", Dev: true}},
-		Head:  []string{"--proc /proc"},
+		Root: "dev",
+		Head: []string{"--proc /proc"},
 		// An empty private shared memory: /dev/shm on the host is shared with
 		// every other process, which is not what an instance's own name means.
 		Tmpfs: []string{"/dev/shm"},
@@ -306,15 +308,23 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	plan.Bwrap = bwrap
 
 	// The root, before everything — including the file's own option list. It is
-	// written into `bind` like any other mount (see BaseFor), so where it sits in
-	// the file says nothing; what it needs is to go down first, and that is not a
-	// preference: bubblewrap applies mounts in order and the later one wins, so a
-	// root bound *after* the alias overlay puts the host's directory back over
-	// the copy the program is supposed to run from — hiding the alias path, and
-	// with it the program.
-	for _, b := range i.Binds {
-		if b.IsRootMount() {
-			plan.Groups = append(plan.Groups, bindGroup(p, b))
+	// the one mount whose place in the command is not the place it has in the
+	// file, and that is not a preference: bubblewrap applies mounts in order and
+	// the later one wins, so a root bound *after* the alias overlay puts the
+	// host's directory back over the copy the program is supposed to run from —
+	// hiding the alias path, and with it the program.
+	//
+	// Two spellings reach here, and only one of them can be in a file at a time
+	// (inst.Check refuses both): `bwrap.root`, which every definition `gen`
+	// writes, and the `/:/…` entry older ones carry. Both come out through
+	// bindGroup, so the two never render differently.
+	if rb, ok := i.RootBind(); ok {
+		plan.Groups = append(plan.Groups, bindGroup(p, rb))
+	} else {
+		for _, b := range i.Binds {
+			if b.IsRootMount() {
+				plan.Groups = append(plan.Groups, bindGroup(p, b))
+			}
 		}
 	}
 

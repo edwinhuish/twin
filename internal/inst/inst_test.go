@@ -39,8 +39,10 @@ func base() *Instance {
 			"--tmpfs ~/.cache/wechat",
 			"--die-with-parent",
 		},
+		// The root is the key of its own (`gen` writes `dev` there), so the
+		// fixture carries it that way and `bind` holds nothing but data.
+		Root: "dev",
 		Binds: []Bind{
-			{Source: "/", Target: "/", Dev: true},
 			{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
 			{Source: "/usr/share/wechat/theme.conf", Target: "~/.config/wechat/theme.conf", ReadOnly: true},
 			{Source: "~/.config/wechat/pending.conf", Target: "~/pending.conf", ReadOnly: true, Try: true},
@@ -110,6 +112,13 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	if out.WMClass != in.WMClass || out.IconSource != in.IconSource || out.Badge != in.Badge ||
 		out.BadgeStyle != in.BadgeStyle || out.TrayOverride != in.TrayOverride {
 		t.Errorf("override lost: %+v", out)
+	}
+	// The root is one word and has to come back as that word: it decides which
+	// mount the whole sandbox is laid on, and reading it back as "nothing said"
+	// would silently drop the mount (Check then refuses the definition, so the
+	// instance would stop installing for a reason nobody can see in the file).
+	if out.Root != in.Root {
+		t.Errorf("bwrap.root = %q, want %q", out.Root, in.Root)
 	}
 	if !reflect.DeepEqual(out.Binds, in.Binds) {
 		t.Errorf("binds lost: %+v", out.Binds)
@@ -241,6 +250,14 @@ func TestRenderWritesBindsAsDockerSpecs(t *testing.T) {
 	if !strings.Contains(s, "\n    - ~/.local/state/twin/wechat2/xwechat:~/.xwechat\n") {
 		t.Errorf("bind 条目没写进 bwrap 节点：\n%s", s)
 	}
+	// And the root is its own key right above it — a word, not a `/:/:dev`
+	// entry pretending the file's order means something (see Instance.Root).
+	if !strings.Contains(s, "\n  root: dev\n") {
+		t.Errorf("bwrap.root 应当是 bwrap 节点里的第一个键：\n%s", s)
+	}
+	if i, j := strings.Index(s, "\n  root:"), strings.Index(s, "\n  bind:"); i > j {
+		t.Errorf("root 应当写在 bind 前面（它就是命令里的第一条挂载）：\n%s", s)
+	}
 }
 
 // An instance with an empty option list still has to say so, or a reader cannot
@@ -341,23 +358,32 @@ bwrap:
 // in the failure would name twin. Refusing here is the only place that can say
 // which file to fix.
 //
-// The root can be said in two places and both count: the `bind` entry `gen`
-// writes, and the `--dev-bind / /` line a hand-written definition may keep in
-// `extras`. What is refused is having neither.
+// The root can be said in three spellings and any one of them counts:
+// `bwrap.root` (what `gen` writes), the `/:/:dev` entry every definition written
+// before that key carries, and `--dev-bind / /` typed by hand into `extras`.
+// What is refused is having none of them.
 func TestCheckRefusesADefinitionWithoutARootMount(t *testing.T) {
 	noRoot := base()
-	// The root is one of the `bind` entries (the fixture's first line), so both
-	// places that can hold it have to be cleared before this means anything.
+	// All three places that can hold it have to be cleared before this means
+	// anything.
+	noRoot.Root = ""
 	noRoot.Binds = nil
 	noRoot.Extras = nil
 	if err := noRoot.Check(); err == nil || !strings.Contains(err.Error(), "根挂载") {
 		t.Fatalf("没有根挂载必须被拒绝并指名那个键，得到 %v", err)
 	}
+	viaKey := base()
+	if err := viaKey.Check(); err != nil {
+		t.Errorf("bwrap.root: dev 就该通过（这是 gen 写的那一份）：%v", err)
+	}
 	viaBind := base()
+	viaBind.Root = ""
+	viaBind.Binds = append([]Bind{{Source: "/", Target: "/", Dev: true}}, viaBind.Binds...)
 	if err := viaBind.Check(); err != nil {
-		t.Errorf("bind 里有 /:/:dev 就该通过：%v", err)
+		t.Errorf("老写法 bind 里那条 /:/:dev 也该通过：%v", err)
 	}
 	viaExtras := base()
+	viaExtras.Root = ""
 	viaExtras.Binds = nil
 	viaExtras.Extras = []string{"--dev-bind / /", "--proc /proc"}
 	if err := viaExtras.Check(); err != nil {
@@ -369,6 +395,90 @@ func TestCheckRefusesADefinitionWithoutARootMount(t *testing.T) {
 	plain.Extras = nil
 	if err := plain.Check(); err != nil {
 		t.Errorf("level=none 不过 bwrap，没有根挂载不该是错误：%v", err)
+	}
+}
+
+// 根挂载只允许说一遍。两处都说时，两条挂载都会发进命令里，而"程序拿到哪个根"
+// 就由发射顺序决定了 —— 那是一个谁都没写下来的答案（而且第一条会让 `--explain`
+// 的路径映射那一节多出一条 `/`），所以这里指名报错而不是挑一个。
+func TestCheckRefusesARootSaidTwice(t *testing.T) {
+	i := base()
+	i.Root = "ro"
+	i.Binds = append([]Bind{{Source: "/", Target: "/", Dev: true}}, i.Binds...)
+	err := i.Check()
+	if err == nil || !strings.Contains(err.Error(), "bwrap.root") {
+		t.Fatalf("bwrap.root 与 bind 里那条根挂载同时存在必须被拒绝，得到 %v", err)
+	}
+	// `rw` 那两个词里没有模式，那份 bind 里的 `/:/` 也就是普通的自映射 —— 但它
+	// 仍然是根，仍然只能出现一次。
+	i = base()
+	i.Root = "rw"
+	i.Binds = append([]Bind{{Source: "/", Target: "/"}}, i.Binds...)
+	if err := i.Check(); err == nil {
+		t.Fatal("不带模式的 /:/ 同样是根挂载，两处都在时也要拒绝")
+	}
+}
+
+// 三个词就是 bind 的三个模式，别的拼法不是"再一种根"，而是另一种挂载 ——
+// 没有对应的实现，所以在这里拦下，而不是让 Build 把它当成 dev 悄悄落盘。
+func TestCheckRefusesAnUnknownRoot(t *testing.T) {
+	for _, bad := range []string{"readonly", "read-only", "root", "RO", "ro:try"} {
+		i := base()
+		i.Root = bad
+		if err := i.Check(); err == nil || !strings.Contains(err.Error(), "bwrap.root") {
+			t.Errorf("root=%q 必须指名报错并给出可取值，得到 %v", bad, err)
+		}
+	}
+}
+
+// 那个键读进来是那个词：它决定整个沙箱架在哪儿，读错（比如当成空值）会让这份定义
+// 在 Check 那里以"没有根挂载"被拒 —— 一个文件里看不出来的理由。
+func TestLoadReadsTheRootKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProfileName)
+	body := `id: demo2
+source:
+  exec: /opt/demo/demo
+override:
+  desktop: ./demo2.desktop
+isolation:
+  level: alias
+bwrap:
+  root: ro
+  bind:
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Root != "ro" {
+		t.Fatalf("bwrap.root = %q，want ro", it.Root)
+	}
+	if got, ok := it.RootBind(); !ok || !got.ReadOnly || got.Source != "/" || got.Target != "/" {
+		t.Errorf("root: ro 应当读成 --ro-bind / /，得到 %+v（ok=%v）", got, ok)
+	}
+	if err := it.Check(); err != nil {
+		t.Errorf("bwrap.root 单独说根挂载就该通过：%v", err)
+	}
+	// 空的那一个读回来是"这个键什么都没说"，不是 `dev`：根挂载的缺省值由 Check
+	// 按事实报出来（这份定义没有根挂载），解析器不替文件猜一个。
+	empty := filepath.Join(dir, "empty-root.yml")
+	emptyBody := strings.Replace(body, "  root: ro", `  root: ""`, 1)
+	if err := os.WriteFile(empty, []byte(emptyBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err = Load(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Root != "" {
+		t.Errorf("空值读成了 %q，它必须就是「什么都没说」", it.Root)
+	}
+	if err := it.Check(); err == nil || !strings.Contains(err.Error(), "根挂载") {
+		t.Errorf("空的 root 等于没有根挂载（这份文件也没有别的写法），应当被拒绝，得到 %v", err)
 	}
 }
 

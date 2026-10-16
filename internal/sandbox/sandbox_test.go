@@ -220,10 +220,10 @@ func TestEnsureMountPointsCreatesFilesForFileMappings(t *testing.T) {
 // ---------------------------------------------------------------- option list
 
 func passthroughInstance(extra ...string) *inst.Instance {
-	// A real instance carries the base `gen` wrote into it — the root mount in
-	// `bind` and the rest as the option lines of bwrap.extras, in the order
-	// they reach the command. twin adds none of it at launch, so an instance
-	// without it is one bwrap would start with nothing mounted.
+	// A real instance carries the base `gen` wrote into it — the root in
+	// `bwrap.root` and the rest as the option lines of bwrap.extras, in the
+	// order they reach the command. twin adds none of it at launch, so an
+	// instance without it is one bwrap would start with nothing mounted.
 	lines := []string{"--proc /proc", "--tmpfs /dev/shm", "--bind /tmp /tmp", "--die-with-parent"}
 	return &inst.Instance{
 		ID:              "wechat2",
@@ -231,15 +231,15 @@ func passthroughInstance(extra ...string) *inst.Instance {
 		BadgeStyle:      "corner",
 		Target:          "/opt/wechat/wechat",
 		DesktopOverride: "./wechat2.desktop",
-		Binds:           []inst.Bind{{Source: "/", Target: "/", Dev: true}},
+		Root:            "dev",
 		Extras:          append(lines, extra...),
 		Env:             []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: "wechat2"}},
 	}
 }
 
-// The base twin writes into the definition: the one piece that is a mount (the
-// root, as `/:/:dev` — which *is* `--dev-bind / /`) in `bind`, and everything
-// else as the option lines `Plan` interleaves into bwrap.extras.
+// The base twin writes into the definition: the root as one word in
+// `bwrap.root` (`dev` — which *is* `--dev-bind / /`), and everything else as
+// the option lines `Plan` interleaves into bwrap.extras.
 //
 // Both branches of the /tmp decision have to leave /tmp *writable*, because a
 // read-only /tmp is what a read-only root quietly produced — Chromium reports it
@@ -257,8 +257,8 @@ func TestBaseIsWrittenByNode(t *testing.T) {
 		{"宿主 /tmp", false, "/tmp"},
 	} {
 		b := BaseFor("wechat2", c.privateTmp)
-		if len(b.Binds) != 1 || !b.Binds[0].IsRootMount() {
-			t.Errorf("%s：bind = %v，want 只有那条根挂载（/:/:dev）", c.name, b.Binds)
+		if b.Root != "dev" {
+			t.Errorf("%s：root = %q，want dev（--dev-bind / /）", c.name, b.Root)
 		}
 		if got := strings.Join(b.Head, " "); got != "--proc /proc" {
 			t.Errorf("%s：head = %q", c.name, got)
@@ -283,18 +283,17 @@ func TestBaseIsWrittenByNode(t *testing.T) {
 }
 
 // The root goes down before everything, and the definition's option lines come
-// after every mount — whatever the file's own order is.
+// after every mount.
 //
-// That order is the whole reason Build hoists the root instead of just emitting
-// `bind` where it sits: bubblewrap applies mounts in order and the later one
-// wins, so a root bound *after* the alias overlay puts the host's directory back
-// over the copy the program is supposed to run from — hiding the alias path, and
-// with it the program.
+// That order is the whole reason Build emits the root on its own instead of
+// taking it from wherever a mount happens to sit: bubblewrap applies mounts in
+// order and the later one wins, so a root bound *after* the alias overlay puts
+// the host's directory back over the copy the program is supposed to run from —
+// hiding the alias path, and with it the program. The key exists so that this
+// position is a fact about the mount rather than a rule about the file's order.
 func TestBuildPutsTheRootBeforeEverything(t *testing.T) {
 	i := passthroughInstance("--unshare-pid", "--setenv", "TWIN_FOO", "bar")
-	// The root is *not* first in the file here: where it sits in the definition
-	// says nothing about the command line it becomes.
-	i.Binds = append([]inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}, i.Binds...)
+	i.Binds = []inst.Bind{{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"}}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)
@@ -326,6 +325,61 @@ func TestBuildPutsTheRootBeforeEverything(t *testing.T) {
 	argv := plan.Argv()
 	if argv[len(argv)-2] != "--" {
 		t.Fatalf("argv is missing the program separator: %q", argv)
+	}
+}
+
+// 根挂载的三种写法都要发成对应的那条 bwrap 选项 —— `root` 的三个词就是 bind 的
+// 三个模式，走的是同一份渲染（bindGroup），所以这里断言的是"一个词等于一条挂载"。
+func TestBuildRendersEveryRootMode(t *testing.T) {
+	for _, c := range []struct{ root, want string }{
+		{"ro", "--ro-bind / /"},
+		{"rw", "--bind / /"},
+		{"dev", "--dev-bind / /"},
+	} {
+		i := passthroughInstance()
+		i.Root = c.root
+		plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+		if err != nil {
+			t.Fatalf("root=%s: %v", c.root, err)
+		}
+		if got := strings.Join(plan.Groups[0], " "); got != c.want {
+			t.Errorf("root=%s：第一组 = %q，want %q", c.root, got, c.want)
+		}
+	}
+	// 空值不是"默认那个"：没有根挂载的定义由 Check 拦下（bwrap 会在一个什么都没挂
+	// 的命名空间里启动程序），这里只确认它不会自己长出一条来。
+	i := passthroughInstance()
+	i.Root = ""
+	i.Extras = nil
+	if _, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"}); err == nil {
+		t.Error("没有根挂载的定义必须被 Check 拦下，而不是由 Build 补一个")
+	}
+}
+
+// 老定义把根挂载写在 bind 里（`/:/:dev`），Build 照旧认它 —— 而且在文件里排第几
+// 都不影响它落在命令的第一位（新写法用 root 键，这一条只为不打断已装好的实例）。
+func TestBuildStillReadsTheOldRootSpelling(t *testing.T) {
+	i := passthroughInstance()
+	i.Root = ""
+	i.Binds = []inst.Bind{
+		{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
+		{Source: "/", Target: "/", Dev: true},
+	}
+	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(plan.Groups[0], " "); got != "--dev-bind / /" {
+		t.Fatalf("第一组应当是 bind 里那条根挂载，得到 %q", got)
+	}
+	seen := 0
+	for _, g := range plan.Groups {
+		if len(g) > 0 && g[0] == "--dev-bind" {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Errorf("根挂载发了 %d 次，want 1 次", seen)
 	}
 }
 
@@ -395,17 +449,16 @@ func TestBuildMapsEachModeToItsFlag(t *testing.T) {
 	}
 }
 
-// 顺序全部来自定义：根挂载排在最前（Build 把它从文件里的位置提到所有挂载之前），
-// 别名 overlay 紧跟其后，其余映射按文件顺序，然后才是 bwrap.extras 那几行（行序即命令序），
-// setenv 收在最后。--remount-ro 之所以能排在最后，是因为它只作用在已经存在的挂载上；
-// 基座那条"把宿主 /tmp 换回来"的 --bind 也是靠这个位置压过前面那条 --tmpfs /tmp。
+// 顺序：根挂载（root 键，永远第一位）→ 别名 overlay → 其余映射按文件顺序 →
+// bwrap.extras 那几行（行序即命令序）→ setenv 收在最后。--remount-ro 之所以能排在
+// 最后，是因为它只作用在已经存在的挂载上；基座那条"把宿主 /tmp 换回来"的 --bind 也是
+// 靠这个位置压过前面那条 --tmpfs /tmp。
 func TestBuildEmitsTheOptionLinesInFileOrder(t *testing.T) {
 	i := passthroughInstance()
 	i.Extras = []string{"--proc /proc", "--tmpfs /var/cache/wechat", "--die-with-parent"}
 	i.Env = []inst.EnvVar{{Key: "TWIN_FOO", Value: "bar"}}
 	i.Binds = []inst.Bind{
 		{Source: "~/.local/state/twin/wechat2/xwechat", Target: "~/.xwechat"},
-		{Source: "/", Target: "/", Dev: true},
 	}
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
@@ -436,13 +489,13 @@ func TestBuildEmitsTheOptionLinesInFileOrder(t *testing.T) {
 	}
 }
 
-// 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在定义里（bind / env /
-// extras），是文件里看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其不能再被凭空加回来。
+// 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在定义里（root / bind /
+// env / extras），是文件里看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其不能再被凭空加回来。
 func TestBuildAddsNoOptionOfItsOwn(t *testing.T) {
 	i := passthroughInstance()
 	i.Extras = nil
 	i.Env = nil
-	i.Binds = []inst.Bind{{Source: "/", Target: "/", Dev: true}}
+	i.Binds = nil
 	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
 		t.Fatal(err)

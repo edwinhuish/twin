@@ -569,13 +569,17 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	if got := derivationFor(der, "bwrap.extras"); got == "" {
 		t.Error("规则提供的 tmpfs 必须出现在推导来源里")
 	}
-	// The base's root mount is written first in this node, then the rule's own
-	// mappings — {id} / <id> substituted with the concrete instance id.
-	if !it.Binds[0].IsRootMount() {
-		t.Errorf("bwrap.bind[0] = %q，应当是基座那条根挂载", it.Binds[0])
+	// The root is the base's own key (not an entry in `bind` — a definition may
+	// only say it once), and the rule's mappings are the whole of that list:
+	// {id} / <id> substituted with the concrete instance id.
+	if it.Root != "dev" {
+		t.Errorf("bwrap.root = %q，want dev（基座那条 --dev-bind / /）", it.Root)
 	}
-	if it.Binds[1].Source != "~/.local/state/twin/wechat2/xwechat" {
-		t.Errorf("bind source = %q", it.Binds[1].Source)
+	if got := derivationFor(der, "bwrap.root"); got == "" {
+		t.Error("基座那条根挂载必须出现在推导来源里")
+	}
+	if len(it.Binds) != 1 || it.Binds[0].Source != "~/.local/state/twin/wechat2/xwechat" {
+		t.Errorf("bwrap.bind = %v，want 只有规则那条映射", it.Binds)
 	}
 }
 
@@ -640,8 +644,9 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Written out rather than rebuilt from sandbox.BaseFor: this is the command
-	// line, and the base is the first half of it — the root mount is in `bind`,
-	// and this fixture's rule asks for a private /tmp, so no host-/tmp line.
+	// line, and the base is the first half of it — the root is a key of its own
+	// (not an option line), and this fixture's rule asks for a private /tmp, so
+	// no host-/tmp line.
 	want := []string{
 		"--proc /proc", "--tmpfs /dev/shm", "--tmpfs /tmp", "--die-with-parent",
 		"--from-config", "--rule-flag", "--from-cli",
@@ -657,10 +662,11 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	}
 }
 
-// Every piece of the base goes where it can be read as what it is: the root
-// mount into `bind` (it is a mount), and the rest as the very option lines the
-// command gets — `--proc /proc` next to `--tmpfs /dev/shm` next to the host's
-// `/tmp` line, in the order they are applied. One list is also what makes
+// Every piece of the base goes where it can be read as what it is: the root into
+// its own key (one word, because the mount may only be named once and its place
+// in the command is not its place in the file), and the rest as the very option
+// lines the command gets — `--proc /proc` next to `--tmpfs /dev/shm` next to the
+// host's `/tmp` line, in the order they are applied. One list is also what makes
 // "which line wins" a question the file itself answers.
 func TestPlanWritesTheBaseByNode(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
@@ -670,11 +676,11 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The root is a mount, so it is written in the node for mounts — as the
-	// first entry there, because the layers above (the rule's mappings) are
-	// appended after it.
-	if len(it.Binds) == 0 || !it.Binds[0].IsRootMount() {
-		t.Errorf("bwrap.bind = %v，want 第一条是基座那条根挂载", it.Binds)
+	if it.Root != "dev" {
+		t.Errorf("bwrap.root = %q，want dev", it.Root)
+	}
+	if got := derivationFor(der, "bwrap.root"); got == "" {
+		t.Error("基座那条根挂载必须出现在推导来源里")
 	}
 	// Everything else the base contributes is an option line, in command order:
 	// this fixture has no Wayland trait and no rule, so the host's /tmp is the
@@ -687,9 +693,10 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	if len(it.Env) != 1 || it.Env[0].Key != "TWIN_INSTANCE" || it.Env[0].Value != "wechat2" {
 		t.Errorf("bwrap.env = %+v", it.Env)
 	}
-	// Every node the base filled has to name its source: this is the part the
-	// user did not write.
-	for _, key := range []string{"bwrap.bind", "bwrap.env", "bwrap.extras"} {
+	// Every key the base filled has to name its source: this is the part the
+	// user did not write. `bind` is not among them here — this fixture has no
+	// rule, so the base puts nothing in it.
+	for _, key := range []string{"bwrap.root", "bwrap.env", "bwrap.extras"} {
 		if !hasDerivation(der, key) {
 			t.Errorf("%s 的推导来源没记下来", key)
 		}

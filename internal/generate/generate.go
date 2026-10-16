@@ -409,9 +409,10 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, EntryBody,
 	// for this instance, then the global default, then the rule, then the
 	// command line's `--` region. Later tokens shadow earlier mounts on the same
 	// destination, so no conflict-resolution code is owed — and the root is
-	// first for exactly that reason: everything that has to be able to overrule
-	// it (a path mapping, the alias overlay) is emitted after it, wherever it
-	// sits in the file (see inst.Bind.IsRootMount).
+	// emitted before all of it for the same reason: everything that has to be
+	// able to overrule it (a path mapping, the alias overlay) comes after it,
+	// and the root's own key is what says so rather than its place in the file
+	// (see inst.Instance.RootBind).
 	//
 	// The base goes into the file rather than staying in the sandbox builder.
 	// Which root a program gets is the decision that varies most per program
@@ -426,7 +427,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, EntryBody,
 	// above can still overrule the base.
 	if level.Renames() {
 		base := sandbox.BaseFor(id, privateTmp)
-		it.Binds = append(base.Binds, it.Binds...)
+		it.Root = base.Root
 		it.Extras = append(it.Extras, base.Head...)
 		it.Extras = append(it.Extras, tmpfsLines(base.Tmpfs)...)
 		it.Extras = append(it.Extras, tmpfsLines(tmpfs)...)
@@ -437,8 +438,8 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, EntryBody,
 		}
 		it.Extras = append(it.Extras, base.Tail...)
 		it.Env = append(base.Env, it.Env...)
-		note("bwrap.bind", base.Binds[0].String(),
-			"gen 写的沙箱基座：根挂载（发在其余所有挂载之前，写在第几行都一样）")
+		note("bwrap.root", base.Root,
+			"gen 写的沙箱基座：程序跑在哪个根下（这一条发在其余所有挂载之前，位置不由文件决定）")
 		note("bwrap.env", base.Env[0].String(), "gen 写的沙箱基座")
 		own := append([]string{}, base.Head...)
 		own = append(own, tmpfsLines(base.Tmpfs)...)
