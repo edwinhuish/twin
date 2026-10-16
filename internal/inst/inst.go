@@ -316,9 +316,9 @@ type Instance struct {
 	// that text is the one part of a wrap a user rewrites instead of reads —
 	// a display name, keywords, a menu category — and a key per line meant
 	// editing the configuration to change what ends up in a .desktop anyway.
-	// `install` copies it to Paths.Desktop(id) verbatim (generating it from the
-	// source entry when it is not there yet), so it is also the answer to
-	// "what exactly is being installed?".
+	// `install` generates it from the source entry when it is not there yet, and
+	// copies it to Paths.Desktop(id) verbatim every time after that, so it is
+	// also the answer to "what exactly is being installed?".
 	DesktopOverride string
 
 	// WMClass is the StartupWMClass written into the generated entry. Empty
@@ -551,13 +551,12 @@ func IsResolvablePath(s string) bool {
 	return filepath.IsAbs(s) || s == "~" || strings.HasPrefix(s, "~/")
 }
 
-// ResolveAgainst is resolvePath for the one caller that has a base but no Load
-// to run: `gen` writes the desktop entry's file next to the definition it is
-// writing, and the definition spells that place as a relative path (see
-// Instance.DesktopOverride). Doing it with the same function is the point —
-// `gen` and Load have to agree about what `./x.desktop` means, or the file gen
-// writes and the file install copies would be two different files.
-func ResolveAgainst(base, s string) string { return resolvePath(base, s) }
+// There is no exported resolvePath any more. Its one outside caller was `gen`,
+// which used to write the desktop entry's file next to the definition it was
+// writing — the base was the definition's own directory, and `gen` and Load had
+// to agree about what `./x.desktop` means. Now `install` writes that file, and
+// it gets the path from Load: one reader, one answer, no second spelling of the
+// rule to keep in step.
 
 // Expand turns a leading ~/ into an absolute path. Anything else is returned
 // unchanged; the sandbox never re-resolves it (a relative path was already
@@ -668,8 +667,8 @@ func (i *Instance) Check() error {
 	// which fails at the last possible moment and in a way nobody recognises as
 	// "you deleted a config value").
 	if i.DesktopOverride == "" {
-		return fmt.Errorf("override.desktop 是空的：桌面项正文必须有个文件装着（`gen` 写的是 ./<id>.desktop，" +
-			"与这份定义同目录）；install 会逐字复制它")
+		return fmt.Errorf("override.desktop 是空的：桌面项正文必须有个文件装着（`gen` 在定义里写的是 " +
+			"./<id>.desktop，与这份定义同目录；install 缺了就按源桌面项生成一份，之后逐字复制它）")
 	}
 	if !i.Level.Implemented() {
 		return fmt.Errorf("isolation.level %q is not implemented yet (only %s)", i.Level, "none | alias | redirect")
@@ -837,9 +836,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// rather than reads, and a pure-text file is where rewriting is pleasant.
 	// These keys are the decisions twin makes *about* that file.
 	ov := t.Ensure("override")
-	ov.SetComment("desktop", "桌面项**正文**所在的文件（相对路径的基准同上，`gen` 写的是与本文件同目录的\n"+
-		"<id>.desktop）。install 每次把它逐字复制到 ~/.local/share/applications/<id>.desktop；\n"+
-		"文件不在时会按源桌面项生成一份（Exec / Icon / StartupWMClass 都填好），此后它就是正文。")
+	ov.SetComment("desktop", "桌面项**正文**所在的文件（相对路径的基准同上，`gen` 在本文件里写的就是与它同\n"+
+		"目录的 <id>.desktop）。文件不在时由 `twin install` 按源桌面项生成一份（Exec / Icon /\n"+
+		"StartupWMClass 都填好）—— 改菜单里那几个字就是改它，然后 `twin reinstall <id>`。")
 	ov.Set("desktop", i.DesktopOverride)
 	ov.SetComment("wm_class", "生成正文时写进 StartupWMClass 的值，留空 = 用 id。别依赖它：Wayland 下认领窗口的\n"+
 		"是别名基名，这一行只对 X11/XWayland 有意义；而且正文生成过一次之后，改这里不再有影响。")
@@ -1045,7 +1044,7 @@ func Load(path string) (*Instance, error) {
 	if root.Has("desktop") {
 		return nil, fmt.Errorf("%s: `desktop` 这一节拆成了两处：源桌面项是 `source.desktop`，"+
 			"而桌面项的**正文**（显示名、说明、关键词、分类）现在装在一份纯文本文件里，由 `override.desktop` 指出 —— "+
-			"install 每次逐字复制它，改它比改这里的五个键更直接。请用 `twin gen` 重新生成一份", path)
+			"install 缺了就生成它、之后逐字复制它，改它比改这里的五个键更直接。请用 `twin gen` 重新生成一份", path)
 	}
 	if root.Has("identity") {
 		return nil, fmt.Errorf("%s: `identity` 这一节拆开了：`level` 挪到 `isolation.level`，"+
@@ -1062,8 +1061,9 @@ func Load(path string) (*Instance, error) {
 	}
 	for _, key := range []string{"name", "name_en", "comment", "comment_en", "keywords", "categories"} {
 		if root.Has(key) {
-			return nil, fmt.Errorf("%s: `%s` 这类文案现在写在 `override.desktop` 指的那份文件里（纯文本桌面项，"+
-				"install 每次逐字复制它）—— 直接改那份文件，比在配置里改一行更接近最终结果", path, key)
+			return nil, fmt.Errorf("%s: `%s` 这类文案现在写在 `override.desktop` 指的那份文件里（纯文本桌面项）"+
+				"—— 那份文件由 install 生成第一份，此后 install 每次逐字复制它；直接改它比在配置里改一行更接近最终结果",
+				path, key)
 		}
 	}
 	for _, key := range []string{"proc", "tmpfs", "remountRO"} {

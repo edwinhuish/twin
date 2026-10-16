@@ -97,7 +97,7 @@ const usage = `twin —— 程序双开
   twin gen <source> [选项]                生成一份配置（默认 ` + defaultProfileLabel + `）
   twin install <id> | -p <文件> [选项]    读那份定义并落盘：桌面项 / 图标 / 启动器 / 托盘
   twin install --ext                      装入 shell 侧的托盘扩展（机器级，一次即可）
-  twin inspect <source> [--name 显示名]   只看：源程序是什么、身份该怎么做
+  twin inspect <source>                   只看：源程序是什么、身份该怎么做
   twin verify <id>                        自检一个实例的身份链路
   twin reinstall <id> [--refresh]         按实例定义重新落盘（同 twin install <id>）
   twin reinstall --ext                    同 twin install --ext（两个入口，同一件事）
@@ -491,7 +491,6 @@ func sortedRuleKeys(m map[string]*config.Rule) []string {
 
 func cmdInspect(p inst.Paths, args []string) int {
 	fs := newFlags("inspect")
-	name := fs.String("name", "", "预览：把该名字当作你显式指定的显示名（它会真的参与 keywords 推导）")
 	pos, err := parseFL(fs, args)
 	if err != nil {
 		return usageError(fs, err)
@@ -545,16 +544,14 @@ func cmdInspect(p inst.Paths, args []string) int {
 	}
 	// Show the value that would actually be written, and where it came from:
 	// "inherited from the source" and "synthesised from its names" are very
-	// different claims, and the user is about to trust one of them.
-	//
-	// --name is accepted here purely so the interaction between naming an
-	// instance and its keywords can be previewed without writing anything.
-	// A rules.d keyword list counts as explicit, exactly as Plan treats it.
+	// different claims, and the user is about to trust one of them. The list is
+	// what `install` will put in the entry's text when it generates it, so the
+	// rule layer counts as explicit exactly as it does there.
 	kwIn := ""
 	if insp.Rule != nil {
 		kwIn = insp.Rule.Keywords
 	}
-	kw, kwWhy := generate.Keywords(insp, kwIn, *name, *name != "")
+	kw, kwWhy := generate.Keywords(insp, kwIn)
 	if kwIn != "" {
 		kwWhy = "应用规则里的 keywords（" + orBuiltin(insp.Rule) + "）"
 	}
@@ -613,18 +610,18 @@ func cmdGen(p inst.Paths, args []string) int {
 	// them (they point at `-h`), so a default that a user cannot see here cannot
 	// be seen anywhere — and a wrong default is exactly the kind of thing that
 	// says nothing until two instances fight over one lock file.
+	// There is no flag here for what the entry *says* — no --name, --comment,
+	// --keywords, --categories. Those words live in the desktop entry's text
+	// (override.desktop), which `gen` does not write: `install` writes it, once,
+	// and from then on that file is the user's. An option on this command could
+	// only seed a file that does not exist yet, and after the first install it
+	// would change nothing at all — a flag whose effect depends on whether a
+	// file happens to be there is the kind of thing this tool refuses to ship.
+	// Renaming what the menu shows is editing that file and running
+	// `twin reinstall`, which copies it again.
 	var (
-		output    = fs.String("output", "", "配置写到哪（默认 "+defaultProfileLabel+"；与 -o 是同一个设置）")
-		as        = fs.String("as", "", "实例 id，同时是窗口 app_id 与托盘 SNI Id（默认 源基名 ＋ 最小空闲序号，从 2 起）")
-		name      = fs.String("name", "", "显示名，写进生成的桌面项正文（默认 源 Name[当前语言] ＋ 序号；那份正文一般由 gen 写一次，之后改它本身）")
-		nameEn    = fs.String("name-en", "", "英文显示名，写 Name[en]（默认 源 Name ＋ 序号；与 --name 相同时不写）")
-		comment   = fs.String("comment", "", "说明，写进桌面项正文（默认 源 Comment[当前语言] → Comment）")
-		commentEn = fs.String("comment-en", "", "英文说明，写 Comment[en]")
-		// No backquotes in these strings: flag.UnquoteUsage takes the first
-		// backquoted run as the flag's argument name, so a quoted `;` would be
-		// printed as `-keywords ;` instead of `-keywords string`.
-		keywords   = fs.String("keywords", "", "搜索关键词，分号分隔，写进桌面项正文（默认 rules.d → 源桌面项）")
-		categories = fs.String("categories", "", "分类，分号分隔，写进桌面项正文（默认 rules.d → 源桌面项）")
+		output     = fs.String("output", "", "配置写到哪（默认 "+defaultProfileLabel+"；与 -o 是同一个设置）")
+		as         = fs.String("as", "", "实例 id，同时是窗口 app_id 与托盘 SNI Id（默认 源基名 ＋ 最小空闲序号，从 2 起）")
 		iconPath   = fs.String("icon", "", "源图标 png|svg（默认 源桌面项的 Icon=；找不到就拒绝生成，不出齿轮占位图）")
 		badge      = fs.String("badge", "", "角标文字（默认 id 尾部数字；可用字符 0-9 A-Z 与 -+.!?/ 和空格）")
 		badgeStyle = fs.String("badge-style", "", "角标风格 corner|number|dot（默认 config.toml → corner）")
@@ -691,12 +688,6 @@ func cmdGen(p inst.Paths, args []string) int {
 	o := generate.Options{
 		Source:     pos[0],
 		ID:         *as,
-		Name:       *name,
-		NameEn:     *nameEn,
-		Comment:    *comment,
-		CommentEn:  *commentEn,
-		Keywords:   *keywords,
-		Categories: *categories,
 		Icon:       *iconPath,
 		Badge:      *badge,
 		BadgeStyle: *badgeStyle,
@@ -710,7 +701,7 @@ func cmdGen(p inst.Paths, args []string) int {
 	// force is left out on purpose: it means "overwrite the file I asked for",
 	// and letting it also mean "yes, shadow that other program's desktop entry"
 	// would make one flag do two unrelated destructive things by accident.
-	it, body, der, err := planInstance(p, o, insp, false)
+	it, der, err := planInstance(p, o, insp, false)
 	if err != nil {
 		fail(err.Error())
 		return exitFail
@@ -725,12 +716,12 @@ func cmdGen(p inst.Paths, args []string) int {
 	// The default landing place is the instance's own directory, so it can only
 	// be worked out after Plan has said which instance this is. One file per id
 	// is also why two wraps of two programs do not collide any more.
+	//
+	// One file is also all this command writes. The entry's text and the icon
+	// are install's business: they are derived from the source program and from
+	// this definition (nothing the user is being asked to decide), while the
+	// definition is the thing to read before anything is installed.
 	outPath := firstNonEmpty(*output, shortOutput, p.Profile(it.ID))
-	// The entry's text lands beside the definition, under the name the
-	// definition points at (override.desktop) — resolved with the very function
-	// Load uses, so `./<id>.desktop` means one file to both of them (AGENTS §5).
-	txtPath := inst.ResolveAgainst(filepath.Dir(outPath), it.DesktopOverride)
-	txtNew := !sysx.Exists(txtPath)
 
 	if !*dryRun {
 		// A definition that is already at the default place is not "another
@@ -751,18 +742,8 @@ func cmdGen(p inst.Paths, args []string) int {
 			fail(err.Error())
 			return exitFail
 		}
-		// Only when it is not there yet, and never overwritten: this file is
-		// the desktop entry itself, and `gen` exists to hand the user something
-		// to read and edit. Rewriting it would throw those edits away — which is
-		// the same rule the definition gets, for the same reason.
-		if txtNew {
-			if err := sysx.WriteFileAtomic(txtPath, generate.EntryBytes(p, it, body), 0o644); err != nil {
-				fail(err.Error())
-				return exitFail
-			}
-		}
 	}
-	printGenResult(p, it, insp, outPath, txtPath, *dryRun, *explain, txtNew, der, body)
+	printGenResult(p, it, insp, outPath, *dryRun, *explain, der)
 	return exitOK
 }
 
@@ -801,30 +782,24 @@ func writeConfigFile(path string, body []byte, force bool) error {
 // carries a note above every key — saying the same thing here would be two
 // places that can disagree about what a key means.
 //
+// Nothing here names the desktop entry's text. `gen` does not write it and
+// cannot: `install` generates it from the source entry a moment later, and from
+// then on it is a file the user edits (install's own output is what says where
+// it is). Naming a file that does not exist yet would send the reader into an
+// editor for nothing.
+//
 // The one fact that does not wait for --explain is "no mapping at all". Nothing
 // in this or any later step reports that consequence again, and the programs it
 // happens to are exactly the ones that fight each other over a lock file.
 func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
-	outPath, txtPath string, dry, explain, txtNew bool, der []generate.Derivation, body generate.EntryBody) {
+	outPath string, dry, explain bool, der []generate.Derivation) {
 	lead := outStyle.Green(style.Glyph(style.LevelOK) + " 已写出配置")
 	if dry {
 		lead = title("🔍 将要写出配置（--dry-run，未写盘）")
 	}
 	fmt.Printf("%s %s\n", lead, outStyle.Bold(outPath))
-	// The second file is named on the spot: it is where a user renames the
-	// program, and walking them into an editor for the wrong file is the one
-	// mistake this line prevents. When it already exists it is *not* rewritten,
-	// and saying so here is cheaper than an FAQ.
-	switch {
-	case txtNew && dry:
-		fmt.Printf("  桌面项正文（将写出） %s\n", txtPath)
-	case txtNew:
-		fmt.Printf("  桌面项正文（已写出） %s\n", txtPath)
-	default:
-		fmt.Printf("  桌面项正文 %s（已存在，未改动 —— 改它、install 就照它装）\n", txtPath)
-	}
 	if explain {
-		printDerived(der)
+		printDerived("🧩 推导出的默认值（改那份文件即可覆盖）", der)
 		// "This instance" is the definition the user is holding, and gen has
 		// not installed anything yet: the one file to edit is the one just
 		// written, and the map section says so with its real path.
@@ -847,17 +822,6 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 			return
 		}
 		fmt.Printf("\n%s\n%s", title("📄 实例定义（"+filepath.Base(outPath)+"）"), indent(config, "  "))
-		// The entry's own text, shown the way install will see it: an existing
-		// file is copied as it stands (so *it* is what is previewed), and a
-		// missing one is what gen just rendered above.
-		text := generate.EntryBytes(p, it, body)
-		if !txtNew {
-			if onDisk, err := os.ReadFile(txtPath); err == nil {
-				text = onDisk
-			}
-		}
-		fmt.Printf("\n%s\n%s", title("📄 桌面项正文（"+filepath.Base(txtPath)+"，install 逐字复制它）"),
-			indent(text, "  "))
 	}
 	fmt.Printf("\n%s\n", title("👉 下一步"))
 	fmt.Printf("  1. 改 %s —— 每个键的说明都写在文件里的注释里（不改也能装）\n", outPath)
@@ -1115,25 +1079,16 @@ func ensureProfile(p inst.Paths, rt sandbox.Runtime, dry bool) int {
 // Only `twin gen` calls it now. `twin install` and `twin reinstall` do not
 // re-derive anything: one reads a configuration, the other replays a snapshot,
 // and both of those already say which instance they are.
-func planInstance(p inst.Paths, o generate.Options, insp *generate.Inspection, force bool) (*inst.Instance, generate.EntryBody, []generate.Derivation, error) {
-	it, body, der, err := generate.Plan(p, o, insp)
+func planInstance(p inst.Paths, o generate.Options, insp *generate.Inspection, force bool) (*inst.Instance, []generate.Derivation, error) {
+	it, der, err := generate.Plan(p, o, insp)
 	if err != nil {
-		return nil, generate.EntryBody{}, nil, err
-	}
-	// Keywords are derived rather than demanded now, so this should never fire —
-	// which is exactly why it is worth stating: if it ever does, the search
-	// index would silently lose this instance. What is checked is the *entry
-	// text*, because that is where keywords end up (override.desktop); the
-	// definition no longer carries them.
-	if body.Keywords == "" {
-		warn("推不出搜索关键词（源桌面项既无 Keywords，也没有可用的 Name/程序名）——" +
-			"搜索结果里可能找不到这个实例，建议补 --keywords 'k1;k2'")
+		return nil, nil, err
 	}
 	// This only guards an explicit --as: a derived id is free by construction.
 	if err := generate.CheckCollision(p, it.ID, force); err != nil {
-		return nil, generate.EntryBody{}, nil, err
+		return nil, nil, err
 	}
-	return it, body, der, nil
+	return it, der, nil
 }
 
 // mapsOrigin names the layer a path map came from, or "" when no layer claims
@@ -1460,10 +1415,13 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	}
 	fmt.Printf("  %s\n", trayLine)
 	if report.verbose {
-		// The derived values are all already in profile.yml, and their whole
-		// point is to be visible — visible is profile.yml, not a wall of
-		// output on every wrap.
-		printDerived(report.der)
+		// The definition's derived values are all in profile.yml already, and
+		// their whole point is to be visible — visible is profile.yml, not a
+		// wall of output on every wrap. The desktop entry's text is the one
+		// thing that is *not* there: when this run generated it (EntryDer is
+		// empty otherwise) those rows are the only account of where its words
+		// came from, and the file to edit is the user's own.
+		printDerived("🧩 桌面项正文是怎么推出来的（改那份文件即可覆盖）", res.EntryDer)
 	}
 	for _, n := range res.Notes {
 		fmt.Printf("  · %s\n", n)
@@ -1500,9 +1458,13 @@ func installAndCheck(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 // installReport is what the caller knows about the instance that the shared
 // install path cannot work out for itself: how to introduce it, where its
 // knowledge came from, and how much of it to print.
+//
+// There is no field here for the entry's derivation log: whoever writes that
+// text is the one who derived it, so it comes back from Materialize
+// (generate.Result.EntryDer) rather than being handed down from a command that
+// did not do it.
 type installReport struct {
 	lead    string
-	der     []generate.Derivation
 	origin  string
 	fix     mapFix
 	verbose bool
@@ -1617,7 +1579,6 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 			fmt.Printf("  %s\n", line)
 		}
 	}
-	printDerived(report.der)
 	printPathMaps(p, it, insp, report.origin, report.fix, report.verbose)
 	if plan.Bwrap != "" {
 		fmt.Printf("\n%s\n%s\n", title("🧱 bwrap 调用"), plan.String())
@@ -1640,20 +1601,35 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 		}
 		fmt.Printf("\n%s\n%s", title("📄 存档记录（"+p.Profile(it.ID)+"）"), indent(body, "  "))
 	}
-	// The desktop entry is a copy of a file this time, not something rendered
-	// from the instance: so the rehearsal shows the bytes that would be copied —
-	// the file on disk when it is there, the text install would generate when it
-	// is not. Rendering it from the instance instead would preview a file that
-	// install never writes.
-	entry, _ := generate.DeriveBody(insp, it.ID, generate.Options{})
+	// The desktop entry is either a copy of a file or a file about to be
+	// written, and the rehearsal says which — "install 生成" and "install 逐字
+	// 复制" are two very different claims about the same line of output. The
+	// bytes below are that file's text either way: the one on disk when it is
+	// there, the one this run would generate when it is not. Rendering it from
+	// the instance instead would preview a file install never writes.
+	entry, entryDer := generate.DeriveBody(insp, it.ID)
 	text := generate.EntryBytes(p, it, entry)
+	head := title("📄 桌面项（" + filepath.Base(p.Desktop(it.ID)) + "，install 按源桌面项生成 " +
+		it.DesktopOverride + "）")
+	notice := generate.EntryNotice(entry)
 	if it.DesktopOverride != "" {
 		if onDisk, err := os.ReadFile(it.DesktopOverride); err == nil {
-			text = onDisk
+			// It is there, so nothing is derived and nothing is said about
+			// keywords: whatever that file holds is what gets copied, hand-typed
+			// words included.
+			text, entryDer, notice = onDisk, nil, ""
+			head = title("📄 桌面项（" + filepath.Base(p.Desktop(it.ID)) + "，逐字复制 " +
+				it.DesktopOverride + "）")
 		}
 	}
-	fmt.Printf("\n%s\n%s", title("📄 桌面项（"+filepath.Base(p.Desktop(it.ID))+"，逐字复制 "+it.DesktopOverride+"）"),
-		indent(text, "  "))
+	fmt.Printf("\n%s\n%s", head, indent(text, "  "))
+	if notice != "" {
+		fmt.Printf("  %s\n", outStyle.Yellow(notice))
+	}
+	// The rows sit under the file they describe: the entry's text is the one part
+	// of an install that nobody can read back out of profile.yml, and an install
+	// derives nothing else (there are no instance options on this half at all).
+	printDerived("🧩 桌面项正文是怎么推出来的（改那份文件即可覆盖）", entryDer)
 	if it.Level == inst.LevelRedirect {
 		rule, err := generate.RuleJSON(it, p)
 		if err != nil {
@@ -2065,11 +2041,16 @@ func dropTray(id string, dry bool) string {
 // printDerived shows every value that was filled in from the source program,
 // with the reason. A default nobody can see is a default nobody can correct.
 //
+// The heading is the caller's, because what can be *done* about those values
+// differs by command: a definition's keys are edited in the file gen just
+// printed, while an install's rows describe a desktop entry the user edits
+// afterwards. One shared heading would have to claim one of the two.
+//
 // The key column is sized to the batch rather than fixed: these are dotted
 // config paths (`override.desktop Keywords`, `isolation.nested_ns`) whose width
 // follows the schema, and a fixed column turns "one key got longer" into a table
 // where the values no longer line up.
-func printDerived(der []generate.Derivation) {
+func printDerived(head string, der []generate.Derivation) {
 	if len(der) == 0 {
 		return
 	}
@@ -2079,7 +2060,7 @@ func printDerived(der []generate.Derivation) {
 			width = n
 		}
 	}
-	fmt.Printf("\n%s\n", title("🧩 推导出的默认值（都可用选项覆盖）"))
+	fmt.Printf("\n%s\n", title(head))
 	for _, d := range der {
 		fmt.Printf("  %-*s %s   ← %s\n", width, d.Key, d.Value, d.Source)
 	}

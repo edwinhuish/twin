@@ -161,16 +161,28 @@ func hasDerivation(der []Derivation, key string) bool {
 	return false
 }
 
+// planBody is the pair `twin gen` used to get back from one call: the definition
+// and the words of the entry's text. The words left Plan when `gen` stopped
+// writing that file (install writes it now, and derives it there), so a test
+// that cares about them asks the one derivation that is left — for the id Plan
+// just chose, since the sequence number is part of every line of it.
+func planBody(t *testing.T, p inst.Paths, o Options, insp *Inspection) (*inst.Instance, EntryBody, []Derivation) {
+	t.Helper()
+	it, der, err := Plan(p, o, insp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, bodyDer := DeriveBody(insp, it.ID)
+	return it, body, append(der, bodyDer...)
+}
+
 // `twin gen wechat` on a zh_CN desktop must expand to 微信2: every one of these
 // values is derivable from the source entry, and each must be reported.
 func TestPlanDerivesFromSource(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, body, der, err := Plan(p, Options{}, wechatInspection())
-	if err != nil {
-		t.Fatal(err)
-	}
+	it, body, der := planBody(t, p, Options{}, wechatInspection())
 	if it.ID != "wechat2" {
 		t.Errorf("id = %q, want wechat2", it.ID)
 	}
@@ -200,10 +212,7 @@ func TestPlanFallsBackToASCIIName(t *testing.T) {
 	clearLocale(t, "de_DE.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	_, body, _, err := Plan(p, Options{}, wechatInspection())
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, body, _ := planBody(t, p, Options{}, wechatInspection())
 	if body.Name != "wechat2" {
 		t.Errorf("name = %q, want wechat2", body.Name)
 	}
@@ -226,7 +235,7 @@ func TestPlanSkipsTakenIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	it, _, _, err := Plan(p, Options{}, wechatInspection())
+	it, _, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,21 +249,16 @@ func TestPlanExplicitOptionsWin(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, body, der, err := Plan(p, Options{ID: "wx", Name: "我的微信", Badge: "A"}, wechatInspection())
+	it, der, err := Plan(p, Options{ID: "wx", Badge: "A"}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if it.ID != "wx" || body.Name != "我的微信" || it.Badge != "A" {
-		t.Fatalf("explicit options were overridden: id=%q name=%q badge=%q", it.ID, body.Name, it.Badge)
+	if it.ID != "wx" || it.Badge != "A" {
+		t.Fatalf("explicit options were overridden: id=%q badge=%q", it.ID, it.Badge)
 	}
-	// The name is not in the table — the other lines of the entry still are,
-	// because they are derived, so the check is on the value, not on the key.
 	for _, d := range der {
-		switch {
-		case d.Key == "id" || d.Key == "badge":
+		if d.Key == "id" || d.Key == "badge" {
 			t.Errorf("%q must not be reported as derived when given explicitly: %+v", d.Key, d)
-		case d.Value == "我的微信":
-			t.Errorf("an explicit value must not be reported as derived: %+v", d)
 		}
 	}
 }
@@ -276,10 +280,7 @@ func TestKeywordsDerivedWhenSourceHasNone(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	_, body, der, err := Plan(p, Options{}, wechatInspection())
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, body, der := planBody(t, p, Options{}, wechatInspection())
 	if body.Keywords != "微信;wechat;" {
 		t.Errorf("keywords = %q, want 微信;wechat;", body.Keywords)
 	}
@@ -298,10 +299,7 @@ func TestKeywordsInheritedFromSource(t *testing.T) {
 	insp.Entry.KeywordLists = map[string]string{"zh_CN": "微信;聊天;"}
 	p := inst.Paths{Home: t.TempDir()}
 
-	_, body, der, err := Plan(p, Options{}, insp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, body, der := planBody(t, p, Options{}, insp)
 	if body.Keywords != "微信;聊天;" {
 		t.Errorf("keywords = %q, want the source's Keywords[zh_CN] verbatim", body.Keywords)
 	}
@@ -317,27 +315,23 @@ func TestKeywordsTreatsBareSemicolonAsAbsent(t *testing.T) {
 	insp.Entry.Keywords = ";"
 	p := inst.Paths{Home: t.TempDir()}
 
-	_, body, _, err := Plan(p, Options{}, insp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, body, _ := planBody(t, p, Options{}, insp)
 	if body.Keywords != "微信;wechat;" {
 		t.Errorf("keywords = %q, want the derived list", body.Keywords)
 	}
 }
 
+// The explicit layer is rules.d — the command line no longer has one — and a
+// list given there is literal: nothing is inherited behind it, and nothing is
+// reported as derived.
 func TestKeywordsExplicitWins(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
-	p := inst.Paths{Home: t.TempDir()}
 
-	_, body, der, err := Plan(p, Options{Keywords: "k1;k2"}, wechatInspection())
-	if err != nil {
-		t.Fatal(err)
+	got, why := Keywords(wechatInspection(), "k1;k2")
+	if got != "k1;k2" {
+		t.Errorf("keywords = %q, want the explicit value verbatim", got)
 	}
-	if body.Keywords != "k1;k2" {
-		t.Errorf("keywords = %q, want the explicit value verbatim", body.Keywords)
-	}
-	if why := derivationFor(der, "override.desktop Keywords"); why != "" {
+	if why != "" {
 		t.Errorf("an explicit value must not be reported as derived: %q", why)
 	}
 }
@@ -410,14 +404,18 @@ func vlcInspection(keywords string) *Inspection {
 // The source's list is inherited verbatim while the name is twin's own
 // derivation: twin does not get to add a Chinese term the program never
 // declared just because it happens to know one.
-func TestKeywordsDerivedNameLeavesEnglishSourceAlone(t *testing.T) {
+//
+// This is the test that guards the removal of the one exception. An inherited
+// list used to gain the display name at its head when the *user* had typed that
+// name — the only way an instance of an English-keyworded program became
+// findable under its own Chinese name. Nobody types a name any more, so nothing
+// may prepend: the moment a derived Chinese name starts showing up as a keyword,
+// twin is claiming something about the program it made up.
+func TestKeywordsInheritedListIsNeverPrependedTo(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	_, body, der, err := Plan(p, Options{}, vlcInspection("Player;Capture;DVD;"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, body, der := planBody(t, p, Options{}, vlcInspection("Player;Capture;DVD;"))
 	// The display name is still derived and still Chinese — that is not in
 	// question; only the keyword list stays as the source wrote it.
 	if body.Name != "VLC 媒体播放器2" {
@@ -428,84 +426,6 @@ func TestKeywordsDerivedNameLeavesEnglishSourceAlone(t *testing.T) {
 	}
 	if why := derivationFor(der, "override.desktop Keywords"); strings.Contains(why, "前置") {
 		t.Errorf("nothing was prepended, so nothing may claim it was: %q", why)
-	}
-}
-
-// Once the user names the instance that name is a term they asked to be
-// findable, so it goes to the head of the inherited list.
-func TestKeywordsExplicitNamePrependedToEnglishSource(t *testing.T) {
-	clearLocale(t, "zh_CN.UTF-8")
-	p := inst.Paths{Home: t.TempDir()}
-
-	_, body, der, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("Player;Capture;DVD;"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "我的播放器;Player;Capture;DVD;"; body.Keywords != want {
-		t.Errorf("keywords = %q, want %q", body.Keywords, want)
-	}
-	why := derivationFor(der, "override.desktop Keywords")
-	if !strings.Contains(why, "源 Keywords") || !strings.Contains(why, "我的播放器") {
-		t.Errorf("the reason must name both halves of the result: %q", why)
-	}
-}
-
-// A list that already speaks Chinese has nothing to gain from the prepend.
-func TestKeywordsExplicitNameSkippedWhenSourceHasCJK(t *testing.T) {
-	clearLocale(t, "zh_CN.UTF-8")
-	p := inst.Paths{Home: t.TempDir()}
-
-	_, body, _, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("播放器;Player;"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if body.Keywords != "播放器;Player;" {
-		t.Errorf("keywords = %q, want the source list untouched", body.Keywords)
-	}
-}
-
-// Nor does the prepend fire when the source already lists that very keyword —
-// case-insensitively, because keyword matching in the shell is.
-func TestKeywordsExplicitNameSkippedWhenAlreadyListed(t *testing.T) {
-	clearLocale(t, "zh_CN.UTF-8")
-	p := inst.Paths{Home: t.TempDir()}
-
-	_, body, _, err := Plan(p, Options{Name: "vlc"}, vlcInspection("Player;VLC;"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if body.Keywords != "Player;VLC;" {
-		t.Errorf("keywords = %q, want the source list untouched", body.Keywords)
-	}
-}
-
-// A source that omits the trailing separator is left alone until we are the
-// ones editing the value — then it is written in the recommended form.
-func TestKeywordsPrependedListIsWellFormed(t *testing.T) {
-	clearLocale(t, "zh_CN.UTF-8")
-	p := inst.Paths{Home: t.TempDir()}
-
-	_, body, _, err := Plan(p, Options{Name: "我的播放器"}, vlcInspection("Player;Capture"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "我的播放器;Player;Capture;"; body.Keywords != want {
-		t.Errorf("keywords = %q, want %q", body.Keywords, want)
-	}
-}
-
-func TestHasCJK(t *testing.T) {
-	yes := []string{"微信", "VLC 媒体播放器", "チャット", "한글", "聊天;chat;"}
-	no := []string{"", "Player;Capture;", "Vidéo;Lecteur;", "lecteur;player;"}
-	for _, s := range yes {
-		if !hasCJK(s) {
-			t.Errorf("hasCJK(%q) = false, want true", s)
-		}
-	}
-	for _, s := range no {
-		if hasCJK(s) {
-			t.Errorf("hasCJK(%q) = true, want false", s)
-		}
 	}
 }
 
@@ -545,10 +465,7 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, body, der, err := Plan(p, Options{}, ruleInspection())
-	if err != nil {
-		t.Fatal(err)
-	}
+	it, body, der := planBody(t, p, Options{}, ruleInspection())
 	if body.Keywords != "wechat;微信;im" {
 		t.Errorf("keywords = %q, want the rule's list verbatim", body.Keywords)
 	}
@@ -583,30 +500,13 @@ func TestPlanTakesValuesFromRule(t *testing.T) {
 	}
 }
 
-// A CLI keyword list is literal: rules.d must not get a second word in.
-func TestPlanExplicitKeywordsBeatRule(t *testing.T) {
-	clearLocale(t, "zh_CN.UTF-8")
-	p := inst.Paths{Home: t.TempDir()}
-
-	_, body, der, err := Plan(p, Options{Keywords: "only;this;"}, ruleInspection())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if body.Keywords != "only;this;" {
-		t.Errorf("keywords = %q, want the explicit list", body.Keywords)
-	}
-	if got := derivationFor(der, "override.desktop Keywords"); got != "" {
-		t.Errorf("显式给了 --keywords 就不该有推导来源，得到 %q", got)
-	}
-}
-
 func TestPlanLevelFromRuleThenConfig(t *testing.T) {
 	p := inst.Paths{Home: t.TempDir()}
 
 	// rules.d wins over config.toml.
 	insp := ruleInspection()
 	insp.Rule.Level = "none"
-	it, _, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "alias", BadgeStyle: "corner", TmpfsUnlessX11: true}}}, insp)
+	it, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "alias", BadgeStyle: "corner", TmpfsUnlessX11: true}}}, insp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +520,7 @@ func TestPlanLevelFromRuleThenConfig(t *testing.T) {
 	// With no rule value, the environment layer decides.
 	insp2 := ruleInspection()
 	insp2.Rule.Level = ""
-	it2, _, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "none", BadgeStyle: "corner"}}}, insp2)
+	it2, _, err := Plan(p, Options{Cfg: &config.Config{Defaults: config.Defaults{Level: "none", BadgeStyle: "corner"}}}, insp2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,7 +539,7 @@ func TestPlanBwrapOrderIsBaseConfigRuleCLI(t *testing.T) {
 	cfg := config.Builtin()
 	cfg.Args = []string{"--from-config"}
 
-	it, _, der, err := Plan(p, Options{Cfg: cfg, Args: []string{"--from-cli"}}, ruleInspection())
+	it, der, err := Plan(p, Options{Cfg: cfg, Args: []string{"--from-cli"}}, ruleInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +572,7 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
 	p := inst.Paths{Home: t.TempDir()}
 
-	it, _, der, err := Plan(p, Options{}, wechatInspection())
+	it, der, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +612,7 @@ func TestPlanNoneLevelTakesNoTmpDecision(t *testing.T) {
 	insp := wechatInspection()
 	insp.Traits.Wayland = true
 
-	it, _, _, err := Plan(p, Options{Cfg: config.Builtin(), Level: inst.LevelNone}, insp)
+	it, _, err := Plan(p, Options{Cfg: config.Builtin(), Level: inst.LevelNone}, insp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +630,7 @@ func TestPlanBlamesTheLayerForABadToken(t *testing.T) {
 	cfg.Path = "/home/x/.config/twin/config.toml"
 	cfg.Args = []string{"--argv0"}
 
-	_, _, _, err := Plan(p, Options{Cfg: cfg}, ruleInspection())
+	_, _, err := Plan(p, Options{Cfg: cfg}, ruleInspection())
 	if err == nil {
 		t.Fatal("配置里的 --argv0 应当被拒绝")
 	}
@@ -738,7 +638,7 @@ func TestPlanBlamesTheLayerForABadToken(t *testing.T) {
 		t.Errorf("错误应指出是 config.toml 里的，得到 %v", err)
 	}
 
-	_, _, _, err = Plan(p, Options{Args: []string{"--argv0"}}, ruleInspection())
+	_, _, err = Plan(p, Options{Args: []string{"--argv0"}}, ruleInspection())
 	if err == nil || !strings.Contains(err.Error(), "命令行") {
 		t.Errorf("命令行透传的错误应点名命令行，得到 %v", err)
 	}
@@ -820,7 +720,7 @@ func TestPlanTrayOverrideSwitches(t *testing.T) {
 	p := inst.Paths{Home: t.TempDir()}
 
 	// 默认（config 内置 = 开）
-	it, _, der, err := Plan(p, Options{}, wechatInspection())
+	it, der, err := Plan(p, Options{}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,7 +734,7 @@ func TestPlanTrayOverrideSwitches(t *testing.T) {
 	// config.toml 关掉
 	cfg := config.Builtin()
 	cfg.Defaults.TrayOverride = false
-	it, _, der, err = Plan(p, Options{Cfg: cfg}, wechatInspection())
+	it, der, err = Plan(p, Options{Cfg: cfg}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +746,7 @@ func TestPlanTrayOverrideSwitches(t *testing.T) {
 	}
 
 	// CLI 关掉（config 是开的）
-	it, _, der, err = Plan(p, Options{NoTray: true}, wechatInspection())
+	it, der, err = Plan(p, Options{NoTray: true}, wechatInspection())
 	if err != nil {
 		t.Fatal(err)
 	}

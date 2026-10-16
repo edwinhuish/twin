@@ -74,7 +74,7 @@ func TestPlanRefusesMultiCallAtAliasLevel(t *testing.T) {
 	insp := wechatInspection()
 	insp.Traits.MultiCall = true
 
-	_, _, _, err := Plan(p, Options{}, insp)
+	_, _, err := Plan(p, Options{}, insp)
 	if err == nil {
 		t.Fatal("多合一二进制 + alias 应当被拒绝")
 	}
@@ -83,7 +83,7 @@ func TestPlanRefusesMultiCallAtAliasLevel(t *testing.T) {
 	}
 
 	// level=none never renames, so the same target is allowed there.
-	if _, _, _, err := Plan(p, Options{Level: inst.LevelNone}, insp); err != nil {
+	if _, _, err := Plan(p, Options{Level: inst.LevelNone}, insp); err != nil {
 		t.Errorf("level=none 不该因多合一被拒：%v", err)
 	}
 }
@@ -96,7 +96,7 @@ func TestPlanRefusesMissingIcon(t *testing.T) {
 	insp := wechatInspection()
 	insp.IconSource = ""
 
-	_, _, _, err := Plan(p, Options{}, insp)
+	_, _, err := Plan(p, Options{}, insp)
 	if err == nil || !strings.Contains(err.Error(), "源图标") {
 		t.Fatalf("缺图标应当被拒绝，得到 %v", err)
 	}
