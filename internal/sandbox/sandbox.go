@@ -185,8 +185,7 @@ func (p *Plan) String() string {
 // entry (`/:/:dev` — a mount belongs with the mounts) and `proc: /proc` /
 // `tmpfs: [/dev/shm]` are the same mounts as before, but the file now says which
 // *kind* each one is without the reader having to know bubblewrap's options
-// (设计 §2.1). Args keeps what has no node: --die-with-parent, and the host's
-// /tmp when that is the branch (see BaseFor).
+// (设计 §2.1). Args keeps what has no node: --die-with-parent (see BaseFor).
 type Base struct {
 	Args  []string
 	Proc  string
@@ -209,12 +208,21 @@ type Base struct {
 // privateTmp says which branch the /tmp decision takes, and twin only has to
 // write one of them: a private /tmp is a tmpfs entry, and it is already in the
 // caller's own `tmpfs` list (that is what makes this true) — so what is owed
-// here is the *other* branch, the host's /tmp bound onto itself. That line stays
-// in Args rather than becoming a `bind` entry of its own: `/tmp:/tmp` in `bind`
-// is not the root, so it would be reported as one of the program's data
-// directories and offered for copying into the program's rules.d — twin's own
-// line wearing the user's data layout as a disguise (实测：写成 bind 条目之后，
-// 那份规则草稿就会建议照抄一条 /tmp:/tmp）。
+// here is the *other* branch, the host's /tmp bound onto itself, as one more
+// `bind` entry beside the root.
+//
+// It is a `bind` entry rather than two tokens in Args because of where the two
+// lists land in the command: `bind` goes down *after* the shaped mounts, Args
+// *before* them. This line is the answer to "把 tmpfs 里那条 /tmp 换成宿主那个"
+// —— and a swap the reader has to remember to finish elsewhere is a swap that
+// silently does nothing, because the tmpfs would simply be laid down on top of
+// it. Written here it overrules that tmpfs wherever it sits.
+//
+// The price is the one every self-mapping pays, and it is a price rather than a
+// mistake: as far as the reports are concerned `/tmp:/tmp` is one of the
+// program's own mappings — listed with them, and offered for copying into the
+// program's rules.d. `gen` therefore names it in the derivation log, where the
+// lines the user did not write are already named.
 //
 // Either branch leaves /tmp *writable*: the mount itself is a no-op under the
 // writable root of today's base, and it is the only thing keeping /tmp writable
@@ -234,9 +242,9 @@ func BaseFor(id string, privateTmp bool) Base {
 		Env:   []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: id}},
 	}
 	if !privateTmp {
-		b.Args = []string{"--bind", "/tmp", "/tmp"}
+		b.Binds = append(b.Binds, inst.Bind{Source: "/tmp", Target: "/tmp"})
 	}
-	b.Args = append(b.Args, "--die-with-parent")
+	b.Args = []string{"--die-with-parent"}
 	return b
 }
 
@@ -323,8 +331,8 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	// passthrough region put the new root binding *after* every mapping, where it
 	// shadows all of them. Now the answer is in the file, and everything below is
 	// a mount that may in turn shadow it (bubblewrap: the later mount wins). What
-	// is left in this list is exactly what has no node of its own: the host's
-	// /tmp when that is the branch, and --die-with-parent (see BaseFor).
+	// is left in this list is exactly what has no node of its own:
+	// --die-with-parent (see BaseFor).
 	if len(i.Extras) > 0 {
 		plan.Groups = append(plan.Groups, append([]string(nil), i.Extras...))
 	}

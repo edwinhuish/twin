@@ -315,10 +315,10 @@ StartupNotify=true
   --proc /proc
   --tmpfs /dev/shm                  # 空的私有共享内存
   --tmpfs /tmp                      # 空的私有 /tmp（选了私有那一条时；另一条见下）
+  /tmp:/tmp                         # 宿主那个 /tmp 原地可写（不要私有 /tmp 时才有这一条）
   --setenv TWIN_INSTANCE <id>
 
 # bwrap.extras（同样由 gen 写，用户可改；写在节点最后，但位置与命令无关）
-  --bind /tmp /tmp                  # 宿主那个 /tmp，可写（不要私有 /tmp 时才有这一条）
   --die-with-parent
 ```
 ```
@@ -331,6 +331,7 @@ bwrap
   --tmp-overlay <targetdir>         # ⚠️ 必须在创建别名之前
   --ro-bind <target> <alias path>
   [--bind|--ro-bind|--dev-bind <源> <目标>]…   # 路径映射（源是数据实际所在；:ro / :dev 选后两个）
+                                               # ↑ 基座那条 /tmp:/tmp 也发在这一批里，所以它压得住上面那条 --tmpfs /tmp
   [--remount-ro <bwrap.remountRO 里的路径>]…   # ⚠️ 必须在所有挂载之后
   [--setenv <bwrap.env 里的键> <值>]…
   --
@@ -383,15 +384,17 @@ file system`）。唯一不建挂载点的是根挂载本身 —— 它两端都
 `[ERROR:chrome/browser/process_singleton_posix.cc] Failed to create socket directory` 并放弃单实例锁
 —— 一条关于 *socket* 的报错，来自一个用户刚刚才包上的程序。所以两条路都保证它可写：走 tmpfs 的
 程序拿到一个空的私有 `/tmp`（`bwrap.tmpfs` 里的一条），不走 tmpfs 的程序（X11 那一路，tmpfs 会把
-`/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，可写**（`bwrap.extras` 里的 `--bind /tmp /tmp`）。
+`/tmp/.X11-unix/X0` 一起带走）拿到**宿主的 `/tmp`，可写**（`bwrap.bind` 里的 `/tmp:/tmp`）。
 "存在但写不进去的 /tmp" 不是第三种选择。
 
-宿主 `/tmp` 那一条留在 `bwrap.extras` 而不是进 `bwrap.bind`：它在默认那个可写的根下**什么也不做**
-（整个宿主根本来就带着一个可写的 `/tmp`），它管的是"哪天把根收紧成 `/:/:ro` 时 /tmp 仍然可写"
-（`args` 排在根挂载之后，所以那条收紧压不住它）。而 `bwrap.bind` 是"隔离哪些数据目录"的清单
-—— `install` 会把它整段报成路径映射，还会建议照抄进这个程序的 `rules.d`，一条 twin 自己的
-`/tmp` 混在里面（它不是根挂载，滤不掉），等于把基座的决定说成用户的数据布局（实测：它就是这么
-被报出来、并被写进那份规则草稿的）。
+宿主 `/tmp` 那一条写在 `bwrap.bind` 里，**位置**才是理由：`bind` 发在**有形状的那几条挂载之后**，
+`extras` 发在它们**之前**。而这一条要干的事就是"把 `tmpfs` 里那条 `/tmp` 换掉" —— 写在 `extras`
+里会被那条 tmpfs 盖回去，于是要么不生效、要么要求读者记得再去 `tmpfs` 里删一行（只加那一行、不动
+`tmpfs`，`/tmp` 还是私有那个，而且没有任何东西会告诉他）。写在 `bind` 里它压得住那条 tmpfs；在默认
+那个可写的根下它则**什么也不做**（整个宿主根本来就带着一个可写的 `/tmp`）—— 它保的是"哪天把根收紧
+成 `/:/:ro` 时 /tmp 仍然可写"。代价照实付：这条自映射在报告眼里就是"这个程序的数据目录"，
+`install` 会把它列进路径映射、并建议照抄进这个程序的 `rules.d`（它不是根挂载，滤不掉），等于把
+基座的决定混进用户的数据布局 —— `gen` 因此在推导日志里点名它（不点名就分不出来）。
 
 ## 6. bwrap 选项列表的合并
 

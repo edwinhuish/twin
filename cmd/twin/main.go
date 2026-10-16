@@ -577,14 +577,14 @@ func cmdInspect(p inst.Paths, args []string) int {
 	case t.Wayland && t.X11:
 		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（空的私有 /tmp）—— 本会话有 WAYLAND_DISPLAY，该程序会走 Wayland。\n")
 		fmt.Printf("  %s 但它两套平台插件都带着：若哪天真退到 X11，--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0 而连不上 X；\n"+
-			"     那时把那份定义里 tmpfs 的 /tmp 去掉、改成在 extras 里写 --bind /tmp /tmp（生成时用 --no-tmpfs 就是它）。\n",
+			"     那时在 bwrap.bind 里加一条 - /tmp:/tmp 即可（它发在 tmpfs 之后，压得住上面那条；生成时用 --no-tmpfs 就是它）。\n",
 			outStyle.Yellow("⚠️"))
 	case t.Wayland && cfg.Defaults.TmpfsUnlessX11:
 		fmt.Printf("\n📂 /tmp 策略：bwrap.tmpfs 里写 /tmp（该程序走 Wayland）\n")
 	case t.Wayland:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写 --bind /tmp /tmp（宿主那个，可写；config.toml 关掉了 tmpfs_unless_x11）\n")
+		fmt.Printf("\n📂 /tmp 策略：bwrap.bind 里写 /tmp:/tmp（宿主那个，原地可写；config.toml 关掉了 tmpfs_unless_x11）\n")
 	default:
-		fmt.Printf("\n📂 /tmp 策略：bwrap.extras 里写 --bind /tmp /tmp（宿主那个，可写），%s\n",
+		fmt.Printf("\n📂 /tmp 策略：bwrap.bind 里写 /tmp:/tmp（宿主那个，原地可写），%s\n",
 			outStyle.Red("**不要** --tmpfs /tmp（会砍掉 /tmp/.X11-unix/X0）"))
 	}
 
@@ -632,7 +632,7 @@ func cmdGen(p inst.Paths, args []string) int {
 		force      = fs.Bool("force", false, "覆盖已存在的输出文件（默认拒绝：那份文件正是你要改的东西）")
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（连配置正文一起打印）")
 		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、路径映射的修改粒度、规则模板）")
-		noTmpfs    = fs.Bool("no-tmpfs", false, "不把 /tmp 盖成空 tmpfs，改成写一条 --bind /tmp /tmp（宿主那个，可写）—— X11 程序必须如此：--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0")
+		noTmpfs    = fs.Bool("no-tmpfs", false, "不把 /tmp 盖成空 tmpfs，改成在 bind 里写一条 /tmp:/tmp（宿主那个，原地可写）—— X11 程序必须如此：--tmpfs /tmp 会砍掉 /tmp/.X11-unix/X0")
 		noTray     = fs.Bool("no-tray", false, "不要把这个实例的托盘图标指给 twin（写文件表还是宿主覆盖表见 tray_override 的说明；整机开关在 config.toml 的 defaults.tray_override）")
 	)
 	// Go's flag package has no aliases, so the documented `-o` is a second

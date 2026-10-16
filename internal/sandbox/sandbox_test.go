@@ -230,8 +230,7 @@ func passthroughInstance(extra ...string) *inst.Instance {
 
 // The base twin writes into the definition, each piece in the node that names
 // its kind — the root mount included, as `/:/:dev` (which *is* `--dev-bind / /`).
-// What is left in the option list is only what has no node: the host's /tmp and
-// --die-with-parent.
+// What is left in the option list is only what has no node: --die-with-parent.
 //
 // Both branches of the /tmp decision have to leave /tmp *writable*, because a
 // read-only /tmp is what a read-only root quietly produced — Chromium reports it
@@ -240,24 +239,30 @@ func passthroughInstance(extra ...string) *inst.Instance {
 // has to be visible in the file, so both spellings are asserted here rather than
 // left to a launch-time decision.
 func TestBaseIsWrittenByNode(t *testing.T) {
-	// The host's /tmp stays in the option list rather than becoming a mapping:
-	// `/tmp:/tmp` is not the root, so it would be reported as one of the
-	// program's data directories and offered for copying into its rules.d.
+	// The host's /tmp is a mapping of its own: `bind` goes down after the shaped
+	// mounts, so this one line overrules a `tmpfs: [/tmp]` wherever it sits —
+	// see BaseFor.
 	root := inst.Bind{Source: "/", Target: "/", Dev: true}
+	hostTmp := inst.Bind{Source: "/tmp", Target: "/tmp"}
 	for _, c := range []struct {
 		name       string
 		privateTmp bool
-		wantArgs   string
+		wantBinds  []inst.Bind
 	}{
-		{"私有 /tmp", true, "--die-with-parent"},
-		{"宿主 /tmp", false, "--bind /tmp /tmp --die-with-parent"},
+		{"私有 /tmp", true, []inst.Bind{root}},
+		{"宿主 /tmp", false, []inst.Bind{root, hostTmp}},
 	} {
 		b := BaseFor("wechat2", c.privateTmp)
-		if got := strings.Join(b.Args, " "); got != c.wantArgs {
-			t.Errorf("%s：args = %q，want %q", c.name, got, c.wantArgs)
+		if got := strings.Join(b.Args, " "); got != "--die-with-parent" {
+			t.Errorf("%s：args = %q，want --die-with-parent（基座每条都该有自己那个节点）", c.name, got)
 		}
-		if len(b.Binds) != 1 || b.Binds[0] != root {
-			t.Errorf("%s：bind = %v，want 只有一条根挂载 %s", c.name, b.Binds, root)
+		if len(b.Binds) != len(c.wantBinds) {
+			t.Fatalf("%s：bind = %v，want %v", c.name, b.Binds, c.wantBinds)
+		}
+		for i, want := range c.wantBinds {
+			if b.Binds[i] != want {
+				t.Errorf("%s：bind[%d] = %s，want %s", c.name, i, b.Binds[i], want)
+			}
 		}
 		if b.Proc != "/proc" {
 			t.Errorf("%s：proc = %q", c.name, b.Proc)

@@ -436,13 +436,13 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	default:
 		it.Tmpfs = nil
 	}
-	// Which node the /tmp half of that decision belongs in is the base's call,
+	// Which node each half of that decision belongs in is the base's call,
 	// because the two branches are two different kinds of mount: an empty
 	// private tmpfs stays right here (this is the node that names tmpfs mounts),
-	// while the host's own /tmp is one more option beside the root mount — not a
-	// `bind` entry, see sandbox.BaseFor. Both branches have to leave /tmp
-	// *writable*, and which one it is says so in the file instead of being
-	// decided invisibly at launch.
+	// while the host's own /tmp becomes one more `bind` entry beside the root —
+	// it has to be emitted after that tmpfs to be able to overrule it, see
+	// sandbox.BaseFor. Both branches have to leave /tmp *writable*, and which one
+	// it is says so in the file instead of being decided invisibly at launch.
 	privateTmp := tmpfsCovers(it.Tmpfs, "/tmp")
 	// There is no branch to take when there is no base: `level none` runs the
 	// program untouched, so an entry here would describe a mount that never
@@ -482,8 +482,8 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// inside a token list and `tmpfs: [/dev/shm]` are the same mount, but only
 	// one of the two tells the reader what kind of mount it is — and the root
 	// mount is written as `/:/:dev`, a mapping in the node for mappings (设计
-	// §2.1). `extras` keeps what has no node of its own: the host's /tmp and
-	// --die-with-parent. Base-first inside every node too, so the layers above
+	// §2.1). `extras` keeps what has no node of its own: --die-with-parent.
+	// Base-first inside every node too, so the layers above
 	// can still overrule the base. The notes follow the *file's* order, so the
 	// row for each key sits where a reader will find the key.
 	if level.Renames() {
@@ -494,6 +494,13 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		it.Tmpfs = append(base.Tmpfs, it.Tmpfs...)
 		it.Env = append(base.Env, it.Env...)
 		note("bwrap.bind", base.Binds[0].String(), "gen 写的沙箱基座：根挂载（排在最前，写在第几行都一样）")
+		// The host's /tmp is a base line sitting among the rule's own mappings,
+		// and no report can tell the two apart — so it is named here, where the
+		// lines the user did not write are named.
+		if len(base.Binds) > 1 {
+			note("bwrap.bind", base.Binds[1].String(),
+				"gen 写的沙箱基座：宿主 /tmp 原地可写（发在 tmpfs 之后，压得住那里的一条 /tmp）")
+		}
 		note("bwrap.proc", base.Proc, "gen 写的沙箱基座")
 		note("bwrap.tmpfs", strings.Join(base.Tmpfs, " "), "gen 写的沙箱基座")
 		note("bwrap.env", base.Env[0].String(), "gen 写的沙箱基座")

@@ -410,7 +410,7 @@ level       = "alias"
 icon_size   = 256
 badge_style = "corner"        # corner | number | dot
 # 程序支持 Wayland 时，新实例的 bwrap.tmpfs 里写 /tmp（空的私有 /tmp）；关掉则改成
-# 在 bwrap.extras 里写 --bind /tmp /tmp（宿主那个，可写）。两者都必须是**可写**的
+# 在 bwrap.bind 里写一条 /tmp:/tmp（宿主那个，原地可写）。两者都必须是**可写**的
 # —— 只读的 /tmp 会让程序在别处报错。**只在二进制特征扫描判错的机器上关掉它。**
 tmpfs_unless_x11 = true
 # 生成实例时是否把宿主的托盘图标覆盖表指向本实例的图标。

@@ -675,15 +675,18 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	// The root is a mount, so it is written in the node for mounts — as the
 	// first entry there, because the layers above (the rule's mappings) are
 	// appended after it.
-	if len(it.Binds) != 1 || !it.Binds[0].IsRootMount() {
-		t.Errorf("bwrap.bind = %v，want 只有基座那条根挂载", it.Binds)
+	if len(it.Binds) == 0 || !it.Binds[0].IsRootMount() {
+		t.Errorf("bwrap.bind = %v，want 第一条是基座那条根挂载", it.Binds)
 	}
 	// This fixture has no Wayland trait and no rule, so the host's /tmp is the
-	// branch — and that one stays in the option list: `/tmp:/tmp` is not the
-	// root, so `bind` would report it as one of the program's data directories
-	// and offer it for copying into the program's rules.d.
-	if !strings.Contains(strings.Join(it.Extras, " "), "--bind /tmp /tmp") {
-		t.Errorf("宿主 /tmp 那一支要写在 extras 里：%v", it.Extras)
+	// branch — written as a mapping right after the root: `bind` is emitted
+	// after the shaped mounts, and that is what lets this one line overrule a
+	// `tmpfs: [/tmp]` without the reader having to delete it there too.
+	if len(it.Binds) != 2 || it.Binds[1].Source != "/tmp" || it.Binds[1].Target != "/tmp" {
+		t.Errorf("宿主 /tmp 那一支要写成 bind 里的一条自映射：%v", it.Binds)
+	}
+	if containsToken(it.Extras, "--bind") {
+		t.Errorf("宿主 /tmp 不该留在 extras 里：%v", it.Extras)
 	}
 	if it.Proc != "/proc" {
 		t.Errorf("bwrap.proc = %q, want /proc", it.Proc)

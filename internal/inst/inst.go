@@ -842,9 +842,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		bw.Set("proc", i.Proc)
 	}
 
-	bw.SetComment("tmpfs", "盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主与里头原有的东西都看不见\n"+
-		"（含 X11 的 /tmp/.X11-unix/X0）。`gen` 写的是 /dev/shm，以及走 Wayland 时的 /tmp —— X11 的程序\n"+
-		"要改成在 extras 里写 --bind /tmp /tmp。两条路 /tmp 都必须可写。留空 = 不盖。")
+	bw.SetComment("tmpfs", "盖成空目录的路径（bwrap --tmpfs）：写后即弃，宿主与里头原有的东西都看不见（含 X11 的 /tmp/.X11-unix/X0）。\n"+
+		"`gen` 写的是 /dev/shm，以及走 Wayland 时的 /tmp —— X11 的程序要改成在 bind 里加 `- /tmp:/tmp`：\n"+
+		"那条发在 tmpfs 之后，压得住这里的 /tmp，不必同时删它。两条路 /tmp 都必须可写。留空 = 不盖。")
 	if len(i.Tmpfs) == 0 {
 		bw.Set("tmpfs", []string{})
 	} else {
@@ -860,9 +860,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// invocation the list above fills, emitted in the order written here. Two
 	// keys that have to agree about one command line belong next to each other
 	// in the file, not in two halves of it.
-	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:dev]`，同 Docker 的卷\n"+
-		"（:ro 只读、:dev 带设备访问，单写一条路径则挂回自己）。`gen` 的第一条是根挂载 /:/:dev，\n"+
-		"整个宿主根可写 = --dev-bind / /，永远排最前，收紧成只读改成 /:/:ro。空 = 数据目录与源程序共用。")
+	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:dev]`，同 Docker 的卷（:ro 只读、:dev 带设备访问，单写一条路径则挂回自己）。\n"+
+		"`gen` 的第一条是根挂载 /:/:dev，整个宿主根可写 = --dev-bind / /，永远排最前，收紧成只读改成 /:/:ro；\n"+
+		"X11 那种没有私有 /tmp 的实例还会有一条 /tmp:/tmp（宿主那个 /tmp 原地可写，见 tmpfs 那条）。空 = 数据目录与源程序共用。")
 	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
 		binds = append(binds, b.String())
@@ -902,7 +902,7 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// merging stays "concatenate the arrays" rather than "invent a quoting rule"
 	// (设计 §3.2).
 	bw.SetComment("extras", "没有自己节点的那些 bwrap 选项，逐 token 原样排列，twin 不解析它们。它是**合并后的\n"+
-		"完整列表**：这份文件里基座剩下的两条 → config.toml 的 [bwrap] args → rules.d 的 [bwrap] args →\n"+
+		"完整列表**：这份文件里基座剩下的那一条 → config.toml 的 [bwrap] args → rules.d 的 [bwrap] args →\n"+
 		"gen 的 `--` 之后那一段。写在最后，但命令里排在根挂载之后、上面那几个有形状的键之前。")
 	if len(i.Extras) == 0 {
 		bw.Set("extras", []string{})
