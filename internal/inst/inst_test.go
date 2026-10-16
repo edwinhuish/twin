@@ -233,6 +233,63 @@ func TestRenderAlwaysWritesBwrapExtras(t *testing.T) {
 	}
 }
 
+// Deleting the whole list under a key leaves the bare key behind, and that is
+// what the file's own comments mean by "留空" — so it has to read as the empty
+// list, not as a syntax error. Two things must survive that leniency: the keys
+// after it, and the one thing an empty list can really mean (a definition with
+// no root mount, which is refused by name).
+func TestLoadReadsABareKeyAsNoEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ProfileName)
+	body := `id: demo
+exec:
+  target: /opt/demo/demo
+  alias: demo2
+bwrap:
+  bind:
+    - /:/:dev
+  extras:
+tray:
+  override: false
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err := Load(path)
+	if err != nil {
+		t.Fatalf("空的选项列表必须能读（它就是「留空 = 一个都不传」）：%v", err)
+	}
+	if len(it.Extras) != 0 {
+		t.Errorf("Extras = %q，期望空", it.Extras)
+	}
+	if it.TrayOverride {
+		t.Error("`extras:` 之后那个键没读到：空值把文件的其余部分吃掉了")
+	}
+	if err := it.Check(); err != nil {
+		t.Errorf("根挂载在 bind 里，空 extras 不该被拒绝：%v", err)
+	}
+
+	// 空 bind 与漏写 bind 给出的是同一个事实：这份定义什么都没有挂。
+	bare := filepath.Join(dir, "no-root.yml")
+	noRootBody := `id: demo
+exec:
+  target: /opt/demo/demo
+  alias: demo2
+bwrap:
+  bind:
+`
+	if err := os.WriteFile(bare, []byte(noRootBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noRoot, err := Load(bare)
+	if err != nil {
+		t.Fatalf("空的 bind 也必须能读：%v", err)
+	}
+	if err := noRoot.Check(); err == nil || !strings.Contains(err.Error(), "根挂载") {
+		t.Errorf("空 bind 就是没有根挂载，仍然必须指名报错，得到 %v", err)
+	}
+}
+
 // twin keeps no sandbox base of its own, so a definition with no root mount is a
 // namespace with nothing mounted: the program would not find itself, and nothing
 // in the failure would name twin. Refusing here is the only place that can say

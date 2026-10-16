@@ -5,8 +5,9 @@
 //
 //	comments (#), blank lines, space indentation, `key: value` mappings,
 //	block sequences (`- value`, `- key: value`), empty flow collections
-//	(`[]`, `{}`), one-line flow sequences (`[a, b]`), double-quoted and
-//	single-quoted scalars, plain scalars, booleans (true/false), integers.
+//	(`[]`, `{}`), `key:` with nothing after it (an empty value), one-line flow
+//	sequences (`[a, b]`), double-quoted and single-quoted scalars, plain
+//	scalars, booleans (true/false), integers.
 //
 // Everything else is a hard error carrying a line number. That is on purpose: a
 // silently mis-parsed identity file is far worse than a refused one — the whole
@@ -174,6 +175,15 @@ func (t *Tree) StrListStrict(key string) ([]string, error) {
 	if !ok {
 		return nil, nil
 	}
+	// An empty value is not a wrong shape, it is the empty answer: `bind:`
+	// (which is what deleting the last entry leaves on the line) and `bind: ""`
+	// both say "no mappings" in so many words, and reading either as one would
+	// be inventing a mapping. A scalar that *has* text — `bind: /a:/b` — is
+	// still the shape that silently means "nothing is isolated", and still an
+	// error here.
+	if v == nil || v == "" {
+		return nil, nil
+	}
 	switch arr := v.(type) {
 	case []string:
 		return append(make([]string, 0, len(arr)), arr...), nil
@@ -326,6 +336,13 @@ func writeMapping(b *strings.Builder, t *Tree, keyCol int, firstPrefix string) {
 			writeSeq(b, x, keyCol+2)
 		default:
 			note(k)
+			// An empty value is written as an empty value — the bare key. It is
+			// also what parsing reads back as one, so a tree that went through
+			// Parse keeps its shape instead of coming out as `key: ""`.
+			if t.vals[k] == nil {
+				fmt.Fprintf(b, "%s%s:\n", head(), k)
+				continue
+			}
 			fmt.Fprintf(b, "%s%s: %s\n", head(), k, scalar(t.vals[k]))
 		}
 	}
@@ -597,12 +614,17 @@ func parseMapping(lines []line, i, indent int) (*Tree, int, error) {
 			t.Set(key, v)
 			continue
 		}
-		// `key:` with nothing after it. Only a deeper block may follow: an
-		// empty value would be ambiguous (null? empty string?), and guessing
-		// there is how a config quietly loses a name.
+		// `key:` with nothing after it is an *empty* value, not a missing one.
+		// Deleting the last entry of a list leaves exactly this line, and the
+		// file's own comments say "留空 = 一个都不挂" — refusing it turned the
+		// most ordinary hand edit into a syntax error, and sent the reader off
+		// to write `""`, which is the same nothing spelled longer. There is no
+		// ambiguity to guess at either: the accessors are typed, so an empty
+		// value is "" for Str, no entries for StrList, false for Bool. The key
+		// stays *present* (Has is true) because the file did say its name.
 		if i >= len(lines) || lines[i].indent <= indent {
-			return nil, 0, fmt.Errorf("line %d: 键 %q 后面没有值。要空字符串写 \"\"，要走嵌套块就缩进",
-				l.no, key)
+			t.Set(key, nil)
+			continue
 		}
 		childIndent := lines[i].indent
 		if isItem(lines[i].text) {
@@ -742,7 +764,12 @@ func splitKey(text string) (key, rest string, ok bool) {
 // parseScalar reads one inline value.
 func parseScalar(s string, no int) (any, error) {
 	if s == "" {
-		return nil, fmt.Errorf("line %d: 空值有歧义（null 还是空字符串？）—— 要空字符串写 \"\"", no)
+		// No caller can hand us nothing — `key:` is recognised as an empty
+		// value before this point, and a sequence body or a flow element is
+		// only read when it has text. Answering "no value" rather than
+		// inventing an error keeps the one place a future caller could reach
+		// from disagreeing with the rule above.
+		return nil, nil
 	}
 	switch s[0] {
 	case '"', '\'':

@@ -204,7 +204,6 @@ func TestParseRefusesTheRest(t *testing.T) {
 		{"文档标记", "---\nid: x\n", "文档标记"},
 		{"顶层序列", "- a\n- b\n", "顶层必须是映射"},
 		{"重复键", "id: a\nid: b\n", "两次"},
-		{"空值", "id:\nname: x\n", "没有值"},
 		{"有歧义的布尔", "notify: yes\n", "歧义"},
 		{"null", "id: null\n", "歧义"},
 		{"锚点", "id: &x y\n", "不支持"},
@@ -228,6 +227,72 @@ func TestParseRefusesTheRest(t *testing.T) {
 		if !strings.Contains(err.Error(), "line ") {
 			t.Errorf("%s：报错没带行号：%v", c.name, err)
 		}
+	}
+}
+
+// A key with nothing after it is an empty value, and every accessor answers
+// with the empty value of its own type — so there is exactly one reading of it.
+// That line is what deleting the last entry of a list leaves behind, which is
+// the most ordinary hand edit there is; refusing it meant the file could not
+// say "there is nothing in this list".
+func TestBareKeyIsAnEmptyValue(t *testing.T) {
+	const in = "bind:\nid: x\nextras:   # 删光了\nnotify:\n"
+	tree, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("裸键必须是空值而不是语法错误：%v", err)
+	}
+	for _, key := range []string{"bind", "notify"} {
+		if !tree.Has(key) {
+			t.Errorf("%s：文件写了这个名字，Has 就该为真", key)
+		}
+	}
+	if got := tree.Str("notify"); got != "" {
+		t.Errorf("Str(notify) = %q，期望空", got)
+	}
+	if tree.Bool("notify") {
+		t.Error("Bool(notify) 对空值应当为假")
+	}
+	if got := tree.StrList("bind"); len(got) != 0 {
+		t.Errorf("StrList(bind) = %v，期望空", got)
+	}
+	if got, err := tree.StrListStrict("bind"); err != nil || len(got) != 0 {
+		t.Errorf("StrListStrict(bind) = %v, %v；空值不是「写错了形状」", got, err)
+	}
+	if got := tree.Str("id"); got != "x" {
+		t.Errorf("id = %q：裸键后面的键被吃掉了", got)
+	}
+
+	// 重新编码之后仍然是同一个意思：空值就以空值的样子写出来（裸键），
+	// 而不是换成另一种拼法 —— 那会让「读回来还是它自己」不再成立。
+	again := string(Encode(tree))
+	if want := "bind:\nid: x\nextras:\nnotify:\n"; again != want {
+		t.Errorf("空值应当原样写回成裸键：\n--- 得到 ---\n%s\n--- 期望 ---\n%s", again, want)
+	}
+	back, err := Parse([]byte(again))
+	if err != nil {
+		t.Fatalf("重新解析：%v\n%s", err, again)
+	}
+	if got, err := back.StrListStrict("bind"); err != nil || len(got) != 0 {
+		t.Errorf("往返之后 StrListStrict(bind) = %v, %v", got, err)
+	}
+	if !back.Has("notify") || back.Str("id") != "x" {
+		t.Errorf("往返之后丢了键或值：\n%s", again)
+	}
+}
+
+// `bind: ""` is the same nothing spelled longer, and the error message used to
+// send people there. A scalar that carries text is the shape that really would
+// be read as "nothing is isolated", and that one still has to be refused.
+func TestStrListStrictRefusesOnlyText(t *testing.T) {
+	tree, err := Parse([]byte("bind: \"\"\nonly: /a:/b\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := tree.StrListStrict("bind"); err != nil || len(got) != 0 {
+		t.Errorf("StrListStrict(bind) = %v, %v；空字符串就是空", got, err)
+	}
+	if _, err := tree.StrListStrict("only"); err == nil {
+		t.Error("写成一条路径的 bind 必须被拒绝：读成「没有映射」就是一句谎话")
 	}
 }
 
