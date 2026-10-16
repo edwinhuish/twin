@@ -72,7 +72,10 @@ jobs:
           for arch in amd64 arm64; do
             stage="dist/linux-${arch}"
             mkdir -p "$stage"
-            GOOS=linux GOARCH="$arch" task build VERSION="$TAG" BINARY="$stage/twin"
+            GOOS=linux GOARCH="$arch" task build VERSION="$TAG" OUT="$stage/twin"
+            # 构建若把产物放到别处，下一步的 tar 只会报 `twin: Cannot stat` —— 那句话指着错的
+            # 地方（它看不出是落点不对：v1.0.4 的发布就卡在这句上）。所以先自己问一句。
+            [ -x "$stage/twin" ] || { echo "构建没有产出 $stage/twin —— 检查 task build 的落点（OUT）" >&2; exit 1; }
             cp LICENSE "$stage/"
             tar -C "$stage" -czf "dist/twin-${TAG}-linux-${arch}.tar.gz" twin LICENSE
             rm -rf "$stage"

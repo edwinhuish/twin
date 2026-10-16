@@ -344,6 +344,15 @@
 
 ### Fixed
 
+- **发布流水线打不出包：`task build` 的落点被 `bin/` 前缀悄悄改写**。`Taskfile.yml` 把二进制的
+  落点拆成 `BINDIR` ＋ `BINARY` 两个变量，而 `release.yml` 要把它放进暂存目录时只能传给后者
+  （`BINARY="dist/linux-amd64/twin"`）—— 于是那个路径被折成 `bin/dist/linux-amd64/twin`，紧接着
+  `tar` 报的是 `twin: Cannot stat: No such file or directory`：一句指着错的地方的话，它看不出
+  真正错的是构建落点（v1.0.4 的发布就卡在这里）。现在落点是**一个**变量 `OUT`（默认 `bin/twin`），
+  要指到别处就传一个完整路径，前缀不会再加一层；打包那一步也在 `tar` 之前先问一句"产物在不在
+  那儿"，落到别处时报的就是这件事本身。本地 `task check` / `task build`（默认 `bin/twin`，CI 的
+  冒烟读的就是它）行为不变。
+
 - **`profile.yml` 里一个键后面什么都不写（`extras:`）现在读成空值**：手工把一整段列表删光之后，
   留在文件里的正是这一行 —— 而它以前是一句语法错误（"键 `extras` 后面没有值。要空字符串写 `""`…"），
   于是最普通的一次编辑被当成文件坏了，还把人指去写 `""`：同一个"空"的另一种拼法。现在

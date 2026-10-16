@@ -3,9 +3,12 @@
 version: '3'
 
 vars:
-  BINARY: twin
-  # 产物落 bin/：仓库根下的 ./twin 和源码混在一起，`ls` 里看不出哪个是产物、哪个是文件。
-  BINDIR: bin
+  # 二进制落在哪：**一个**变量。原先拆成 BINDIR ＋ BINARY，于是"把它放进暂存目录"那件事只能写成
+  # `BINARY=dist/linux-amd64/twin` —— 那个路径被静默折成 `bin/dist/linux-amd64/twin`，发布脚本
+  # 接着 tar 一个不存在的 `twin`（v1.0.4 的发布就是这么挂的：错在落点，报的却是"找不到 twin"）。
+  # 要指到别处就传 OUT=…，一个完整路径，前缀不会再加一层。
+  # 默认落 bin/：仓库根下的 ./twin 和源码混在一起，`ls` 里看不出哪个是产物、哪个是文件。
+  OUT: bin/twin
   # Go 不在 PATH 上时覆盖（如本机 ~/.g/go/bin/go）：task build GO=$HOME/.g/go/bin/go
   GO: 'go'
   # 版本号进 main.version —— 里面的默认值只在不是 git 仓库时才用得上
@@ -24,17 +27,17 @@ tasks:
       - task --list
 
   build:
-    desc: 构建 ./{{.BINDIR}}/{{.BINARY}}，把 git describe 的结果注入 main.version
+    desc: 构建 {{.OUT}}，把 git describe 的结果注入 main.version
     cmds:
-      - '{{.GO}} build -ldflags "-X main.version={{.VERSION}}" -o {{.BINDIR}}/{{.BINARY}} ./cmd/twin'
+      - '{{.GO}} build -ldflags "-X main.version={{.VERSION}}" -o {{.OUT}} ./cmd/twin'
 
   install:
-    desc: 构建并装进 $HOME/.local/bin/{{.BINARY}}（依赖 build）
+    desc: 构建并装进 $HOME/.local/bin/twin（依赖 build）
     deps: [build]
     # install(1) 的 -D 顺带建出 ~/.local/bin —— 这一步的目的就是"装好之后敲 twin 能跑"，
     # 因为目录不存在而失败不算装好了。755：它要能从桌面项启动器里被直接执行。
     cmds:
-      - 'install -Dm755 {{.BINDIR}}/{{.BINARY}} "$HOME/.local/bin/{{.BINARY}}"'
+      - 'install -Dm755 {{.OUT}} "$HOME/.local/bin/twin"'
 
   fmt:
     desc: 按 gofmt 格式化（改文件）
@@ -82,9 +85,9 @@ tasks:
       - task: test
 
   clean:
-    desc: 删掉构建产物 ./{{.BINDIR}}/{{.BINARY}}
+    desc: 删掉构建产物 {{.OUT}}
     cmds:
-      - rm -f {{.BINDIR}}/{{.BINARY}}
+      - rm -f {{.OUT}}
 
   # 只被 test 依赖：GOTMPDIR 指向的目录不存在时，Go 建临时目录会直接失败。
   gotmp:
