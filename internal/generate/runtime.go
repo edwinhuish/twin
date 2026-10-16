@@ -16,7 +16,7 @@ import (
 // unpriv_bwrap onto every descendant while /home/.../twin/bin/bwrap carries
 // none. A symlink would resolve back to the profiled path and buy nothing.
 //
-// Refreshing on every wrap and regen is deliberate. A stale copy is a silent
+// Refreshing on every wrap and reinstall is deliberate. A stale copy is a silent
 // problem — it keeps working right up until the day a bubblewrap fix matters —
 // so the comparison happens where a human is already watching.
 func syncBwrapCopy(dst string) error {
@@ -51,7 +51,7 @@ func filesEqual(a, b string) (bool, error) {
 
 // writeBootstrap writes the script the trampoline runs.
 //
-// It is regenerated on every wrap and regen rather than versioned: the file is
+// It is regenerated on every wrap and reinstall rather than versioned: the file is
 // tiny, its content is a constant, and a stale one would be invisible.
 func writeBootstrap(dst string) error {
 	return sysx.WriteFileAtomic(dst, []byte(bootstrapTemplate), 0o644)

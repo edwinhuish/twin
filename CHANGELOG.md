@@ -396,8 +396,8 @@
 
 - 身份级别：`none`（只写桌面项与图标）、`alias`（bwrap overlay 零拷贝改名，主力）、
   `redirect`（改名 ＋ L5 规则）。`argument` / `env` 经实测不成立，**故意不实现**。
-- 子命令：`new` / `inspect` / `verify` / `regen` / `remove` / `list` / `doctor` / `rules` /
-  `config` / `version`。
+- 子命令：`gen` / `install` / `reinstall` / `inspect` / `verify` / `remove` / `list` / `doctor` /
+  `rules` / `config` / `version`。
 - 三层配置：CLI > `profile.yml`（实例快照）> `rules.d/<app>.toml`（应用知识）>
   `config.toml`（本机环境）> 内置默认。
 - 两段式 wrap：`twin gen` 写实例定义与桌面项正文、`twin install <id>` 落盘；`reinstall` 重放的是

@@ -104,7 +104,7 @@ func TestSuggestStateDirsUsesExistenceAsEvidence(t *testing.T) {
 		t.Errorf("hint = %+v", hints[0])
 	}
 
-	// The shallow probe must not read the binary at all: `twin new` runs it on
+	// The shallow probe must not read the binary at all: `twin gen` runs it on
 	// every wrap, and a second full read of a 150 MB bundle is not free.
 	shallow := SuggestStateDirs(inst.Paths{Home: home}, &Inspection{
 		SourceDesktop: "/usr/share/applications/foo.desktop",

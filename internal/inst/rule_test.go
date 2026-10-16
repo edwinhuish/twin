@@ -50,7 +50,7 @@ func TestRedirectRuleRoundTrip(t *testing.T) {
 	}
 }
 
-// Render is what regen replays, so it must be byte-stable.
+// Render is what reinstall replays, so it must be byte-stable.
 func TestRedirectRuleRenderIsStable(t *testing.T) {
 	_, a := ruleFor(t)
 	_, b := ruleFor(t)

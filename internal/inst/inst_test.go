@@ -709,7 +709,7 @@ func TestValidateID(t *testing.T) {
 	}
 }
 
-// 托盘覆盖是"这台机器上要不要碰宿主那张表"的决定，必须进快照：regen 只读快照
+// 托盘覆盖是"这台机器上要不要碰宿主那张表"的决定，必须进快照：reinstall 只读快照
 // （不读 config.toml），少了它，一次 --refresh 就会在明确关掉它的机器上把条目
 // 又写回去。
 func TestTrayOverrideIsPartOfTheSnapshot(t *testing.T) {
@@ -825,7 +825,7 @@ func TestListReportsLegacyTomlSnapshot(t *testing.T) {
 	}
 }
 
-// 快照现在是实例的说明书：`twin new` 只报路径，逐键的解释全在这份文件里。
+// 快照现在是实例的说明书：`twin gen` 只报路径，逐键的解释全在这份文件里。
 // 所以"每个带值的键上面都有一行说明"是它必须守住的性质 —— 删掉注释就等于把
 // 文件变回一堆没人知道含义的键。
 //
@@ -909,7 +909,7 @@ func TestSnapshotWritesBindEvenWhenEmpty(t *testing.T) {
 }
 
 // The one-line form is the whole on-disk contract for a mapping, so every shape
-// it accepts has to survive being written back out: `regen` re-renders from the
+// it accepts has to survive being written back out: `twin reinstall` re-renders from the
 // same value, and a spelling that drifts would show up as a diff the user did
 // not make.
 func TestParseBindRoundTrips(t *testing.T) {

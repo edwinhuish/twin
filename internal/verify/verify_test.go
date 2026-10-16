@@ -121,7 +121,7 @@ func TestTrayFindingOnTheFallbackSaysWhyItIsTheFallback(t *testing.T) {
 	}
 }
 
-// 图标换了位置（regen 后换过图标目录）时，「有这条但指错」要说清指的是哪儿，
+// 图标换了位置（reinstall 后换过图标目录）时，「有这条但指错」要说清指的是哪儿，
 // 不能笼统地说「没有条目」。
 func TestTrayFindingWhenTheRowPointsElsewhere(t *testing.T) {
 	stubGSettings(t, "ok", "[('wechat2', '/old/other.png', '/old/other.png')]")

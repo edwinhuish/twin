@@ -161,7 +161,7 @@ func hasDerivation(der []Derivation, key string) bool {
 	return false
 }
 
-// `twin new wechat` on a zh_CN desktop must expand to 微信2: every one of these
+// `twin gen wechat` on a zh_CN desktop must expand to 微信2: every one of these
 // values is derivable from the source entry, and each must be reported.
 func TestPlanDerivesFromSource(t *testing.T) {
 	clearLocale(t, "zh_CN.UTF-8")
@@ -739,7 +739,7 @@ func TestPlanBlamesTheLayerForABadToken(t *testing.T) {
 
 // Refresh only ever *adds*: the option lines the environment layers contribute
 // and the snapshot does not carry yet. Everything already in the file is left
-// byte for byte — regen must not quietly rewrite a hand-edited instance.
+// byte for byte — reinstall must not quietly rewrite a hand-edited instance.
 //
 // The entry's prose is not refreshed at all any more, and cannot be: it lives in
 // the file `override.desktop` points at, which from the first byte on is the

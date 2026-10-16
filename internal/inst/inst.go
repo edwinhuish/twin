@@ -139,7 +139,7 @@ func (b Bind) IsRootMount() bool { return b.Source == "/" && b.Target == "/" }
 // (`目标:源:rw:try`, three colons), and a bare `源:目标:try` would be a second
 // spelling of the same thing — read back as a target named `try` by every
 // reader that does not know the suffix. Round-tripping is the rule here because
-// `regen` re-renders from the parsed value: a spelling that drifts shows up as
+// `twin reinstall` re-renders from the parsed value: a spelling that drifts shows up as
 // a diff nobody made.
 func (b Bind) String() string {
 	s := b.Source + ":" + b.Target

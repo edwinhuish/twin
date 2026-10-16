@@ -66,7 +66,7 @@ func NewRedirectRule(it *Instance, iconPath, aliasPath string) *RedirectRule {
 	}
 }
 
-// Render serialises the rule deterministically, so `regen` reproduces it byte
+// Render serialises the rule deterministically, so `twin reinstall` reproduces it byte
 // for byte.
 func (r *RedirectRule) Render() ([]byte, error) {
 	out, err := json.MarshalIndent(r, "", "  ")

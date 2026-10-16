@@ -228,7 +228,7 @@ func TestEnsureIsIdempotent(t *testing.T) {
 		t.Error("没有变化的第二次调用不该重写这张表")
 	}
 
-	// 换了图标路径就必须重写（regen 之后图标可能变）。
+	// 换了图标路径就必须重写（reinstall 之后图标可能变）。
 	if oc, err := Ensure("app2", "/b.png"); err != nil || oc.Action != ActionWritten {
 		t.Errorf("图标变了应当重写：action=%v err=%v", oc.Action, err)
 	}

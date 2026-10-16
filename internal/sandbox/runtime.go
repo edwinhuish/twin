@@ -10,7 +10,7 @@ import (
 // Runtime is how *this machine* has to launch bubblewrap for one instance.
 //
 // Everything here is environment, so it is resolved on every `wrap` and every
-// `regen` instead of being stored: another machine has another bubblewrap,
+// `reinstall` instead of being stored: another machine has another bubblewrap,
 // another set of installed trampolines and another kernel setting. The one
 // fact that does travel — whether the program needs a nested user namespace at
 // all — lives in the snapshot as inst.NestedNS.

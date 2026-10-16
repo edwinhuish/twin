@@ -33,7 +33,7 @@ type Options struct {
 	Level      inst.Level
 	Tmpfs      []string
 	// Cfg is the environment layer. A nil value means "built-in defaults",
-	// which is what `regen` uses: replaying a snapshot must not depend on a
+	// which is what `twin reinstall` uses: replaying a snapshot must not depend on a
 	// file the user may have edited since (设计 §3.5 rule three).
 	Cfg *config.Config
 	// Args is the CLI `--` region: bubblewrap option tokens forwarded verbatim
@@ -322,7 +322,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, EntryBody,
 	// A program that builds a sandbox of its own needs a bubblewrap that can
 	// still create a user namespace inside, which the system one cannot (see
 	// internal/userns). Recording the need in the snapshot matters because
-	// `regen` deliberately does not re-scan the binary: without this line a
+	// `twin reinstall` deliberately does not re-scan the binary: without this line a
 	// replay would quietly fall back to the system bubblewrap and produce a
 	// launcher that dies at startup.
 	if it.NestedNS {
@@ -331,7 +331,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, EntryBody,
 	}
 
 	// The tray override table is host state, and the decision to touch it is
-	// recorded in the snapshot so `regen` reproduces it without reading
+	// recorded in the snapshot so `twin reinstall` reproduces it without reading
 	// config.toml (设计 §3.5). Either switch turning it off wins.
 	it.TrayOverride = cfg.Defaults.TrayOverride && !o.NoTray
 	switch {
@@ -1136,7 +1136,7 @@ func Unwrap(p inst.Paths, id string, purge bool) (*Removed, error) {
 // into a file of its own, where "empty" is not a state a key can be in — the
 // file either exists or is regenerated whole (see Materialize).
 //
-// It never overwrites a value the snapshot already holds. `regen` exists to
+// It never overwrites a value the snapshot already holds. `twin reinstall` exists to
 // make the derived files agree with the snapshot; a "helpful" rewrite of a
 // hand-edited field would undo exactly that, and would do it silently — the
 // one failure mode this tool is built to avoid (设计 §3.5).
@@ -1183,7 +1183,7 @@ func Refresh(it *inst.Instance, insp *Inspection, cfg *config.Config) ([]string,
 
 // SessionWarning flags a snapshot whose sandbox decision no longer matches the
 // session it is about to run in. It is a warning, not a rewrite: the snapshot
-// records intent, and silently changing it here is the thing regen must not do.
+// records intent, and silently changing it here is the thing reinstall must not do.
 func SessionWarning(it *inst.Instance) string {
 	if os.Getenv("WAYLAND_DISPLAY") != "" || !tmpfsHidesTmp(it) {
 		return ""
