@@ -919,7 +919,7 @@ func (i *Instance) render(role Role, elsewhere string) ([]byte, error) {
 			"改完跑 `twin reinstall " + i.ID + "` 重放。\n"
 	}
 	header := head +
-		"# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`badge` 那种纯数字尤其要）。\n" +
+		"# 缩进只能用空格；拿不准要不要加引号的字符串就加上（`override.icon.badge` 那种纯数字尤其要）。\n" +
 		"# 每个键的说明写在它自己上面 —— 终端不再重复一遍。\n"
 	return append([]byte(header), yamlz.Encode(t)...), nil
 }

@@ -817,9 +817,9 @@ func printGenResult(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 	// and saying so here is cheaper than an FAQ.
 	switch {
 	case txtNew && dry:
-		fmt.Printf("  桌面项正文（将写出）%s\n", txtPath)
+		fmt.Printf("  桌面项正文（将写出） %s\n", txtPath)
 	case txtNew:
-		fmt.Printf("  桌面项正文（已写出）%s\n", txtPath)
+		fmt.Printf("  桌面项正文（已写出） %s\n", txtPath)
 	default:
 		fmt.Printf("  桌面项正文 %s（已存在，未改动 —— 改它、install 就照它装）\n", txtPath)
 	}
@@ -1557,7 +1557,8 @@ func printNextSteps(p inst.Paths, it *inst.Instance, verbose bool) {
 
 // printRehearsal is --dry-run's output: every file and every host-side change
 // the next step would make. It is rendered by the same code the real run uses
-// (it.Render, DesktopEntry, plan.String are the very calls Materialize makes) —
+// (it.Render, generate.EntryBytes, plan.String are the very calls Materialize
+// makes) —
 // a preview drawn by a second implementation would be a lie.
 func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, plan *sandbox.Plan, report installReport) {
 	fmt.Printf("%s\n\n%s\n", title("🔍 预演（--dry-run，未写盘）"), title("📦 产物"))
