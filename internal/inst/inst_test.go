@@ -826,6 +826,61 @@ bwrap:
 	}
 }
 
+// TWIN_INSTANCE moved out of `bwrap.env` into what Build always emits（值就是
+// id）：老定义里那一行等于 twin 自己会加的那条，于是读进来直接丢掉 —— 一份 `gen`
+// 写出来的文件不该因为这次搬家而装不上。值不一致是另一回事：文件在要求一个 twin
+// 会覆盖掉的值，而那正是"终端上什么都不说"的那类分歧。
+func TestLoadDropsTheOldTwinInstanceLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ProfileName)
+	body := `id: demo2
+source:
+  exec: /opt/demo/demo
+override:
+  desktop: ./demo2.desktop
+bwrap:
+  bind:
+    - /:/:dev
+  env:
+    - TWIN_INSTANCE=demo2
+    - FOO=bar
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err := Load(path)
+	if err != nil {
+		t.Fatalf("值等于 id 的老定义必须还能读：%v", err)
+	}
+	if len(it.Env) != 1 || it.Env[0].Key != "FOO" {
+		t.Errorf("bwrap.env = %+v，那条 TWIN_INSTANCE 应当被丢掉", it.Env)
+	}
+	if err := it.Check(); err != nil {
+		t.Errorf("读进来的实例应当能通过校验（TWIN_INSTANCE 由 Build 加）：%v", err)
+	}
+}
+
+func TestLoadRefusesAMismatchedTwinInstance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ProfileName)
+	body := `id: demo2
+source:
+  exec: /opt/demo/demo
+override:
+  desktop: ./demo2.desktop
+bwrap:
+  bind:
+    - /:/:dev
+  env:
+    - TWIN_INSTANCE=other
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "TWIN_INSTANCE") {
+		t.Fatalf("值不一致必须指名报错（它会被 twin 覆盖），得到 %v", err)
+	}
+}
+
 // 没有路径的字段（空字符串）不能被解析成一个目录：那会让一份没写 icon.source 的
 // 定义得到 "<定义目录>" 这个"图标"。
 func TestResolvePathLeavesEmptyAndAnchoredPaths(t *testing.T) {

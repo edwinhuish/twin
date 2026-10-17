@@ -432,7 +432,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// that knows both lists. Base-first inside every list too, so the layers
 	// above can still overrule the base.
 	if level.Renames() {
-		base := sandbox.BaseFor(id, privateTmp)
+		base := sandbox.BaseFor(privateTmp)
 		it.Root = base.Root
 		it.Extras = append(it.Extras, base.Head...)
 		it.Extras = append(it.Extras, tmpfsLines(base.Tmpfs)...)
@@ -443,10 +443,8 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 			it.Extras = append(it.Extras, hostTmp)
 		}
 		it.Extras = append(it.Extras, base.Tail...)
-		it.Env = append(base.Env, it.Env...)
 		note("bwrap.root", base.Root,
 			"gen 写的沙箱基座：程序跑在哪个根下（这一条发在其余所有挂载之前，位置不由文件决定）")
-		note("bwrap.env", base.Env[0].String(), "gen 写的沙箱基座")
 		own := append([]string{}, base.Head...)
 		own = append(own, tmpfsLines(base.Tmpfs)...)
 		if hostTmp != "" {

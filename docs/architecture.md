@@ -195,8 +195,7 @@ bwrap:                 # 这一个节点就是这次调用
   root: dev            # 程序跑在哪个根下：ro / rw / dev（= --ro-bind / / / --bind / / / --dev-bind / /）
   bind:                # 隔离哪些数据目录（根不在这里，它上面那一行就是）
     - ~/.local/state/twin/wechat2/xwechat:~/.xwechat
-  env:                 # 注入沙箱的环境变量，一条一个 `键=值`（基座那条 TWIN_INSTANCE 也在里面）
-    - TWIN_INSTANCE=wechat2
+  env: []              # 注入沙箱的环境变量，一条一个 `键=值`；TWIN_INSTANCE 由 twin 自己加，不写在这里
   extras:              # 其余全部参数，一行一条；基座那几行也在里面 —— 行序就是命令里的顺序
     - --proc /proc
     - --tmpfs /dev/shm
@@ -333,8 +332,8 @@ StartupNotify=true
   --bind /tmp /tmp                  # 宿主那个 /tmp 原地可写（不要私有 /tmp 时才是这一行）
   --die-with-parent
 
-# bwrap.env
-  TWIN_INSTANCE=<id>
+# 不在定义里：Build 每次启动时在 env 之后加这一条（启动器靠它认出"已经在自己的沙箱里"）
+  --setenv TWIN_INSTANCE <id>
 ```
 ```
 bwrap
@@ -346,9 +345,16 @@ bwrap
   <bwrap.extras 整个列表>             # 原样，行序即此处的顺序（与它在文件里前后的位置无关）
                                                # ↑ 基座那几行、以及 --remount-ro，都在这一批里
   [--setenv <bwrap.env 里的键> <值>]…
+  --setenv TWIN_INSTANCE <id>       # twin 自己加的，不是定义里的键
   --
-  <alias path> "$@"
+  <alias path> <source.args…> "$@"
 ```
+
+启动器在这条命令之前还有一道判断：`TWIN_INSTANCE` 等于自己的 id **而且**别名路径已经存在（它只在
+命名空间里存在，install 从不在宿主上建它），就直接 exec 别名、不再起 bwrap —— 那说明这次启动来自
+**实例自己的沙箱内部**（集成终端里再敲一次程序名，或者一条指向启动器的 shell 别名）。再包一层不只是
+重复：bwrap 会在同一个目录上做第二次 overlay，而别名那条挂载就在那个目录里，内核直接回 EINVAL
+（实测；同一目录在没有别名挂载时，第二层嵌套是能成功的）。
 
 为什么基座要写进文件：**"这个程序拿到哪个根"是这份定义里唯一随程序而变、又曾经完全表达不了的决定。**
 基座原先是硬编码在 Go 里的 `--ro-bind / /`，一个要碰设备、或自己要建沙箱的程序需要

@@ -234,7 +234,6 @@ func passthroughInstance(extra ...string) *inst.Instance {
 		DesktopOverride: "./wechat2.desktop",
 		Root:            "dev",
 		Extras:          append(lines, extra...),
-		Env:             []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: "wechat2"}},
 	}
 }
 
@@ -257,7 +256,7 @@ func TestBaseIsWrittenByNode(t *testing.T) {
 		{"私有 /tmp", true, ""},
 		{"宿主 /tmp", false, "/tmp"},
 	} {
-		b := BaseFor("wechat2", c.privateTmp)
+		b := BaseFor(c.privateTmp)
 		if b.Root != "dev" {
 			t.Errorf("%s：root = %q，want dev（--dev-bind / /）", c.name, b.Root)
 		}
@@ -276,9 +275,6 @@ func TestBaseIsWrittenByNode(t *testing.T) {
 		// extras after that list (see BaseFor).
 		if b.HostTmp != c.wantHostTmp {
 			t.Errorf("%s：hostTmp = %q，want %q", c.name, b.HostTmp, c.wantHostTmp)
-		}
-		if len(b.Env) != 1 || b.Env[0].Key != "TWIN_INSTANCE" || b.Env[0].Value != "wechat2" {
-			t.Errorf("%s：env = %+v", c.name, b.Env)
 		}
 	}
 }
@@ -491,8 +487,10 @@ func TestBuildEmitsTheOptionLinesInFileOrder(t *testing.T) {
 }
 
 // 留空就是"没要这个"，不能变成"要默认的那个"：默认的那几条写在定义里（root / bind /
-// env / extras），是文件里看得见的一段文本，twin 不再自己补 —— /tmp 那条尤其不能再被凭空加回来。
-func TestBuildAddsNoOptionOfItsOwn(t *testing.T) {
+// env / extras），是文件里看得见的一段文本，twin 只补一条它自己的 —— TWIN_INSTANCE。
+// 那一条不是用户对实例的决定，而是这个沙箱说"我是哪个实例"（见 inst.Env）；
+// /tmp 那条尤其不能再被凭空加回来。
+func TestBuildAddsOnlyTheTwinInstanceMarkerOfItsOwn(t *testing.T) {
 	i := passthroughInstance()
 	i.Extras = nil
 	i.Env = nil
@@ -502,12 +500,25 @@ func TestBuildAddsNoOptionOfItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	argv := strings.Join(plan.Args(), " ")
-	// The root is the definition's, so it is the whole command; twin's own
-	// additions are the alias overlay (identity, not an option) and nothing else.
-	for _, unwanted := range []string{"--proc", "--tmpfs", "--remount-ro", "--setenv", "--bind /tmp /tmp"} {
+	// The root is the definition's, so it is the whole command; twin's other
+	// addition is the alias overlay (identity, not an option).
+	for _, unwanted := range []string{"--proc", "--tmpfs", "--remount-ro", "--bind /tmp /tmp"} {
 		if strings.Contains(argv, unwanted) {
 			t.Errorf("定义里没有 %s，Build 不该自己补上：%s", unwanted, argv)
 		}
+	}
+	setenv := 0
+	for _, g := range plan.Groups {
+		if len(g) == 0 || g[0] != "--setenv" {
+			continue
+		}
+		setenv++
+		if want := []string{"--setenv", "TWIN_INSTANCE", "wechat2"}; !reflect.DeepEqual(g, want) {
+			t.Errorf("Build 自己补的 --setenv 只有这一条，得到 %q", g)
+		}
+	}
+	if setenv != 1 {
+		t.Errorf("定义里没有 env，Build 只该补 TWIN_INSTANCE 那条，得到 %d 条：%s", setenv, argv)
 	}
 }
 
@@ -617,6 +628,82 @@ func TestProgramArgsFollowTheProgramInBothLauncherShapes(t *testing.T) {
 	}
 	if want := "exec /opt/app/app --foo bar \"$@\" 2>&3"; !strings.Contains(string(plainBody), want) {
 		t.Errorf("level=none 的启动器丢了 source.args（want %q）：\n%s", want, plainBody)
+	}
+}
+
+// TWIN_INSTANCE is the sandbox's own mark, not a value the definition can
+// choose: it names the instance a process is already inside, which is what the
+// launcher's re-entry guard reads. It goes after bwrap.env, so an old
+// definition that still carries the line cannot win over it.
+func TestBuildEmitsTwinInstanceAfterTheDefinitionsEnv(t *testing.T) {
+	i := passthroughInstance()
+	i.Env = []inst.EnvVar{{Key: "TWIN_FOO", Value: "bar"}}
+	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := plan.Groups[len(plan.Groups)-1]
+	if want := []string{"--setenv", "TWIN_INSTANCE", "wechat2"}; !reflect.DeepEqual(last, want) {
+		t.Fatalf("最后一组应当是 twin 自己的 TWIN_INSTANCE，得到 %q", last)
+	}
+	found := false
+	for _, g := range plan.Groups[:len(plan.Groups)-1] {
+		if len(g) == 3 && g[0] == "--setenv" && g[1] == "TWIN_FOO" && g[2] == "bar" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bwrap.env 里那条应在它之前：%q", plan.Groups)
+	}
+}
+
+// A wrapped program that starts itself again (an integrated terminal running
+// its own CLI, a shell alias pointing at this very launcher) is already inside
+// the namespace, and asking bwrap to overlay that directory a second time is
+// refused by the kernel — EINVAL, measured, and only when the alias mount is
+// inside the overlaid directory. So the launcher execs the alias directly when
+// both facts say "you are inside instance X": the variable Build set, and the
+// alias path, which exists only inside that namespace.
+func TestLauncherSkipsBwrapWhenAlreadyInsideItsOwnSandbox(t *testing.T) {
+	i := passthroughInstance()
+	p := inst.Paths{Home: "/home/edwin"}
+	plan, err := Build(i, p, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	guard := "if [ \"${TWIN_INSTANCE:-}\" = wechat2 ] && [ -e /opt/wechat/wechat2 ]; then\n"
+	if !strings.Contains(got, guard) {
+		t.Fatalf("启动器里没有「已经在自己的沙箱里」的判断：\n%s", got)
+	}
+	if !strings.Contains(got, "exec /opt/wechat/wechat2 \"$@\" 2>&3") {
+		t.Errorf("这条捷径没有直接 exec 别名：\n%s", got)
+	}
+	// Before the mount-point work, not after: inside the namespace every path
+	// those lines would create is already there, and repeating them is exactly
+	// what this check exists to skip.
+	if strings.Index(got, guard) > strings.Index(got, "mount_point dir") {
+		t.Errorf("判断排在了挂载点准备之后：\n%s", got)
+	}
+
+	// Without a sandbox there is no namespace to be inside of, so no guard and
+	// no marker either.
+	plain := &inst.Instance{ID: "app2", Level: inst.LevelNone, Target: "/opt/app/app",
+		DesktopOverride: "./app2.desktop"}
+	plainPlan, err := Build(plain, p, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainBody, err := RenderLauncher(plain, p, plainPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plainBody), "TWIN_INSTANCE") {
+		t.Errorf("level=none 没有沙箱，不该出现这个判断：\n%s", plainBody)
 	}
 }
 
@@ -855,6 +942,68 @@ func TestLauncherOnlyOffersCopyableDialogs(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("弹窗链里混进了复制不出来的 %s：\n%s", unwanted, got)
 		}
+	}
+}
+
+// 已经在自己沙箱里时，启动器直接 exec 别名 —— 那正是"点第二下会报 overlay EINVAL"的那个场景。
+// bwrap 这里给一个不存在的路径：真被调用就会失败，所以这个测试通过就等于它一次都没被调用。
+func TestLauncherInsideItsOwnSandboxSkipsBwrap(t *testing.T) {
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	dir := t.TempDir()
+	// 这个"程序"只把自己的参数写下来 —— 那是"参数与 $@ 都原样到了它手里"的证据。
+	const body = "#!/bin/bash\nprintf '%s\\n' \"$@\" > \"$OUT\"\n"
+	prog := filepath.Join(dir, "demo")
+	if err := os.WriteFile(prog, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The alias twin would create inside the namespace (a ro-bind of the real
+	// program). On the host it is only there in this test, which is the point:
+	// the launcher's second fact is "the name I need already resolves".
+	alias := filepath.Join(dir, "demo2")
+	if err := os.WriteFile(alias, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	i := &inst.Instance{
+		ID: "demo2", Level: inst.LevelAlias, Target: prog,
+		DesktopOverride: filepath.Join(dir, "demo2.desktop"),
+		Args:            []string{"--flag"},
+		Root:            "dev",
+		Extras:          []string{"--proc /proc", "--die-with-parent"},
+	}
+	p := inst.Paths{Home: filepath.Join(dir, "home")}
+	plan, err := Build(i, p, Runtime{Bwrap: filepath.Join(dir, "no-such-bwrap")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "launch")
+	if err := os.WriteFile(script, body2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "argv")
+	res, err := sysx.RunEnv([]string{
+		"HOME=" + p.Home,
+		"PATH=" + os.Getenv("PATH"),
+		"TWIN_INSTANCE=" + i.ID,
+		"OUT=" + out,
+	}, script, "positional")
+	if err != nil {
+		t.Fatalf("启动器跑不起来：%v", err)
+	}
+	if res.Code != 0 {
+		t.Fatalf("已经在沙箱里时不该再起 bwrap（退出码 %d，stderr=%s）", res.Code, res.Stderr)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("程序没跑起来：%v", err)
+	}
+	if want := "--flag\npositional\n"; string(got) != want {
+		t.Errorf("程序收到的参数 = %q，want %q", got, want)
 	}
 }
 

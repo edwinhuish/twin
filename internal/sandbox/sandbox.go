@@ -221,8 +221,7 @@ func progArgs(args []string) string {
 }
 
 // Base is the sandbox base `twin gen` writes into a definition, in the pieces
-// Plan has to interleave: the root, the mounts, the option lines, and the
-// variables.
+// Plan has to interleave: the root, the mounts and the option lines.
 //
 // It lives in Go only because it has to be written *once*, into the file where
 // the user can read and change it; Build never adds it (see Build below). Each
@@ -245,10 +244,9 @@ type Base struct {
 	HostTmp string
 	// Tail is what closes the base's own lines.
 	Tail []string
-	Env  []inst.EnvVar
 }
 
-// BaseFor builds the base for one instance.
+// BaseFor builds the base a new definition starts from.
 //
 // The root is the load-bearing choice: `--dev-bind / /` hands the program the
 // whole host including its devices, which is what an identity wrapper needs
@@ -273,7 +271,7 @@ type Base struct {
 // list, in one file — the same file where the tmpfs line would be written by
 // hand. It also stops the line from being *reported* as one of the program's own
 // data directories: it is an option that happens to name a path, not a mapping.
-func BaseFor(id string, privateTmp bool) Base {
+func BaseFor(privateTmp bool) Base {
 	b := Base{
 		Root: "dev",
 		Head: []string{"--proc /proc"},
@@ -281,7 +279,6 @@ func BaseFor(id string, privateTmp bool) Base {
 		// every other process, which is not what an instance's own name means.
 		Tmpfs: []string{"/dev/shm"},
 		Tail:  []string{"--die-with-parent"},
-		Env:   []inst.EnvVar{{Key: "TWIN_INSTANCE", Value: id}},
 	}
 	if !privateTmp {
 		b.HostTmp = "/tmp"
@@ -447,11 +444,19 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	}
 
 	// The variables, in the order the file lists them (later `--setenv` wins on
-	// a duplicate, exactly as bwrap does it). TWIN_INSTANCE is in this list:
-	// `gen` writes it there, so a reader can see — and delete — what twin sets.
+	// a duplicate, exactly as bwrap does it), and then twin's own marker.
+	//
+	// TWIN_INSTANCE is emitted here rather than read from the definition: it
+	// says which sandbox this is, the launcher uses it to notice that it was
+	// started from inside its own namespace (see RenderLauncher), and a key
+	// that could set it could also switch that check off. It goes last so a
+	// definition that still carries the old line — every file `gen` wrote
+	// before the key moved — cannot overrule it; inst.Load drops those lines
+	// when they agree with the id and refuses the ones that do not.
 	for _, e := range i.Env {
 		plan.Groups = append(plan.Groups, []string{"--setenv", e.Key, e.Value})
 	}
+	plan.Groups = append(plan.Groups, []string{"--setenv", "TWIN_INSTANCE", i.ID})
 	return plan, nil
 }
 
@@ -486,6 +491,32 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 			Sh("无法启动程序"), shHome(p.Home, plan.Prog))
 		return []byte(b.String()), nil
 	}
+
+	// Re-entry guard, before any mount-point work.
+	//
+	// A wrapped program can start itself again: an integrated terminal running
+	// its own CLI, a shell alias pointing at this very launcher. That second
+	// run is already inside the namespace this script built, so every mount it
+	// is about to make is there — and the overlay is not merely redundant, it
+	// is refused: bwrap asks the kernel to overlay the same directory a second
+	// time, and with the alias mount inside it the answer is EINVAL (measured;
+	// the same nesting without the alias succeeds). Skipping to the alias is
+	// therefore the right semantics, not a workaround: this process already
+	// has this instance's root, mappings and variables, and a second sandbox
+	// would only lay the same ones down again.
+	//
+	// Two facts, both read at launch. TWIN_INSTANCE is what Build sets with
+	// --setenv (it is not a key of the definition any more — see inst.Env).
+	// The alias path is the second half: it exists only inside the namespace
+	// (install never writes it to the host), which is what keeps an
+	// `export TWIN_INSTANCE=<id>` in somebody's shell profile from quietly
+	// running the program with no sandbox at all.
+	fmt.Fprintf(&b, "# 已经在自己的沙箱里（TWIN_INSTANCE 与别名都在）：不再套一层 bwrap，直接跑别名。\n")
+	fmt.Fprintf(&b, "if [ \"${TWIN_INSTANCE:-}\" = %s ] && [ -e %s ]; then\n", Sh(i.ID), shHome(p.Home, plan.Prog))
+	writeExec(&b,
+		fmt.Sprintf("%s%s \"$@\"", shHome(p.Home, plan.Prog), progArgs(plan.ProgArgs)),
+		Sh("无法启动程序"), shHome(p.Home, plan.Prog))
+	b.WriteString("fi\n\n")
 
 	// Every mount point, both ends of every mapping, has to exist on the host
 	// before bwrap runs, and in the shape the mapping has: bwrap refuses to put a
@@ -599,7 +630,7 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 // status from exiting anyway, and twin_fail is then reached only when the
 // program never started.
 func writeExec(b *strings.Builder, cmd, what, path string) {
-	b.WriteString(`# 最后一步没有"下一条命令"能接住：exec 成功时这个 shell 已经不在，失败时非交互 shell
+	b.WriteString(`# exec 这一条没有"下一条命令"能接住：exec 成功时这个 shell 已经不在，失败时非交互 shell
 # 会直接退出（exec 这个内建命令自己的规矩，与 set -e 无关）。所以要显式关掉这两件事 ——
 # 否则"程序根本没启起来"在图形会话里就是那句"点了没反应"。走到 twin_fail 那一行，
 # 就意味着上面这条命令没能执行。

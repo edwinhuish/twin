@@ -207,8 +207,10 @@ style → {}    ← 只有标准库
   `sandbox.BaseFor` 只负责在 `gen` 时把它**写进** `profile.yml`：根是 `bwrap.root` 里的**一个词**
   （`dev` = `--dev-bind / /`）；其余每一条都是 `bwrap.extras` 里的一行 —— `--proc /proc`、
   `--tmpfs /dev/shm`、（程序走 Wayland 时的）`--tmpfs /tmp` 或把宿主那个换回来的 `--bind /tmp /tmp`、
-  `--die-with-parent`；`--setenv TWIN_INSTANCE <id>` → `bwrap.env`；数据目录 → `bwrap.bind`。
-  `sandbox.Build` 一字不改地照发；twin 不再自己补任何 bwrap 选项。之所以这么费劲："这个程序拿到
+  `--die-with-parent`；数据目录 → `bwrap.bind`。`--setenv TWIN_INSTANCE <id>` **不在定义里**：它说的
+  是"这份沙箱是哪个实例"这个事实，`sandbox.Build` 每次都自己补一条（发在 `bwrap.env` 那几条之后），
+  启动器靠它认出"已经在自己的沙箱里"（§4.16）。除此之外 `sandbox.Build` 一字不改地照发，不再自己补
+  任何 bwrap 选项。之所以这么费劲："这个程序拿到
   哪个根"是定义里唯一随程序而变、又曾经完全表达不了的决定 —— 基座原先是硬编码的 `--ro-bind / /`，
   要碰设备的程序只能从透传区开口，而透传区排在所有映射**之后**，在那里重新绑一次根会把前面的
   挂载全盖掉。
@@ -259,6 +261,12 @@ style → {}    ← 只有标准库
      否则源端建不出来的失败会被目标端的成功盖掉，最后由 bwrap 报一句跟真因无关的话；
    - 只在**这一刻确实是图形会话**时才弹（没有控制终端 ＋ 有显示），终端里跑的时候一句都不多说。
    报告落在 `$STATE/launch-error.log`，弹窗正文与它逐字相同（一次拼好、两处使用）。
+
+  最后，启动器在准备任何挂载**之前**先判一次"是不是已经在自己的沙箱里"（`TWIN_INSTANCE` 等于 id
+  **且**别名路径存在），是就直接 exec 别名、不再起 bwrap。这不是优化：那等于在同一个目录上做第二次
+  overlay，而别名那条挂载就在里面，内核直接回 EINVAL（实测；没有别名挂载时同样的嵌套能成功）。
+  `TWIN_INSTANCE` 因此**不在 `profile.yml` 里**（`Build` 发在 `bwrap.env` 之后），否则一份定义就能
+  把这道判断关掉；第二个判据是回读 —— 别名只在命名空间里存在。
 
 
 ## 5. 常见任务怎么做

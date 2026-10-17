@@ -201,7 +201,9 @@ exec /usr/bin/bwrap \
 `mount_point` 建一个挂载点，`mount_pair` 建一条映射的两端，根不建，它两端都是 `/`。这些 token
 全部**来自 `profile.yml`**：`--dev-bind / /` 是 `bwrap.root: dev` 那一个词，三条 `--bind` 是
 `bwrap.bind` 里的路径映射，`--proc` 到 `--die-with-parent` 那几行就是 `bwrap.extras` 的内容
-（**行序即命令序**），`--setenv` 来自 `bwrap.env`。想换根、想加减隔离，改的就是那份定义。）
+（**行序即命令序**），`--setenv` 是 `bwrap.env` 里那几条加上 twin 自己的 `TWIN_INSTANCE`（它不在
+定义里：这条变量说的就是"这次调用在哪个实例的沙箱里"，启动器靠它认出"已经在自己的沙箱里"，见
+[`architecture.md`](docs/architecture.md) §5）。想换根、想加减隔离，改的就是那份定义。）
 
 几处关键点，每一条都对应一次实测：
 

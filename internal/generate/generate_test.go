@@ -590,13 +590,18 @@ func TestPlanWritesTheBaseByNode(t *testing.T) {
 	if got := strings.Join(it.Extras, " / "); got != strings.Join(want, " / ") {
 		t.Errorf("bwrap.extras = %q, want %q", got, strings.Join(want, " / "))
 	}
-	if len(it.Env) != 1 || it.Env[0].Key != "TWIN_INSTANCE" || it.Env[0].Value != "wechat2" {
-		t.Errorf("bwrap.env = %+v", it.Env)
+	// TWIN_INSTANCE is not the definition's any more: Build emits it, so a
+	// freshly generated file must not carry it (a line here would be a value
+	// the file appears to own while the sandbox overwrites it).
+	for _, e := range it.Env {
+		if e.Key == "TWIN_INSTANCE" {
+			t.Errorf("bwrap.env 里不该再有 TWIN_INSTANCE：%+v", it.Env)
+		}
 	}
 	// Every key the base filled has to name its source: this is the part the
 	// user did not write. `bind` is not among them here — this fixture has no
 	// rule, so the base puts nothing in it.
-	for _, key := range []string{"bwrap.root", "bwrap.env", "bwrap.extras"} {
+	for _, key := range []string{"bwrap.root", "bwrap.extras"} {
 		if !hasDerivation(der, key) {
 			t.Errorf("%s 的推导来源没记下来", key)
 		}

@@ -400,9 +400,14 @@ type Instance struct {
 	// Bind.IsRootMount.
 	Binds []Bind
 	// Env is `--setenv` pairs, in the order written (later pairs win, as bwrap
-	// does it). The instance's own TWIN_INSTANCE is one of them: `twin gen`
-	// writes it here, because it is a variable twin sets and has no business
-	// being invisible in the definition.
+	// does it) — the user's variables, and only those.
+	//
+	// TWIN_INSTANCE is not one of them any more. It says "this process is
+	// inside instance X", which is a fact about the sandbox twin just built,
+	// not a decision about how the program should run: the launcher reads it
+	// to notice that it was started from inside its own namespace (see
+	// sandbox.RenderLauncher), so a definition that could set it could also
+	// turn off that check. Build emits it after everything in this list.
 	Env []EnvVar
 	// Extras is everything else bwrap is called with — one line per argument
 	// group, in command order: `--proc /proc`, `--tmpfs /dev/shm`,
@@ -762,6 +767,15 @@ func (i *Instance) Check() error {
 		if strings.ContainsAny(e.Value, "\x00\n") {
 			return fmt.Errorf("bwrap.env[%d] %q 的值里有换行或 NUL —— bwrap 的 --setenv 收不下", n, e)
 		}
+		// Load already drops an agreeing TWIN_INSTANCE line and refuses a
+		// disagreeing one; this catches an Instance built in Go. Emitting both
+		// would leave the file's line in the command looking effective while
+		// twin's own one, right after it, is what wins — and that variable is
+		// what the launcher's re-entry guard reads.
+		if e.Key == "TWIN_INSTANCE" {
+			return fmt.Errorf("bwrap.env[%d] %q：TWIN_INSTANCE 由 twin 自己加（值就是实例 id，发在这份列表之后），"+
+				"写在 env 里不会生效 —— 删掉这一条", n, e)
+		}
 	}
 	// There is no "sandbox with defaults" any more: twin keeps no base of its
 	// own, so this file is the only thing that could have put a root in there.
@@ -955,8 +969,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	bw.Set("bind", binds)
 
 	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键=值`，后面的同名者胜；等号只在\n"+
-		"第一个处断开，所以值里可以再有等号与冒号（PATH=/a:/b）。`gen` 写的 TWIN_INSTANCE=<id> 在这一条里；\n"+
-		"留空 = 一个都不注入。")
+		"第一个处断开，所以值里可以再有等号与冒号（PATH=/a:/b）。TWIN_INSTANCE 由 twin 自己加，\n"+
+		"不写在这里；留空 = 一个都不注入。")
 	env := make([]string, 0, len(i.Env))
 	for _, e := range i.Env {
 		env = append(env, e.String())
@@ -1184,6 +1198,21 @@ func Load(path string) (*Instance, error) {
 		e, err := ParseEnvVar(spec)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		// TWIN_INSTANCE moved from this list to something Build always emits:
+		// it is the sandbox saying which sandbox it is, and the launcher reads
+		// it to avoid starting a second sandbox inside the first (see
+		// sandbox.RenderLauncher). A file that still names it is an old file:
+		// dropping the line is right when it agrees with the id — twin will
+		// set exactly that — and refusing is the only honest answer when it
+		// does not, because then the file is asking for a value twin will
+		// overwrite, and the terminal would never say so.
+		if e.Key == "TWIN_INSTANCE" {
+			if e.Value == it.ID {
+				continue
+			}
+			return nil, fmt.Errorf("%s: bwrap.env 里的 TWIN_INSTANCE=%s 和实例 id %q 不一致 —— "+
+				"这个变量现在由 twin 自己加（值就是 id），写在 env 里不会生效；删掉这一行即可", path, e.Value, it.ID)
 		}
 		it.Env = append(it.Env, e)
 	}
