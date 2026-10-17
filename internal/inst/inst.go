@@ -317,9 +317,11 @@ type Instance struct {
 	// A list of lines, one line per argument group, split on whitespace exactly
 	// the way bwrap.extras is — the same shape for the same reason: a line is
 	// what a reader can compare against the program's own `--help`, and twin
-	// does not parse arguments. So the price is the one extras already pays: a
-	// value containing a space cannot be written here (that is a path, and
-	// paths have keys of their own).
+	// does not parse arguments. What a terminal would make of that line is
+	// what the program gets, because the launcher adds no quotes of its own
+	// (see sandbox.progArgs): `~` and `$HOME` are expanded by the shell that
+	// starts the program, and a value with a space is written the way it would
+	// be typed — `--opt="a b"` — with the quotes riding inside the token.
 	//
 	// They sit after the program path and before the `"$@"` the desktop
 	// environment adds from Exec's field codes, because the program's own
@@ -859,8 +861,8 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		src.Set("desktop", i.Source)
 	}
 	src.SetComment("args", "程序的静态参数，一行一条完整命令（按空格拆开），原样接在程序路径之后、桌面环境给的\n"+
-		"文件/URL 之前：`--ozone-platform=wayland`、`--disable-gpu`（整条以 ~/ 开头的参数在启动时才\n"+
-		"换成本机 HOME）。源桌面项 Exec 里那些参数不会自动搬过来（`twin inspect` 会把它们列出来）。")
+		"文件/URL 之前，不加任何引号：`--ozone-platform=wayland`、`--user-data-dir=$HOME/x`（`~` 与\n"+
+		"`$HOME` 由启动它的 shell 展开）。源桌面项 Exec 里那些参数不会自动搬过来（`twin inspect` 会列出）。")
 	if len(i.Args) == 0 {
 		src.Set("args", []string{})
 	} else {

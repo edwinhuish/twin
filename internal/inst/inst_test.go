@@ -21,9 +21,9 @@ func base() *Instance {
 		TrayOverride:    true,
 		Level:           LevelAlias,
 		// The program's own arguments: one line per argument group, like
-		// `bwrap.extras`, and one token keeps a `~` — Build is what folds it
-		// into this machine's home, at launch time, so the file must keep the
-		// spelling the user wrote.
+		// `bwrap.extras`, and one token keeps a `~`. Nothing resolves it —
+		// `~` and `$HOME` are left for the launching shell — so what matters
+		// here is that the spelling comes back untouched.
 		Args: []string{
 			"--ozone-platform=wayland",
 			"~/.config/wechat2/x",

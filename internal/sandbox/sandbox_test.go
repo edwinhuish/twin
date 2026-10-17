@@ -564,10 +564,14 @@ func TestRenderLauncherCarriesTheOptionListAndSeparator(t *testing.T) {
 // `source.args` 属于程序，不属于 bwrap：它排在程序路径之后、桌面环境给的 `"$@"`
 // 之前（开关在操作数前面），而两种启动器形状都必须带上它 —— level=none 直接 exec
 // 程序时少一份参数，等于换了个程序在跑，而文件里看不出任何区别。
+//
+// 它们进启动器时**不加引号**：那行字读起来就是它实际跑的样子，`$HOME` / `~` 留给
+// 启动它的 shell 去展开。加一层引号会让 `$HOME` 原样交给程序，而 `$HOME` 也正是
+// 这份定义唯一能跨机器表达"这个用户的家目录"的办法。
 func TestProgramArgsFollowTheProgramInBothLauncherShapes(t *testing.T) {
 	const home = "/home/edwin"
 	i := passthroughInstance()
-	i.Args = []string{"--ozone-platform=wayland", "~/.config/wechat2/x"}
+	i.Args = []string{"--ozone-platform=wayland", "--user-data-dir=$HOME/x"}
 	p := inst.Paths{Home: home}
 	plan, err := Build(i, p, Runtime{Bwrap: "/usr/bin/bwrap"})
 	if err != nil {
@@ -575,24 +579,29 @@ func TestProgramArgsFollowTheProgramInBothLauncherShapes(t *testing.T) {
 	}
 	// The argv carries them in command order, and the caller's own arguments
 	// (what `%U` expands to) stay last: an operand comes after the switches.
+	// No expansion happens at build time — that is what keeps `$HOME` (and a
+	// `~`) for the launching shell instead of freezing this machine's home.
 	argv := plan.Argv("file:///x")
-	want := []string{plan.Prog, "--ozone-platform=wayland",
-		filepath.Join(home, ".config/wechat2/x"), "file:///x"}
+	want := []string{plan.Prog, "--ozone-platform=wayland", "--user-data-dir=$HOME/x", "file:///x"}
 	if got := argv[len(argv)-len(want):]; !reflect.DeepEqual(got, want) {
 		t.Errorf("argv 尾部 = %q，want %q", got, want)
 	}
 	// --dry-run prints plan.String(), so an argument missing from it would be
 	// an argument the user never gets to see before it lands.
-	if !strings.Contains(plan.String(), "--ozone-platform=wayland") {
-		t.Errorf("plan.String 里没有程序的参数：\n%s", plan)
+	if !strings.Contains(plan.String(), "--user-data-dir=$HOME/x") {
+		t.Errorf("plan.String 里没有程序的参数（或给它加了引号）：\n%s", plan)
 	}
 
 	body, err := RenderLauncher(i, p, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "  /opt/wechat/wechat2 --ozone-platform=wayland \"$HOME/.config/wechat2/x\" \"$@\" 2>&3"; !strings.Contains(string(body), want) {
-		t.Errorf("启动器里没有程序的参数，或位置不对（want %q）：\n%s", want, body)
+	if want := "  /opt/wechat/wechat2 --ozone-platform=wayland --user-data-dir=$HOME/x \"$@\" 2>&3"; !strings.Contains(string(body), want) {
+		t.Errorf("启动器里的参数位置不对或被加了引号（want %q）：\n%s", want, body)
+	}
+	if strings.Contains(string(body), "'--ozone-platform=wayland'") ||
+		strings.Contains(string(body), "'--user-data-dir=") {
+		t.Errorf("source.args 不该被加引号 —— 那一行要能照字面读：\n%s", body)
 	}
 
 	// The same definition without a sandbox: no bwrap, same arguments.
