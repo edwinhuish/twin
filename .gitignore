@@ -9,6 +9,7 @@ coverage.*
 
 # 编辑器 / 系统
 .idea/
+.codebuddy/
 .vscode/
 *.swp
 .DS_Store
