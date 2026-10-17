@@ -352,6 +352,11 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 	// Level "none" runs the program untouched: no sandbox at all, and no
 	// bubblewrap requirement. Keeping this path separate stops us from
 	// pretending a rename happened when it did not.
+	//
+	// `wrap` deliberately does *not* take this door: it wants the sandbox and
+	// only refuses the rename, so it falls through and skips exactly one block
+	// below (the overlay alias). Every other decision here is about the
+	// sandbox, and none of them asks whether the program was renamed.
 	if i.Level == inst.LevelNone {
 		return plan, nil
 	}
@@ -511,12 +516,24 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	// (install never writes it to the host), which is what keeps an
 	// `export TWIN_INSTANCE=<id>` in somebody's shell profile from quietly
 	// running the program with no sandbox at all.
-	fmt.Fprintf(&b, "# 已经在自己的沙箱里（TWIN_INSTANCE 与别名都在）：不再套一层 bwrap，直接跑别名。\n")
-	fmt.Fprintf(&b, "if [ \"${TWIN_INSTANCE:-}\" = %s ] && [ -e %s ]; then\n", Sh(i.ID), shHome(p.Home, plan.Prog))
-	writeExec(&b,
-		fmt.Sprintf("%s%s \"$@\"", shHome(p.Home, plan.Prog), progArgs(plan.ProgArgs)),
-		Sh("无法启动程序"), shHome(p.Home, plan.Prog))
-	b.WriteString("fi\n\n")
+	//
+	// Only a renaming level can read that second fact, and `wrap` is not given
+	// a weaker version of it. Its program path resolves on the host as well,
+	// so "the path exists" would say nothing, and the remaining candidate — "am
+	// I in a namespace other than the host's" — is not readable reliably
+	// (measured on this machine: `/proc/1/ns/mnt` already differs from a plain
+	// shell's before any twin sandbox exists). So wrap emits no guard here and
+	// starts bwrap even on a re-entry: a second layer is redundant but correct,
+	// while the alternative is a variable that silently turns the sandbox off.
+	// The next branch is where that decision is spelled out.
+	if i.Level.Renames() {
+		fmt.Fprintf(&b, "# 已经在自己的沙箱里（TWIN_INSTANCE 与别名都在）：不再套一层 bwrap，直接跑别名。\n")
+		fmt.Fprintf(&b, "if [ \"${TWIN_INSTANCE:-}\" = %s ] && [ -e %s ]; then\n", Sh(i.ID), shHome(p.Home, plan.Prog))
+		writeExec(&b,
+			fmt.Sprintf("%s%s \"$@\"", shHome(p.Home, plan.Prog), progArgs(plan.ProgArgs)),
+			Sh("无法启动程序"), shHome(p.Home, plan.Prog))
+		b.WriteString("fi\n\n")
+	}
 
 	// The other instance's sandbox.
 	//
@@ -529,6 +546,18 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	// this instance's own alias is not (it exists only in its own namespace).
 	// The program would then start from its real path, the window's app_id would
 	// fall back to the original, and the identity would be lost silently.
+	//
+	// `wrap` has no identity to lose here, but the layer argument is the same
+	// one: what it would inherit is the parent's mappings and private /tmp, not
+	// the ones its own definition wrote — so it is handed back too.
+	//
+	// The one case wrap cannot classify is TWIN_INSTANCE equal to its own id:
+	// that is either "already inside my own sandbox" (a second layer is
+	// wasteful but correct — and there is no overlay here to be refused) or a
+	// forged export on the host (the sandbox must still be built). Both want
+	// the same thing, so equality is deliberately left to the normal path
+	// below instead of being guessed at — this branch only claims the unequal
+	// case, which is unambiguous.
 	//
 	// Getting out can only be done from **outside**: a process that has entered
 	// a mount namespace has no permission to setns back into another one (that
@@ -549,7 +578,13 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	// level=none is not part of this: it builds no sandbox, so there is no second
 	// layer to stack and no alias to lose (see the branch above).
 	b.WriteString("# 在别人的沙箱里（TWIN_INSTANCE 有值、却不是这个实例）：交给宿主的 systemd 重跑这一份。\n")
-	b.WriteString("if [ -n \"${TWIN_INSTANCE:-}\" ]; then\n")
+	if i.Level.Renames() {
+		b.WriteString("if [ -n \"${TWIN_INSTANCE:-}\" ]; then\n")
+	} else {
+		// wrap: equality falls through to the ordinary path (see the comment
+		// above) — it is the only level that stacks instead of handing back.
+		fmt.Fprintf(&b, "if [ -n \"${TWIN_INSTANCE:-}\" ] && [ \"$TWIN_INSTANCE\" != %s ]; then\n", Sh(i.ID))
+	}
 	// Both preconditions are facts of this moment (a binary on PATH, a socket on
 	// disk), so they are decided in the script: when either is missing, "cannot
 	// hand back" has to be said right here — falling back to nesting a

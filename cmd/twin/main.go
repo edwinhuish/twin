@@ -629,11 +629,11 @@ func cmdGen(p inst.Paths, args []string) int {
 	// `twin reinstall`, which copies it again.
 	var (
 		output     = fs.String("output", "", "配置写到哪（默认 "+defaultProfileLabel+"；与 -o 是同一个设置）")
-		as         = fs.String("as", "", "实例 id，同时是窗口 app_id 与托盘 SNI Id（默认 源基名 ＋ 最小空闲序号，从 2 起）")
+		as         = fs.String("as", "", "实例 id（alias / redirect 时它同时是窗口 app_id 与托盘 SNI Id；默认 源基名 ＋ 最小空闲序号，从 2 起）")
 		iconPath   = fs.String("icon", "", "源图标 png|svg（默认 源桌面项的 Icon=；找不到就拒绝生成，不出齿轮占位图）")
 		badge      = fs.String("badge", "", "角标文字（默认 id 尾部数字；可用字符 0-9 A-Z 与 -+.!?/ 和空格）")
 		badgeStyle = fs.String("badge-style", "", "角标风格 corner|number|dot（默认 config.toml → corner）")
-		level      = fs.String("level", "", "身份级别 none|alias|redirect（默认 config.toml → rules.d → alias；argument/env 未实现，会被拒绝）")
+		level      = fs.String("level", "", "身份级别 none|wrap|alias|redirect（默认 config.toml → rules.d → alias；wrap = 过 bwrap 但不改名；argument/env 未实现，会被拒绝）")
 		force      = fs.Bool("force", false, "覆盖已存在的输出文件（默认拒绝：那份文件正是你要改的东西）")
 		dryRun     = fs.Bool("dry-run", false, "只打印，不落盘（连配置正文一起打印）")
 		explain    = fs.Bool("explain", false, "打印完整说明（推导出的默认值、路径映射的修改粒度、规则模板）")
@@ -678,8 +678,8 @@ func cmdGen(p inst.Paths, args []string) int {
 			return exitUsage
 		}
 		if !lvl.Implemented() {
-			fail(fmt.Sprintf("--level %s 还没实现：阶梯上只有 none / alias / redirect 通过了实测，"+
-				"把没验证过的级别做成选项等于把坑留给使用者", lvl))
+			fail(fmt.Sprintf("--level %s 还没实现：阶梯上只有 %s 通过了实测，"+
+				"把没验证过的级别做成选项等于把坑留给使用者", lvl, inst.ImplementedList()))
 			return exitUsage
 		}
 	}
@@ -1515,12 +1515,29 @@ func printNextSteps(p inst.Paths, it *inst.Instance, verbose bool) {
 		fmt.Printf("  1. 桌面项是后写的，GNOME 不会给已经存在的窗口重算归属 —— 请**重新启动**这个实例。\n")
 		fmt.Printf("  2. 托盘图标已就位：上面「托盘覆盖」那条说了这次走的是哪条路（助手扩展，或宿主表兜底）。\n")
 		fmt.Printf("     两条都是热生效，不用重登；🔍 自检 那一段里若有 ⚠️，按它给的那条命令跑一次。\n")
+		if !it.Level.Renames() {
+			// Saying "check that both values equal the id" here would be a
+			// promise this level does not make: nothing was renamed, so the
+			// window and the tray keep the program's own names. The desktop
+			// entry still shows this instance's name — that is the half that
+			// did change.
+			fmt.Printf("  3. level=%s 不改名：窗口 app_id 与托盘 SNI Id 仍是程序自己的值，"+
+				"%q 只是桌面项与实例目录的名字。\n", it.Level, it.ID)
+			return
+		}
 		fmt.Printf("  3. 想确认身份，看这两个值是否都等于 %q：\n", it.ID)
 		fmt.Printf("     窗口 app_id ：WAYLAND_DEBUG=1 bash %s 2>&1 | grep set_app_id\n", p.Launch(it.ID))
 		fmt.Printf("     托盘 SNI Id ：busctl --user list | grep -i statusnotifier  （名字里带 pid）\n")
 		return
 	}
-	fmt.Printf("  1. 桌面项是后写的 —— 请**重新启动**这个实例，否则窗口还是旧的名字和图标。\n")
+	if it.Level.Renames() {
+		fmt.Printf("  1. 桌面项是后写的 —— 请**重新启动**这个实例，否则窗口还是旧的名字和图标。\n")
+	} else {
+		// Nothing was renamed, so "restart it or the window keeps the old
+		// name" would describe a change that never happens. The menu icon
+		// still comes from this entry, hence the restart.
+		fmt.Printf("  1. 桌面项是后写的 —— 请**重新启动**这个实例；level=%s 不改名，窗口名与托盘 Id 仍是程序自己的。\n", it.Level)
+	}
 	fmt.Printf("  2. 确认身份与托盘：twin verify %s\n", it.ID)
 	fmt.Printf("     改了实例定义要重放：twin reinstall %s\n", it.ID)
 }
@@ -1553,8 +1570,16 @@ func printRehearsal(p inst.Paths, it *inst.Instance, insp *generate.Inspection, 
 	if plan.Bootstrap != "" {
 		fmt.Printf("  跳板脚本  %s\n", plan.Bootstrap)
 	}
-	fmt.Printf("\n%s\n  level=%s  app_id / 托盘 Id = %q\n",
-		title("🪪 身份"), it.Level, it.ID)
+	if it.Level.Renames() {
+		fmt.Printf("\n%s\n  level=%s  app_id / 托盘 Id = %q\n",
+			title("🪪 身份"), it.Level, it.ID)
+	} else {
+		// A rehearsal that printed the id as the app_id would be promising the
+		// rename this level does not make — and the reader would find out only
+		// after a launch.
+		fmt.Printf("\n%s\n  level=%s  不改名：app_id / 托盘 Id 仍是程序自己的值（%q 只是桌面项与实例目录的名字）\n",
+			title("🪪 身份"), it.Level, it.ID)
+	}
 	// The tray override is host state (or the helper's file), not one of the
 	// artefacts above, but it is still part of what a real run would change —
 	// so the rehearsal has to show it, and it has to show *which mechanism*
@@ -1870,13 +1895,14 @@ func applyTray(p inst.Paths, it *inst.Instance) string {
 	if !it.TrayOverride {
 		return "托盘覆盖 跳过（override.tray = false）"
 	}
-	// level=none does not rename anything, so the program's StatusNotifierItem
-	// id is whatever the program chose — the row is a guess. It is still worth
-	// writing (the desktop basename often coincides) but not worth promising.
-	// Both mechanisms key on that same id, so the caveat is the same either way.
+	// A level that renames nothing — none and wrap alike — leaves the program's
+	// StatusNotifierItem id whatever the program chose, so the row is a guess.
+	// It is still worth writing (the desktop basename often coincides) but not
+	// worth promising. Both mechanisms key on that same id, so the caveat is
+	// the same either way, and it names the level that is actually in force.
 	vague := ""
 	if !it.Level.Renames() {
-		vague = "（level=none 没有改名：托盘的 SNI Id 由程序自己决定，这一条未必匹配得上）"
+		vague = fmt.Sprintf("（level=%s 没有改名：托盘的 SNI Id 由程序自己决定，这一条未必匹配得上）", it.Level)
 	}
 
 	plan := planTray(p, it)
@@ -2106,8 +2132,14 @@ func printPathMaps(p inst.Paths, it *inst.Instance, insp *generate.Inspection,
 		// "twin redirected nothing" is a fact worth stating: it is the normal
 		// case for an unknown program, and the reason two instances of it may
 		// start interfering with each other. It is also the one consequence the
-		// rest of the file does not spell out for this program.
-		fmt.Printf("  0 条：数据目录与源程序共用（本实例只做身份包裹）。\n")
+		// rest of the file does not spell out for this program. What the empty
+		// list means for the identity is said in the level's own terms: a
+		// non-renaming level did not even do the rename it "just" did.
+		if it.Level.Renames() {
+			fmt.Printf("  0 条：数据目录与源程序共用（本实例只做身份包裹）。\n")
+		} else {
+			fmt.Printf("  0 条：数据目录与源程序共用（level=%s 没有路径映射，也没有改名）。\n", it.Level)
+		}
 		if insp.Rule == nil {
 			fmt.Printf("  %s\n", outStyle.Yellow("⚠️ 这个程序没有规则：它若有单实例锁或共享配置"+
 				"（Electron / Qt / GTK 系很常见），两个实例会互相干扰。"))

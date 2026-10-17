@@ -10,6 +10,18 @@
 
 ### Added
 
+- **`isolation.level: wrap`：沙箱但不改名**。这一档照常过 bwrap —— 有私有数据目录、自己的 `/tmp`、
+  `bwrap.bind` / `bwrap.env` / `bwrap.extras` 全都照发 —— 只是**不造 alias**，程序从真实路径启动，
+  窗口 `app_id` 与托盘 `SNI Id` 保持程序自己的值。它把一直绑在一起的两个轴分开了：沙箱
+  （`Sandboxed`）与改名（`Renames`）。在此之前"不改名"只有 `none` 能说，而那同时意味着"不要沙箱"，
+  于是既要私有数据目录、又不能改名的程序（多合一二进制、把 `argv[0]` 当命令名分派的 CLI 之类）
+  没有可选项。随之调整的两处判据都按"过不过 bwrap"而不是"改不改名"来问：`gen` 照旧写沙箱基座
+  （`bwrap.root` ＋ `--proc` / `--tmpfs` / 宿主 `/tmp` 那几行），`inst.Check` 照旧要求根挂载；
+  桌面项正文则**不写** `StartupWMClass`（没有窗口会来认领它），`twin install` / `--dry-run` 也不再
+  声称 `app_id` 等于 id。启动器少一道判断：`wrap` 没有"别名只在命名空间里"这条回读证据，所以
+  `TWIN_INSTANCE` 等于自己的 id 时照常起 bwrap（重入就多一层，伪造的 `export` 也照样建沙箱）——
+  拿一个更弱的判据补上那层冗余，换来的只会是一个静默关掉沙箱的开关；`TWIN_INSTANCE` 有值却**不是**
+  自己的 id 时照旧交回宿主重跑。
 - **`source.args`：程序自己的参数**。一行一条完整命令（按空格拆开，与 `bwrap.extras` 同一个写法），
   原样接在 exec 的程序之后、桌面环境用 `%U` / `%F` 展开出来的文件/URL **之前** —— 程序的开关该在
   操作数前面。它**不在 `bwrap` 节点里**，因为它不是这次 bwrap 调用的参数：`level: none`（直接 exec

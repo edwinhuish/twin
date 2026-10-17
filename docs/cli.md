@@ -641,7 +641,7 @@ $ twin reinstall -h    # 重放存档的那一个开关
 | `--file` `--bind-fd` `--ro-bind-fd` `--bind-data` `--ro-bind-data` `--seccomp` `--add-seccomp-fd` `--block-fd` `--userns-block-fd` `--userns` `--userns2` `--pidns` `--sync-fd` `--info-fd` `--json-status-fd` `--args` | 需要已打开的 fd，而启动器由桌面环境 exec，手里没有 |
 | `isolation.unshare` 含 `net` | 切断网络，也打破 abstract-socket 单实例锁；bwrap 本来也隔离不了它 |
 | **多合一二进制**（BusyBox / coreutils 之类靠 `argv[0]` 分派行为的） | 改名之后它会报 `unknown program` —— 改名对这类程序是破坏性的 |
-| alias 与真实文件名相同 | 那是空操作，改名了但名字没变 |
+| 会改名的级别（`alias` / `redirect`）下 id 与真实文件名相同 | 那是空操作，改名了但名字没变（`wrap` / `none` 不建别名，同 id 是允许的） |
 | 源图标缺失且未给 `--icon` | 拒绝静默生成齿轮占位图 |
 | `Exec=` 目标没有执行位 | 生成前就拒（GLib 会因此丢弃整个桌面项，且查不出来） |
 | `id` 含 `/`、`\0`，或以 `.`、数字以外开头 | id 同时是桌面项基名与别名文件名，必须干净 |

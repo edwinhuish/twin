@@ -691,6 +691,50 @@ func TestCheckAcceptsRedirect(t *testing.T) {
 	}
 }
 
+// wrap 是"沙箱但不改名"：它要根挂载（它真的过 bwrap），不建别名，所以 id 与真实
+// 文件名相同也不再是空操作 —— 这条以前对 none 也是拒的，而那正是 wrap 要拆开的两个轴。
+func TestCheckAcceptsWrap(t *testing.T) {
+	it := base()
+	it.Level = LevelWrap
+	if err := it.Check(); err != nil {
+		t.Errorf("wrap 应当被接受：%v", err)
+	}
+	if !LevelWrap.Implemented() || !LevelWrap.Sandboxed() || LevelWrap.Renames() {
+		t.Error("wrap 必须同时是「已实现」「过 bwrap」「不改名」")
+	}
+
+	// The id naming the program's own file would be a no-op rename; there is
+	// no rename here, so it is legitimate.
+	it = base()
+	it.Level = LevelWrap
+	it.ID = it.TargetBase()
+	it.Binds = nil
+	if err := it.Check(); err != nil {
+		t.Errorf("wrap 不建别名，id 与程序同名不该被拒：%v", err)
+	}
+
+	// The root check follows the sandbox, not the rename: a wrap definition with
+	// nothing mounted would start the program in an empty namespace.
+	it = base()
+	it.Level = LevelWrap
+	it.Root = ""
+	it.Binds = nil
+	it.Extras = nil
+	if err := it.Check(); err == nil || !strings.Contains(err.Error(), "根挂载") {
+		t.Errorf("没有根挂载的 wrap 定义必须被拒，得到 %v", err)
+	}
+
+	// ...while none still needs nothing, because it builds no sandbox.
+	it = base()
+	it.Level = LevelNone
+	it.Root = ""
+	it.Binds = nil
+	it.Extras = nil
+	if err := it.Check(); err != nil {
+		t.Errorf("none 不过 bwrap，没有根挂载是正常的：%v", err)
+	}
+}
+
 // The three token classes that must never reach bwrap (设计 §2.4).
 func TestCheckRefusesForbiddenPassthrough(t *testing.T) {
 	cases := []struct{ tok, why string }{

@@ -291,7 +291,7 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 		}
 	}
 	if !level.Implemented() {
-		return nil, nil, fmt.Errorf("level=%s 还没实现：阶梯上只有 none 与 alias 通过了实测", level)
+		return nil, nil, fmt.Errorf("level=%s 还没实现：阶梯上只有 %s 通过了实测", level, inst.ImplementedList())
 	}
 
 	badge := o.Badge
@@ -386,8 +386,10 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// There is no branch to take when there is no sandbox: `level none` runs the
 	// program untouched, so a line here would describe a mount that never
 	// happens — and SessionWarning reads the same lines to warn about X11
-	// sessions.
-	if !level.Renames() {
+	// sessions. The test is `Sandboxed`, not `Renames`: `wrap` keeps the
+	// sandbox and only drops the rename, so it needs the /tmp line as much as
+	// alias does.
+	if !level.Sandboxed() {
 		tmpfs = withoutPath(tmpfs, "/tmp")
 	}
 	// The two branches of the /tmp decision are two different lines, and the
@@ -431,7 +433,11 @@ func Plan(p inst.Paths, o Options, insp *Inspection) (*inst.Instance, []Derivati
 	// anything if it comes after every tmpfs line, and this is the one place
 	// that knows both lists. Base-first inside every list too, so the layers
 	// above can still overrule the base.
-	if level.Renames() {
+	//
+	// `Sandboxed` again, not `Renames`: `wrap` runs through the same bwrap and
+	// needs the same base — what it does without is the overlay, and the base
+	// has nothing to do with that.
+	if level.Sandboxed() {
 		base := sandbox.BaseFor(privateTmp)
 		it.Root = base.Root
 		it.Extras = append(it.Extras, base.Head...)

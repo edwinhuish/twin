@@ -393,6 +393,32 @@ func TestBuildNoSeparatorWithoutBwrap(t *testing.T) {
 	}
 }
 
+// wrap 只去掉改名这一步：沙箱照起，overlay 那三条一条都不发，程序仍是真实路径。
+// 它是两个轴里"沙箱开、改名关"的那一格，所以这里既验证 bwrap 在，也验证 overlay 不在。
+func TestBuildWrapSandboxesWithoutTheOverlay(t *testing.T) {
+	i := passthroughInstance()
+	i.Level = inst.LevelWrap
+	plan, err := Build(i, inst.Paths{Home: "/home/edwin"}, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Bwrap == "" {
+		t.Fatal("level=wrap 必须走 bwrap")
+	}
+	if plan.Prog != i.Target {
+		t.Errorf("Prog = %q，want 真实路径 %q（wrap 不改名）", plan.Prog, i.Target)
+	}
+	args := strings.Join(plan.Args(), " ")
+	for _, banned := range []string{"--overlay-src", "--tmp-overlay", i.AliasPath()} {
+		if strings.Contains(args, banned) {
+			t.Errorf("wrap 的 bwrap 调用里不该出现 %q：%s", banned, args)
+		}
+	}
+	if !strings.Contains(args, "--dev-bind / /") {
+		t.Errorf("wrap 的基座（含根挂载）必须照发：%s", args)
+	}
+}
+
 // Extra tmpfs lines are the definition's, and Build passes them through
 // verbatim. /tmp is deliberately not among them: which /tmp this instance gets
 // is a decision about the root the base binds, so it is written in the file
@@ -1004,6 +1030,58 @@ func TestLauncherInsideItsOwnSandboxSkipsBwrap(t *testing.T) {
 	}
 	if want := "--flag\npositional\n"; string(got) != want {
 		t.Errorf("程序收到的参数 = %q，want %q", got, want)
+	}
+}
+
+// wrap 没有别名可用作"已经在沙箱里"的第二条证据，所以它不设那道判断：TWIN_INSTANCE
+// 等于自己的 id 时照样起 bwrap（重入就多一层，伪造的 export 则照常建沙箱 —— 两种读法
+// 要的是同一件事）。于是宿主上导出 TWIN_INSTANCE（shell 配置里手滑写一行就够了）
+// **不能**让沙箱被跳过，否则这一档就多了一个静默关掉隔离的开关。bwrap 给一个不存在的
+// 路径：真被调用就会失败，于是"退出码非零且程序没跑起来"正是"沙箱没有被跳过"的证据。
+func TestLauncherWrapDoesNotTrustAnExportedTwinInstance(t *testing.T) {
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	dir := t.TempDir()
+	mark := filepath.Join(dir, "ran")
+	prog := filepath.Join(dir, "demo")
+	const body = "#!/bin/bash\ntouch \"$MARK\"\n"
+	if err := os.WriteFile(prog, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	i := &inst.Instance{
+		ID: "demo2", Level: inst.LevelWrap, Target: prog,
+		DesktopOverride: filepath.Join(dir, "demo2.desktop"),
+		Root:            "dev",
+		Extras:          []string{"--proc /proc", "--die-with-parent"},
+	}
+	p := inst.Paths{Home: filepath.Join(dir, "home")}
+	plan, err := Build(i, p, Runtime{Bwrap: filepath.Join(dir, "no-such-bwrap")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptBody, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "launch")
+	if err := os.WriteFile(script, scriptBody, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res, err := sysx.RunEnv([]string{
+		"HOME=" + p.Home,
+		"PATH=" + os.Getenv("PATH"),
+		"TWIN_INSTANCE=" + i.ID,
+		"MARK=" + mark,
+	}, script, "positional")
+	if err != nil {
+		t.Fatalf("启动器跑不起来：%v", err)
+	}
+	if res.Code == 0 {
+		t.Fatalf("宿主上导出 TWIN_INSTANCE 不该让 wrap 跳过沙箱（stderr=%s）", res.Stderr)
+	}
+	if sysx.Exists(mark) {
+		t.Error("程序被直接跑起来了 —— 沙箱被这一行 export 关掉了")
 	}
 }
 

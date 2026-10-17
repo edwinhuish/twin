@@ -144,7 +144,8 @@ twin gen wechat                  ← 前半段：只配置
       │
       ├─ 1. 解析源桌面项 → 找到真实程序 /opt/wechat/wechat、图标、语言化的 Name/Keywords
       ├─ 2. 推导默认值   → id=wechat2  badge=2  bwrap.root=dev  等
-      ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect
+      ├─ 3. 选身份级别   → alias（bwrap overlay 改名）。程序若写死 app_id，则 redirect；
+      │                    不能改名却仍要私有数据目录的，用 wrap（过 bwrap、不改名）
       ├─ 4. 从内置规则 / rules.d 算出路径映射
       └─ 5. 写出一份文件到实例自己的目录（~/.local/share/twin/<id>/）：profile.yml（定义），
             报出它的路径与下一步敲什么
@@ -357,7 +358,7 @@ go build -ldflags "-X main.version=$(git describe --tags --always)" -o bin/twin 
 
 **Q：托盘图标没变？**
 两条路都按 **SNI Id 严格相等**匹配。只有 `level=alias|redirect`（真的改名了）才能预测
-这个 id；`level=none` 时 id 由程序自己决定，那一行只是猜测（工具会提醒你）。先看 `twin verify <id>` 里
+这个 id；`level=none` / `wrap` 时 id 由程序自己决定，那一行只是猜测（工具会提醒你）。先看 `twin verify <id>` 里
 「托盘图标」那一行：它说的是**这次实际走的那条路**（助手扩展读的文件表 / 宿主覆盖表），以及那一条里
 到底有没有本实例的条目。
 

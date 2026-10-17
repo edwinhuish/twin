@@ -626,6 +626,36 @@ func TestPlanNoneLevelTakesNoTmpDecision(t *testing.T) {
 	}
 }
 
+// wrap 只是"不过 overlay"，沙箱照样有：基座（根、proc、私有 /dev/shm）必须写进
+// 定义，`/tmp` 那条决策也不能像 level=none 那样被丢掉 —— 那会让这一档的定义在
+// 启动时变成一个什么都没挂的命名空间。
+func TestPlanWrapLevelKeepsTheBase(t *testing.T) {
+	clearLocale(t, "zh_CN.UTF-8")
+	p := inst.Paths{Home: t.TempDir()}
+	insp := wechatInspection()
+	insp.Traits.Wayland = true
+
+	it, _, err := Plan(p, Options{Cfg: config.Builtin(), Level: inst.LevelWrap}, insp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Root != "dev" {
+		t.Errorf("bwrap.root = %q，want dev（wrap 和 alias 拿到同一个基座）", it.Root)
+	}
+	want := []string{"--proc /proc", "--tmpfs /dev/shm", "--tmpfs /tmp", "--die-with-parent"}
+	if got := strings.Join(it.Extras, " / "); got != strings.Join(want, " / ") {
+		t.Errorf("bwrap.extras = %q, want %q", got, strings.Join(want, " / "))
+	}
+	// The definition has to pass the same validation every other instance does:
+	// wrap is not a spelling of "no sandbox".
+	if err := it.Check(); err != nil {
+		t.Errorf("wrap 的定义必须能通过校验：%v", err)
+	}
+	if it.Level.Renames() || !it.Level.Sandboxed() {
+		t.Error("wrap 是「过 bwrap、不改名」的那一格")
+	}
+}
+
 // A refused token must name the layer it came from, or the user has to audit
 // three files by hand.
 func TestPlanBlamesTheLayerForABadToken(t *testing.T) {

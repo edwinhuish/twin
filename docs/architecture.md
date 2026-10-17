@@ -34,13 +34,20 @@
 | 级别 | 做什么 | 状态 |
 |---|---|---|
 | `none` | 只写桌面项 ＋ 图标，程序**原样**启动（不经过 bwrap） | ✅ 已实现（T1） |
+| `wrap` | **沙箱但不改名**：过 bwrap、有私有数据目录与自己的 `/tmp`，程序仍从真实路径启动（`app_id` / `SNI Id` 保持原值） | ✅ 已实现（T2 / T3） |
 | `alias` | 用 bwrap overlay 给真实程序造一个**别名路径**并从那启动 | ✅ **已实现，主力** |
 | `argument` | 靠程序自己的命令行参数改名 | ❌ 未实现（Qt 类程序忽略它） |
 | `env` | 靠环境变量改名 | ❌ 未实现 |
 | `redirect` | 同 `alias` 改名，**外加**写一条 L5 规则给 shell 扩展改判窗口归属 | ✅ 已实现 |
 
 `argument` / `env` **故意不实现**：这个工具的立场是"宁可不做，不做近似"。把没验证过的级别
-做成选项，等于把坑留给使用者。`--level` 传这两个值会被明确拒绝，并说明只有哪三个通过了实测。
+做成选项，等于把坑留给使用者。`--level` 传这两个值会被明确拒绝，并说明只有哪四个通过了实测。
+
+`wrap` 是"两个轴"第一次被分开写：沙箱（`Sandboxed`）与改名（`Renames`）。它存在的理由是
+一个程序**不能或不该改名**、却仍然需要自己的数据目录与私有 `/tmp` —— 在此之前只有 `none`
+能表达"不改名"，而它同时是唯一能表达"不要沙箱"的级别。代价要照实说：桌面项与菜单里的名字
+是这个实例的，但**没有窗口会认领它**（窗口归属仍按程序自己的 `app_id`），托盘图标那一行也只是
+猜测（见 [`troubleshooting.md`](troubleshooting.md) B1）。
 
 `alias` 为什么能改窗口名：
 
@@ -74,10 +81,10 @@
 | 厚度 | 内容 | 需要什么 |
 |---|---|---|
 | **T1** | 桌面项 ＋ 图标 ＋（`redirect` 时）L5 规则 | 零特权，`level=none` 时连 bwrap 都不需要 |
-| **T2** | T1 ＋ bwrap 基座（`profile.yml` 的 `bwrap` 节点，含 overlay 别名） | 能建非特权 user namespace |
+| **T2** | T1 ＋ bwrap 基座（`profile.yml` 的 `bwrap` 节点；会改名的级别另加 overlay 别名） | 能建非特权 user namespace |
 | **T3** | T2 ＋ 路径映射（`rules.d` / 实例定义）＋ tmpfs | 同上 |
 
-`twin` 默认给 T3；`level=none` 时退到 T1。
+`twin` 默认给 T3（`alias`）；`level=none` 时退到 T1，`level=wrap` 留在 T2 / T3 而不改名。
 
 ## 4. 管线
 
@@ -302,7 +309,7 @@ StartupNotify=true
 - ⚠️ **`Exec=` 指向的文件必须有执行位**：GLib 会因此**静默丢弃整个桌面项**，而
   `desktop-file-validate` 查不出这一点。这是本项目最贵的一个坑（见 `docs/troubleshooting.md`）。
 
-### 5.4 bwrap 调用（`level=alias` 的基座）
+### 5.4 bwrap 调用（会过 bwrap 的级别共用的基座）
 
 **基座是那份定义里的一段文本，不是 twin 的一个常量；而且根挂载是它自己的一个词。** `twin gen`
 （`sandbox.BaseFor`）把它写进定义时只把根写进 `bwrap.root`：其余每一条（proc、两个 tmpfs、
@@ -338,7 +345,7 @@ StartupNotify=true
 ```
 bwrap
   --<ro-bind|bind|dev-bind> / /     # 根挂载：从 bwrap.root 那一个词渲染出来，永远第一条（见下）
-  --overlay-src <targetdir>
+  --overlay-src <targetdir>         # ↓ 这三条只有会改名的级别才有（alias / redirect）
   --tmp-overlay <targetdir>         # ⚠️ 必须在创建别名之前
   --ro-bind <target> <alias path>
   [--bind|--ro-bind|--dev-bind <源> <目标>]…   # 路径映射（源是数据实际所在；:ro / :dev 选后两个）
@@ -347,7 +354,7 @@ bwrap
   [--setenv <bwrap.env 里的键> <值>]…
   --setenv TWIN_INSTANCE <id>       # twin 自己加的，不是定义里的键
   --
-  <alias path> <source.args…> "$@"
+  <alias path | 真实路径> <source.args…> "$@"
 ```
 
 启动器在这条命令之前还有一道判断：`TWIN_INSTANCE` 等于自己的 id **而且**别名路径已经存在（它只在
@@ -356,7 +363,13 @@ bwrap
 重复：bwrap 会在同一个目录上做第二次 overlay，而别名那条挂载就在那个目录里，内核直接回 EINVAL
 （实测；同一目录在没有别名挂载时，第二层嵌套是能成功的）。
 
-紧接着的第二道管的是**另一个实例的沙箱**：`TWIN_INSTANCE` 有值却不是自己的 id。那时起 bwrap 不是
+`level=wrap` **没有这道判断**，因为它没有第二个判据可用：程序就在真实路径上，那个路径在宿主上也
+存在，而"我是不是在别的挂载命名空间里"读不可靠（实测：这台机器上一个普通 shell 的
+`/proc/1/ns/mnt` 就已经与 PID 1 不同）。它照常起 bwrap —— 重入就多一层（没有 overlay，嵌套能成功），
+伪造的 `export TWIN_INSTANCE` 也照样建沙箱，两种读法要的是同一件事。拿一个更弱的判据换掉那层冗余，
+换来的只会是一个静默关掉沙箱的开关。
+
+第二道管的是**另一个实例的沙箱**：`TWIN_INSTANCE` 有值却不是自己的 id。那时起 bwrap 不是
 "多一层"，而是**错的那一层** —— 新沙箱的根就是父沙箱的根，父实例的 overlay、私有 `/tmp`、私有
 数据目录全在里面，而这个实例自己的别名不在（别名只在它自己的命名空间里存在）⇒ 程序从真实路径
 启动，窗口 `app_id` 退回原值，身份静默地丢了。**逃出去只能由外面做**：进程进了挂载命名空间就没有
@@ -374,7 +387,9 @@ systemd-run --user --quiet --collect --wait --pipe \
 `$XDG_RUNTIME_DIR/systemd/private`、`$DBUS_SESSION_BUS_ADDRESS`、`$XDG_RUNTIME_DIR/bus` 三条门路
 一条都不通时，启动器以退出码 3 说清"这次来自哪个实例、请在宿主上直接启动" —— 一个错层的沙箱比
 一次没启动更糟，因为它看起来是成功的。代价照实说：交过去的那一次 stdio 是管道（`--pipe`），不是
-原来的终端。`level=none` 不在两道判断里：它不建沙箱，没有第二层要叠，也没有别名会丢。
+原来的终端。`level=none` 不在两道判断里：它不建沙箱，没有第二层要叠，也没有别名会丢。`level=wrap`
+只过第二道，而且它的条件多一句"`TWIN_INSTANCE` 不等于自己的 id" —— 等于自己的 id 时既有可能是
+"已经在自己的沙箱里"，也有可能是宿主上一行伪造的 `export`，两者都该建沙箱，所以那一刻不走交回。
 
 为什么基座要写进文件：**"这个程序拿到哪个根"是这份定义里唯一随程序而变、又曾经完全表达不了的决定。**
 基座原先是硬编码在 Go 里的 `--ro-bind / /`，一个要碰设备、或自己要建沙箱的程序需要

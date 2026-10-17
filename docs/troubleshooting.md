@@ -113,7 +113,7 @@ bash -x ~/.local/share/twin/<id>/launch     # 看它到底死在哪一步
 | 情况 | 结论 |
 |---|---|
 | `level=alias` / `redirect` | `Id` 可预测（= 别名）⇒ 应该能命中。查 `twin verify <id>` 的「托盘图标」那一行说的**这次走那条路**里的条目在不在 |
-| `level=none` | **没有改名** ⇒ `Id` 由程序自己决定，那一行是**猜测**。工具会明确提醒"未必匹配得上" |
+| `level=none` / `wrap` | **没有改名** ⇒ `Id` 由程序自己决定，那一行是**猜测**。工具会明确提醒"未必匹配得上" |
 
 ```bash
 twin verify <id>                     # 「托盘图标」那一行说清走的是哪条路、条目在不在
@@ -191,7 +191,7 @@ gnome-extensions info twin-tray@edwinhuish.github.io
    journalctl -f -o cat /usr/bin/gnome-shell | grep twin-tray
    ```
    日志里没有那行警告，说明补丁挂上了 —— 那就回到第 1 条查表。
-3. **匹配对得上吗？** `Id` 是严格相等，`level=none` 时那一行只是猜测（见 B1）。
+3. **匹配对得上吗？** `Id` 是严格相等，`level=none` / `wrap` 时那一行只是猜测（见 B1）。
 
 
 ## C. 程序起不来
@@ -325,13 +325,13 @@ grep -n "tmpfs\|/tmp" ~/.local/share/twin/<id>/profile.yml   # 决定就写在�
 | 报错 | 含义 | 修法 |
 |---|---|---|
 | `id 已存在` | 显式 `--as` 撞到了已存在的东西 | 换个 `--as`，或确认后加 `--force` |
-| `多合一二进制` | BusyBox / coreutils 之类靠 `argv[0]` 分派行为的程序，改名后会报 `unknown program` | 这类程序**不能**用 `alias`；用 `--level none` |
+| `多合一二进制` | BusyBox / coreutils 之类靠 `argv[0]` 分派行为的程序，改名后会报 `unknown program` | 这类程序**不能**用 `alias`：用 `--level none`（只写菜单项）或 `--level wrap`（要沙箱、不要改名） |
 | `找不到可用的源图标` | 源桌面项没有 `Icon=`，或图标文件不存在 | `--icon <png\|svg>` |
 | `不是 Electron 程序（没有 resources/app*）` | 你显式指定的跳板不是 Electron，驱动不了 Node 模式 | 换一个，或删掉 `userns.trampoline` 用 `auto` |
 | `--argv0 会破坏身份不变量` | 窗口 `app_id` 跟真实路径、托盘 `Id` 跟 `argv[0]`；分叉必然一方找不到桌面项 | 别用 |
 | 报错原文「`--` 之后应以 bwrap 选项开头」 | 你想写 POSIX 的"选项到此为止"，而 twin 的 `--` 意思是"以下是 bwrap 参数" | 去掉 `--`，或学习 `--` 的真实含义 |
 | `透传区不能再出现 --` | bwrap 会把它读成"选项结束"，后面全被当成程序名 | 要传字面的 `--` 用 `--flag=--` 形式 |
-| `--level argument/env 还没实现` | 这两个级别没过实测 | 用 `none` / `alias` / `redirect` |
+| `--level argument/env 还没实现` | 这两个级别没过实测 | 用 `none` / `wrap` / `alias` / `redirect` |
 | `config.toml … 解析失败` | 文件存在但语法坏了 | **这是刻意的**：静默回退会让你的修改"什么都不发生"且毫无线索 |
 
 ---

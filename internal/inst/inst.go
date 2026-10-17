@@ -25,6 +25,19 @@ const (
 	// Honest only when the program derives its own name from something we can
 	// set (args/env) or does not collide at all.
 	LevelNone Level = "none"
+	// LevelWrap is the sandbox without the rename: the program runs inside
+	// bubblewrap — private data directories, its own /tmp, the variables the
+	// definition lists — but from its real path, so the window app_id and the
+	// tray SNI Id stay the program's own.
+	//
+	// It exists because the two axes are orthogonal (docs/architecture.md §3):
+	// a program that cannot be renamed may still want its own state directory,
+	// and before this rung `none` was the only way to say "no rename" while
+	// also being the only way to say "no sandbox". The desktop entry still
+	// carries this instance's name — the menu shows it — but no window will
+	// claim it, which is the one thing this level promises and the reports
+	// have to say out loud rather than let a reader assume.
+	LevelWrap Level = "wrap"
 	// LevelAlias renames the *real path* via a bubblewrap overlay, which is what
 	// the window app_id is derived from, and lets argv[0] default to the same
 	// name so the tray SNI Id matches. This is the verified workhorse.
@@ -42,19 +55,49 @@ const (
 )
 
 // Levels lists every level in ladder order.
-var Levels = []Level{LevelNone, LevelAlias, LevelArgument, LevelEnv, LevelRedirect}
+var Levels = []Level{LevelNone, LevelWrap, LevelAlias, LevelArgument, LevelEnv, LevelRedirect}
 
 // Implemented reports whether the generator can actually produce this level.
 // Anything false must be refused loudly rather than approximated silently.
 func (l Level) Implemented() bool {
-	return l == LevelNone || l == LevelAlias || l == LevelRedirect
+	return l == LevelNone || l == LevelWrap || l == LevelAlias || l == LevelRedirect
+}
+
+// Sandboxed reports whether the level runs the program through bubblewrap at
+// all — the axis that is *not* identity. It is what a decision about the
+// sandbox base (which root, which tmpfs, whether a root mount is required) has
+// to be keyed on; `Renames` is the other axis and keying a mount decision on it
+// is how `wrap` would end up with no base and a bwrap call with nothing mounted.
+//
+// level=none is the only false one: it execs the program untouched.
+func (l Level) Sandboxed() bool {
+	return l == LevelWrap || l == LevelAlias || l == LevelRedirect
 }
 
 // Renames reports whether the level runs the program through a bubblewrap
 // overlay under a new file name. Alias and redirect both do, and both need the
 // same three artefacts arranged in the same order; they differ only in whether
 // a redirection rule is also written.
+//
+// It is deliberately not "Sandboxed() && != LevelWrap": the rungs arrive in
+// pairs (rename or not) and the silent assumption this project keeps paying for
+// is a predicate that quietly answers for a level nobody thought about.
 func (l Level) Renames() bool { return l == LevelAlias || l == LevelRedirect }
+
+// ImplementedList spells the implemented levels for the messages a user reads
+// before editing a file. It is derived rather than typed out in each message:
+// four hand-written copies of the same list is four chances for a newly added
+// rung to be advertised as "not implemented" by the very code that implements
+// it.
+func ImplementedList() string {
+	var out []string
+	for _, l := range Levels {
+		if l.Implemented() {
+			out = append(out, string(l))
+		}
+	}
+	return strings.Join(out, " | ")
+}
 
 // ParseLevel validates a user-supplied level string.
 func ParseLevel(s string) (Level, error) {
@@ -697,12 +740,13 @@ func (i *Instance) Check() error {
 			"./<id>.desktop，与这份定义同目录；install 缺了就按源桌面项生成一份，之后逐字复制它）")
 	}
 	if !i.Level.Implemented() {
-		return fmt.Errorf("isolation.level %q is not implemented yet (only %s)", i.Level, "none | alias | redirect")
+		return fmt.Errorf("isolation.level %q is not implemented yet (only %s)", i.Level, ImplementedList())
 	}
 	// The alias is the id, so this is the id colliding with the real file name:
 	// renaming to it would be a no-op while the desktop entry, the launcher and
-	// the tray table all claim it happened.
-	if i.ID == i.TargetBase() {
+	// the tray table all claim it happened. Only a renaming level has that
+	// problem: `wrap` never creates an alias, so nothing there would collide.
+	if i.Level.Renames() && i.ID == i.TargetBase() {
 		return fmt.Errorf("实例 id %q 与真实程序的文件名相同 —— 改名就成了空操作（而它既是别名文件名、"+
 			"又是桌面项基名），换一个 id", i.ID)
 	}
@@ -789,7 +833,7 @@ func (i *Instance) Check() error {
 	// `--dev-bind / /` hand-written in `extras`. Empty `extras` on its own is
 	// therefore fine — that is exactly what a definition whose root is in the
 	// key looks like.
-	if i.Level.Renames() && !i.hasRootMount() {
+	if i.Level.Sandboxed() && !i.hasRootMount() {
 		return fmt.Errorf("这份定义没有根挂载：bwrap.root 是空的，bwrap.bind 里没有 /:/:dev，" +
 			"bwrap.extras 里也没有 --dev-bind / / —— bwrap 至少要有一个根挂载，twin 不再自己补一个；" +
 			"请用 `twin gen` 重新生成，或照它的注释手写一份")
@@ -913,9 +957,9 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	ov.Set("tray", i.TrayOverride)
 
 	iso := t.Ensure("isolation")
-	iso.SetComment("level", "none = 只写桌面项与图标、程序原样跑（连 bwrap 都不过）；alias = bwrap overlay 零拷贝改名（主力）；\n"+
-		"redirect = 同 alias 改名，另加一条 L5 规则（~/.config/twin/rules.d/<id>.json）给 shell 扩展，\n"+
-		"由它把窗口改判回本实例 —— 给把 app_id 写死在代码里的程序用。")
+	iso.SetComment("level", "none = 只写桌面项与图标、程序原样跑（连 bwrap 都不过）；wrap = 过 bwrap 但**不改名**：私有数据目录与沙箱都在，\n"+
+		"窗口 app_id 与托盘 SNI Id 仍是程序自己的。alias = bwrap overlay 零拷贝改名（主力）；redirect = 同 alias 改名 +\n"+
+		"一条 L5 规则（~/.config/twin/rules.d/<id>.json）给 shell 扩展改判窗口 —— 给 app_id 写死在代码里的程序。")
 	iso.Set("level", string(i.Level))
 	iso.SetComment("unshare", "额外 unshare 的命名空间；含 `net` 会被拒绝 —— 它切断网络，也打破\n"+
 		"基于 abstract socket 的单实例锁。")

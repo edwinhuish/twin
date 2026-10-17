@@ -207,7 +207,8 @@ func Load(p inst.Paths) (*Config, error) {
 	if lvl, err := inst.ParseLevel(c.Defaults.Level); err != nil {
 		return nil, fmt.Errorf("%s: defaults.level = %q：%w", c.Path, c.Defaults.Level, err)
 	} else if !lvl.Implemented() {
-		return nil, fmt.Errorf("%s: defaults.level = %q 还没实现（只有 none / alias / redirect 通过实测）", c.Path, c.Defaults.Level)
+		return nil, fmt.Errorf("%s: defaults.level = %q 还没实现（只有 %s 通过实测）",
+			c.Path, c.Defaults.Level, inst.ImplementedList())
 	}
 	if c.Defaults.IconSize <= 0 {
 		return nil, fmt.Errorf("%s: defaults.icon_size = %d，必须是正数", c.Path, c.Defaults.IconSize)
@@ -352,7 +353,7 @@ func loadRule(p inst.Paths, key string) (*Rule, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		if !lvl.Implemented() {
-			return nil, fmt.Errorf("%s: level = %q 还没实现（只有 none / alias / redirect 通过实测）", path, out.Level)
+			return nil, fmt.Errorf("%s: level = %q 还没实现（只有 %s 通过实测）", path, out.Level, inst.ImplementedList())
 		}
 	}
 	return out, nil
