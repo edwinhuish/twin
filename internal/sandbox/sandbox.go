@@ -100,7 +100,13 @@ type Plan struct {
 	Bwrap  string     // path to the bubblewrap binary ("" means no sandbox)
 	Groups [][]string // each group is one option plus its values
 	Prog   string     // the program to execute (the alias when level=alias)
-	Paths  inst.Paths
+	// ProgArgs is `source.args` — what goes after Prog and before the
+	// arguments the desktop environment passes in (GLib's `%U`/`%F`). It is
+	// not a group: those are bwrap options, and these belong to the program on
+	// both shapes of the launcher (inside a sandbox and level=none alike), so
+	// keeping them apart is what lets one renderer emit them once.
+	ProgArgs []string
+	Paths    inst.Paths
 	// Copy is set when Bwrap is a private copy twin owns and has to keep in
 	// sync with the system binary. Empty means the system one is in use.
 	Copy string
@@ -142,9 +148,15 @@ func (p *Plan) Args() []string {
 }
 
 // Argv is the complete argv, ready for exec.
+//
+// The order is the launcher's own: bwrap options, the separator, the program,
+// the program's `source.args`, and only then whatever the caller adds (the
+// desktop environment's files/URLs). `extra` after the args is the point — a
+// switch belongs in front of an operand, and `%U` expands to operands.
 func (p *Plan) Argv(extra ...string) []string {
 	out := p.Args()
 	out = append(out, p.Prog)
+	out = append(out, p.ProgArgs...)
 	return append(out, extra...)
 }
 
@@ -173,6 +185,24 @@ func (p *Plan) String() string {
 		b.WriteString(" \\\n  --")
 	}
 	b.WriteString(" \\\n  " + Sh(p.Prog))
+	for _, a := range p.ProgArgs {
+		b.WriteString(" " + Sh(a))
+	}
+	return b.String()
+}
+
+// progArgs renders `source.args` for the launcher's last command: one token
+// each, quoted exactly like every other token of that line.
+//
+// It is a function rather than inline code because there are two shapes of
+// launcher — with bubblewrap and without it — and both end on the program. The
+// arguments have to come out the same way in both, or one definition would
+// produce two different commands depending on the level it happens to have.
+func progArgs(home string, args []string) string {
+	var b strings.Builder
+	for _, a := range args {
+		b.WriteString(" " + shHome(home, a))
+	}
 	return b.String()
 }
 
@@ -289,6 +319,25 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 		Trampoline:    rt.Trampoline,
 		TrampolineEnv: rt.TrampolineEnv,
 		Bootstrap:     rt.Bootstrap,
+	}
+
+	// `source.args` — the program's own arguments. They are collected here,
+	// before the level=alias branch below, because they are not part of the
+	// sandbox: level=none execs the program directly and must carry them just
+	// as an alias-level instance does, or turning the sandbox off would
+	// silently drop the switch that made the program usable.
+	//
+	// Each token goes through Expand, the same one-line rule the mappings and
+	// the option lines get: a token spelled `~/x` has to mean the home of the
+	// machine that launches, and at generation time it could only have meant
+	// whoever ran `gen`. The rule is the whole token, so a `~` inside
+	// `--opt=~/x` stays where it is — reading into the value would be parsing
+	// arguments, which is the thing this key does not do (splitting on
+	// whitespace is all of its understanding, exactly like `extras`).
+	for _, line := range i.Args {
+		for _, tok := range strings.Fields(line) {
+			plan.ProgArgs = append(plan.ProgArgs, p.Expand(tok))
+		}
 	}
 
 	// Level "none" runs the program untouched: no sandbox at all, and no
@@ -421,7 +470,7 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	// explicitly beats emitting a bubblewrap call that does nothing.
 	if plan.Bwrap == "" {
 		writeExec(&b,
-			fmt.Sprintf("%s \"$@\"", shHome(p.Home, plan.Prog)),
+			fmt.Sprintf("%s%s \"$@\"", shHome(p.Home, plan.Prog), progArgs(p.Home, plan.ProgArgs)),
 			Sh("无法启动程序"), shHome(p.Home, plan.Prog))
 		return []byte(b.String()), nil
 	}
@@ -510,7 +559,7 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	// path can never be read as an option. A passthrough token that happens to
 	// be `--` was already refused by inst.CheckBwrapToken.
 	fmt.Fprintf(&cmd, "  -- \\\n")
-	fmt.Fprintf(&cmd, "  %s \"$@\"", shHome(p.Home, plan.Prog))
+	fmt.Fprintf(&cmd, "  %s%s \"$@\"", shHome(p.Home, plan.Prog), progArgs(p.Home, plan.ProgArgs))
 
 	// Which one of them exec fails on is the first word of the command, and
 	// that is the one worth naming — the rest of the line is already printed.

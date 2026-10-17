@@ -20,8 +20,16 @@ func base() *Instance {
 		BadgeStyle:      "corner",
 		TrayOverride:    true,
 		Level:           LevelAlias,
-		NestedNS:        true,
-		Unshare:         []string{"ipc"},
+		// The program's own arguments: one line per argument group, like
+		// `bwrap.extras`, and one token keeps a `~` — Build is what folds it
+		// into this machine's home, at launch time, so the file must keep the
+		// spelling the user wrote.
+		Args: []string{
+			"--ozone-platform=wayland",
+			"~/.config/wechat2/x",
+		},
+		NestedNS: true,
+		Unshare:  []string{"ipc"},
 		// The values carry the two things a separator must not touch: a colon
 		// (`PATH=/a:/b`) and another `=` (`OPTS=--a=b`) both have to come back
 		// as written — the split is at the first `=` and nowhere else.
@@ -100,6 +108,9 @@ func TestRenderLoadRoundTrip(t *testing.T) {
 	}
 	if out.Target != in.Target || out.Source != in.Source {
 		t.Errorf("source lost: exec=%q desktop=%q", out.Target, out.Source)
+	}
+	if !reflect.DeepEqual(out.Args, in.Args) {
+		t.Errorf("source.args lost: %q", out.Args)
 	}
 	// The entry's text is the one field the round trip is *supposed* to move:
 	// the file keeps `./wechat2.desktop` — the spelling that lets a bundle be
@@ -290,6 +301,62 @@ func TestRenderAlwaysWritesBwrapExtras(t *testing.T) {
 	}
 	if len(out.Extras) != 0 {
 		t.Errorf("empty option list came back as %q", out.Extras)
+	}
+}
+
+// `source.args` 是程序的参数，不是 bwrap 的选项，所以它没有"基座"那种默认值 —— 但
+// "一条都没有"仍然是一个决定，而且这个键的注释是它唯一的说明书（终端不再解释任何键）。
+func TestRenderAlwaysWritesSourceArgs(t *testing.T) {
+	it := base()
+	it.Args = nil
+	data, err := it.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "\n  args: []\n") {
+		t.Errorf("空参数列表要写成 args: []，否则读者分不清「没有参数」和「忘了这个键」：\n%s", s)
+	}
+	// It lives in `source`, right behind `exec`: the two lines answer one
+	// question — which program, started with what.
+	if i, j := strings.Index(s, "\n  exec:"), strings.Index(s, "\n  args:"); i < 0 || j < i {
+		t.Errorf("args 应当写在 source.exec 之后：\n%s", s)
+	}
+	path := filepath.Join(t.TempDir(), ProfileName)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Args) != 0 {
+		t.Errorf("空参数列表读回来变成 %q", out.Args)
+	}
+}
+
+// 一条空行会让文件看起来写了参数，而启动器里一个 token 都不会出现 —— 和 extras
+// 拒绝它的是同一个理由：静默地少一节，比报错难查得多。
+func TestCheckRefusesABlankSourceArgLine(t *testing.T) {
+	it := base()
+	it.Args = []string{"--foo", "   "}
+	err := it.Check()
+	if err == nil || !strings.Contains(err.Error(), "source.args[1]") {
+		t.Fatalf("空行必须指名报错，得到 %v", err)
+	}
+}
+
+// 手写时把列表写成一行字符串是很自然的笔误；读成"没有参数"会让程序带着错的行为
+// 启动，而文件里看起来它明明写了。
+func TestLoadRefusesSourceArgsWrittenAsAScalar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ProfileName)
+	body := "id: demo2\nsource:\n  exec: /opt/demo/demo\n  args: --foo\n" +
+		"override:\n  desktop: ./demo2.desktop\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "args") {
+		t.Fatalf("一行字符串必须被拒绝，得到 %v", err)
 	}
 }
 

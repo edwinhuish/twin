@@ -527,7 +527,13 @@ func cmdInspect(p inst.Paths, args []string) int {
 	}
 	fmt.Printf("Exec       %s\n", insp.Entry.Exec)
 	if len(insp.Argv) > 1 {
-		fmt.Printf("静态参数   %s\n", strings.Join(insp.Argv[1:], " "))
+		// These are not carried into the instance on purpose: an argument is a
+		// decision about how *this* wrap should run the program, and the place
+		// for it is `source.args` (which starts empty). This line is the only
+		// place the source's own arguments are ever printed, so leaving it
+		// silent would drop them with nothing on screen naming them.
+		fmt.Printf("静态参数   %s   ← 源 Exec 的，不会自动进实例：要用就写 profile.yml 的 source.args\n",
+			strings.Join(insp.Argv[1:], " "))
 	}
 	fmt.Printf("真实程序   %s\n", insp.Target)
 	fmt.Printf("所在目录   %s\n", filepath.Dir(insp.Target))

@@ -311,6 +311,25 @@ type Instance struct {
 	Target string
 	Source string
 
+	// Args is `source.args`: the program's own arguments, appended to it in the
+	// order written.
+	//
+	// A list of lines, one line per argument group, split on whitespace exactly
+	// the way bwrap.extras is — the same shape for the same reason: a line is
+	// what a reader can compare against the program's own `--help`, and twin
+	// does not parse arguments. So the price is the one extras already pays: a
+	// value containing a space cannot be written here (that is a path, and
+	// paths have keys of their own).
+	//
+	// They sit after the program path and before the `"$@"` the desktop
+	// environment adds from Exec's field codes, because the program's own
+	// switches belong in front of the file/URL operands GLib hands it. Both
+	// shapes of the launcher carry them — level none execs the program
+	// directly, an alias-level one execs the alias — so they mean the same
+	// thing on both sides of the ladder; that is why they are part of the
+	// instance rather than of the bwrap invocation.
+	Args []string
+
 	// DesktopOverride is the file holding the *text* of the desktop entry twin
 	// installs: `override.desktop`. It is a file rather than six keys because
 	// that text is the one part of a wrap a user rewrites instead of reads —
@@ -759,6 +778,15 @@ func (i *Instance) Check() error {
 			"bwrap.extras 里也没有 --dev-bind / / —— bwrap 至少要有一个根挂载，twin 不再自己补一个；" +
 			"请用 `twin gen` 重新生成，或照它的注释手写一份")
 	}
+	// The program's own arguments are not bwrap options, so nothing here reads
+	// them for meaning — but a blank line is the same nothing-written-yet that
+	// `extras` refuses, and it would otherwise reach the launcher as no
+	// argument at all while the file looks like it asks for one.
+	for n, line := range i.Args {
+		if strings.TrimSpace(line) == "" {
+			return fmt.Errorf("source.args[%d] 是空行：要么写一条完整参数，要么整行去掉", n)
+		}
+	}
 	for n, line := range i.Extras {
 		if strings.TrimSpace(line) == "" {
 			return fmt.Errorf("bwrap.extras[%d] 是空行：要么写一条完整参数，要么整行去掉", n)
@@ -829,6 +857,14 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"什么都要自己填）。")
 	if i.Source != "" {
 		src.Set("desktop", i.Source)
+	}
+	src.SetComment("args", "程序的静态参数，一行一条完整命令（按空格拆开），原样接在程序路径之后、桌面环境给的\n"+
+		"文件/URL 之前：`--ozone-platform=wayland`、`--disable-gpu`（整条以 ~/ 开头的参数在启动时才\n"+
+		"换成本机 HOME）。源桌面项 Exec 里那些参数不会自动搬过来（`twin inspect` 会把它们列出来）。")
+	if len(i.Args) == 0 {
+		src.Set("args", []string{})
+	} else {
+		src.Set("args", i.Args)
 	}
 
 	// What twin is overriding, in one node. The entry's *text* is not five keys
@@ -1110,6 +1146,16 @@ func Load(path string) (*Instance, error) {
 		// would write one file and install would copy another.
 		DesktopOverride: resolvePath(base, ov.Str("desktop")),
 	}
+	// `source.args` is read strictly, like `bwrap.bind` and `bwrap.env`: a
+	// single string written where a list belongs (the shape a hand-edit takes)
+	// would otherwise come back as "no arguments at all", and the only symptom
+	// would be a program that starts without the one switch this instance
+	// exists for.
+	args, err := root.At("source").StrListStrict("args")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	it.Args = args
 	// `isolation.tmpfs` and `exec.env` both moved under `bwrap` for the reason
 	// the shaped mounts did: each one is a bwrap option, and the node that says
 	// "this is what bwrap is called with" should be the only place they live.

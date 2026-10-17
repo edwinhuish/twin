@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -557,6 +558,56 @@ func TestRenderLauncherCarriesTheOptionListAndSeparator(t *testing.T) {
 	// A path under HOME in the passthrough still has to follow $HOME.
 	if !strings.Contains(got, `"$HOME/.xwechat"`) {
 		t.Errorf("launcher baked in the generation-time home:\n%s", got)
+	}
+}
+
+// `source.args` 属于程序，不属于 bwrap：它排在程序路径之后、桌面环境给的 `"$@"`
+// 之前（开关在操作数前面），而两种启动器形状都必须带上它 —— level=none 直接 exec
+// 程序时少一份参数，等于换了个程序在跑，而文件里看不出任何区别。
+func TestProgramArgsFollowTheProgramInBothLauncherShapes(t *testing.T) {
+	const home = "/home/edwin"
+	i := passthroughInstance()
+	i.Args = []string{"--ozone-platform=wayland", "~/.config/wechat2/x"}
+	p := inst.Paths{Home: home}
+	plan, err := Build(i, p, Runtime{Bwrap: "/usr/bin/bwrap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The argv carries them in command order, and the caller's own arguments
+	// (what `%U` expands to) stay last: an operand comes after the switches.
+	argv := plan.Argv("file:///x")
+	want := []string{plan.Prog, "--ozone-platform=wayland",
+		filepath.Join(home, ".config/wechat2/x"), "file:///x"}
+	if got := argv[len(argv)-len(want):]; !reflect.DeepEqual(got, want) {
+		t.Errorf("argv 尾部 = %q，want %q", got, want)
+	}
+	// --dry-run prints plan.String(), so an argument missing from it would be
+	// an argument the user never gets to see before it lands.
+	if !strings.Contains(plan.String(), "--ozone-platform=wayland") {
+		t.Errorf("plan.String 里没有程序的参数：\n%s", plan)
+	}
+
+	body, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "  /opt/wechat/wechat2 --ozone-platform=wayland \"$HOME/.config/wechat2/x\" \"$@\" 2>&3"; !strings.Contains(string(body), want) {
+		t.Errorf("启动器里没有程序的参数，或位置不对（want %q）：\n%s", want, body)
+	}
+
+	// The same definition without a sandbox: no bwrap, same arguments.
+	plain := &inst.Instance{ID: "app2", Level: inst.LevelNone, Target: "/opt/app/app",
+		DesktopOverride: "./app2.desktop", Args: []string{"--foo bar"}}
+	plainPlan, err := Build(plain, p, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainBody, err := RenderLauncher(plain, p, plainPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "exec /opt/app/app --foo bar \"$@\" 2>&3"; !strings.Contains(string(plainBody), want) {
+		t.Errorf("level=none 的启动器丢了 source.args（want %q）：\n%s", want, plainBody)
 	}
 }
 
