@@ -518,6 +518,72 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 		Sh("无法启动程序"), shHome(p.Home, plan.Prog))
 	b.WriteString("fi\n\n")
 
+	// The other instance's sandbox.
+	//
+	// TWIN_INSTANCE carries a value that is not this instance: the launch was
+	// started inside **someone else's** namespace (a wrapped program exec'ing
+	// another instance's launcher, or a shell inside that sandbox running it).
+	// Starting bwrap there is not "one layer more", it is the *wrong* layer —
+	// the new sandbox's root is the parent's root, so the parent's overlay, its
+	// private /tmp and its private data directories are all inside it, while
+	// this instance's own alias is not (it exists only in its own namespace).
+	// The program would then start from its real path, the window's app_id would
+	// fall back to the original, and the identity would be lost silently.
+	//
+	// Getting out can only be done from **outside**: a process that has entered
+	// a mount namespace has no permission to setns back into another one (that
+	// needs CAP_SYS_ADMIN in the host userns), so every "jump out by ourselves"
+	// spelling is an illusion. The host's systemd user manager is always
+	// outside, so the launch is handed to it: it execs this launcher ($0) inside
+	// the host's namespaces, and the script comes back in through the normal
+	// branch above. TWIN_INSTANCE is cleared explicitly — the manager's
+	// environment does not carry it today, but "not today" is not a fact to rely
+	// on (`systemctl --user import-environment` can move anything there, and
+	// arriving with it set is an endless hand-back).
+	//
+	// The test is "has a value", not "is really inside a twin sandbox": an
+	// `export TWIN_INSTANCE=…` in somebody's shell profile lands here too, and it
+	// still launches once handed back (paying for --pipe with a pipe instead of
+	// this terminal) — which beats quietly dropping one layer of sandbox.
+	//
+	// level=none is not part of this: it builds no sandbox, so there is no second
+	// layer to stack and no alias to lose (see the branch above).
+	b.WriteString("# 在别人的沙箱里（TWIN_INSTANCE 有值、却不是这个实例）：交给宿主的 systemd 重跑这一份。\n")
+	b.WriteString("if [ -n \"${TWIN_INSTANCE:-}\" ]; then\n")
+	// Both preconditions are facts of this moment (a binary on PATH, a socket on
+	// disk), so they are decided in the script: when either is missing, "cannot
+	// hand back" has to be said right here — falling back to nesting a
+	// wrong-layered sandbox is the one thing this branch must not do.
+	b.WriteString("  if ! command -v systemd-run >/dev/null 2>&1; then\n")
+	b.WriteString("    printf 'twin %s：启动失败 —— 这次启动来自实例 %s 的沙箱，要交回宿主重跑，但这台机器上没有 systemd-run。\\n' \"$ID\" \"$TWIN_INSTANCE\" >&2\n")
+	b.WriteString("    twin_fail 3 \"在实例 $TWIN_INSTANCE 的沙箱里，找不到 systemd-run：请在宿主上直接启动 $ID\"\n")
+	b.WriteString("  fi\n")
+	// At least one of systemd-run --user's three doors has to be there:
+	// $XDG_RUNTIME_DIR/systemd/private, $DBUS_SESSION_BUS_ADDRESS, or
+	// $XDG_RUNTIME_DIR/bus. Left to itself it prints one English line about the
+	// user scope bus — and a desktop launch drops that into the report file,
+	// where nobody reads it.
+	b.WriteString("  if [ -z \"${DBUS_SESSION_BUS_ADDRESS:-}\" ] &&\n")
+	b.WriteString("     [ ! -S \"${XDG_RUNTIME_DIR:-/nonexistent}/systemd/private\" ] &&\n")
+	b.WriteString("     [ ! -S \"${XDG_RUNTIME_DIR:-/nonexistent}/bus\" ]; then\n")
+	b.WriteString("    printf 'twin %s：启动失败 —— 这次启动来自实例 %s 的沙箱，要交回宿主重跑，但这里够不着宿主的用户管理器。\\n' \"$ID\" \"$TWIN_INSTANCE\" >&2\n")
+	b.WriteString("    twin_fail 3 \"在实例 $TWIN_INSTANCE 的沙箱里够不着宿主（/run/user 被遮掉，或会话总线不在）：请在宿主上直接启动 $ID\"\n")
+	b.WriteString("  fi\n")
+	// $0 is *this* copy — somebody may have copied the launcher elsewhere, and
+	// what they want re-run is the one in their hand — while the far side
+	// resolves a relative path against the host's cwd. So make it absolute.
+	b.WriteString("  self=$(readlink -f -- \"$0\" 2>/dev/null) || self=$0\n")
+	// The exit code is passed through: what runs over there is the program itself
+	// (bwrap included), so a non-zero status is the **program's**, not "could not
+	// hand back". The two real failures are the checks above, and those are the
+	// ones that can name the step a human has to take.
+	b.WriteString("  code=0\n")
+	b.WriteString("  systemd-run --user --quiet --collect --wait --pipe \\\n")
+	b.WriteString("    --description=\"twin $ID\" --setenv=TWIN_INSTANCE= \\\n")
+	b.WriteString("    -- \"$self\" \"$@\" || code=$?\n")
+	b.WriteString("  exit \"$code\"\n")
+	b.WriteString("fi\n\n")
+
 	// Every mount point, both ends of every mapping, has to exist on the host
 	// before bwrap runs, and in the shape the mapping has: bwrap refuses to put a
 	// file on a directory (`Can't create file at <目录>: Is a directory`) and

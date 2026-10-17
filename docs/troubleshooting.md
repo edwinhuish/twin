@@ -75,6 +75,33 @@ bash -x ~/.local/share/twin/<id>/launch     # 真跑一次，看它到底怎么�
 才会弹。程序**跑起来之后**退出码非零不算启动失败 —— 那是程序自己的事，`bootstrap.js` 特意逐字
 转发它的退出码，把"退出应用"报成"启动失败"才是错的。
 
+### A5. 从**另一个**实例的沙箱里启动它：报告"交回宿主失败"
+
+**根因**：这一趟启动发生在另一个实例的命名空间里（被包裹的程序 exec 了另一个实例的启动器，或者
+有人在那份沙箱的 shell 里敲了它）。在那里起第二层 bwrap 会是**错的那一层**：新沙箱的根就是父沙箱
+的根，父实例的 overlay、私有 `/tmp`、私有数据目录全在里面，而它自己的别名不在 ⇒ 程序从真实路径
+启动，窗口 `app_id` 退回原值。所以启动器不嵌套，而是把这一趟交给宿主的 systemd 用户管理器重跑：
+
+```bash
+systemd-run --user --wait --pipe --setenv=TWIN_INSTANCE= -- <这一份启动器> …
+```
+
+进程进了挂载命名空间就没有 `setns` 回去的权限（要宿主 userns 的 `CAP_SYS_ADMIN`），所以这是唯一
+的一条路，它要求会话总线在这个沙箱里够得着。
+
+**为什么难查**：报告里那句"在实例 X 的沙箱里……"是**这一次启动**的位置说明，不是实例坏了 ——
+`twin verify <id>` 会全绿。而 `systemd-run` 自己只会说一句英文的 `Failed to connect to user scope
+bus`。
+
+```bash
+systemctl --user is-system-running          # 用户管理器在不在（degraded 也能用）
+bash -x ~/.local/share/twin/<id>/launch     # 看它到底死在哪一步
+```
+
+**修法**：沙箱把 `/run/user` 遮掉了 —— 要么 `root: ro` 之后没补回 `--bind /run/user /run/user`，
+要么自己往 `bwrap.extras` 里加了一条 `--tmpfs /run`。补回一条映射即可；补不了就从宿主启动这个
+实例（它本来就不该由沙箱里的进程来起）。
+
 ---
 
 ## B. 托盘图标不对

@@ -268,6 +268,19 @@ style → {}    ← 只有标准库
   `TWIN_INSTANCE` 因此**不在 `profile.yml` 里**（`Build` 发在 `bwrap.env` 之后），否则一份定义就能
   把这道判断关掉；第二个判据是回读 —— 别名只在命名空间里存在。
 
+  紧接着还有第二道，管的是**别人的沙箱**：`TWIN_INSTANCE` 有值却不是自己的 id ⇒ 这一趟是在另一个
+  实例的命名空间里被点起来的（被包裹的程序 exec 了另一个实例的启动器，或有人在那份沙箱的 shell 里
+  敲了它）。在那里起 bwrap 不是"多一层"，而是**错的那一层**：新沙箱的根就是父沙箱的根 —— 父实例的
+  overlay、私有 `/tmp`、私有数据目录全在里面，自己的别名却不在（别名只在它自己的命名空间里存在）
+  ⇒ 程序从真实路径启动、窗口 `app_id` 退回原值，身份静默丢掉。逃出去只能由**外面**做：进了挂载
+  命名空间的进程没有 `setns` 回去的权限（要宿主 userns 的 `CAP_SYS_ADMIN`），所以这一趟交给宿主的
+  systemd 用户管理器 —— `systemd-run --user --quiet --collect --wait --pipe --setenv=TWIN_INSTANCE=
+  -- "$0" "$@"`，它在宿主命名空间里重跑这份启动器（`TWIN_INSTANCE` 显式置空，否则用户管理器那份
+  环境里一旦带着它就是无限的自我交回）。**不要把"交不回去"降级成嵌套**：找不到 `systemd-run`、
+  或者三条门路（`$XDG_RUNTIME_DIR/systemd/private`、`$DBUS_SESSION_BUS_ADDRESS`、
+  `$XDG_RUNTIME_DIR/bus`）一条都不通时，它必须以退出码 3 说清楚"这次来自哪个实例、去宿主上启动"，
+  而不是悄悄起一个错层的沙箱。`level=none` 不在此列 —— 它不建沙箱，没有第二层要叠，也没有别名会丢。
+
 
 ## 5. 常见任务怎么做
 

@@ -1007,6 +1007,186 @@ func TestLauncherInsideItsOwnSandboxSkipsBwrap(t *testing.T) {
 	}
 }
 
+// 在**别人的**沙箱里起这一份启动器：再起一层 bwrap 一定是错的那一层 —— 新沙箱的根就是父沙箱
+// 的根，父实例的 overlay、私有 /tmp、私有数据目录都在里面，而这个实例自己的别名不在（别名只在
+// 它自己的命名空间里存在）⇒ 程序从真实路径启动，窗口 app_id 退回原值，身份静默地丢了。逃出去
+// 只能由外面做，所以这一趟交给宿主的 systemd 用户管理器重跑这一份启动器。用一份假的 systemd-run
+// 取证：它收到的是 $0 与 "$@"、TWIN_INSTANCE 被显式置空，而 bwrap 一次都没被碰（给的是个不存在
+// 的路径，真被调用就会失败）。
+func TestLauncherHandsBackToTheHostFromAnotherSandbox(t *testing.T) {
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	handback := filepath.Join(dir, "handback-argv")
+	fake := "#!/bin/bash\nprintf '%s\\n' \"$@\" > \"$HAND_BACK_OUT\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "systemd-run"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	progOut := filepath.Join(dir, "prog-argv")
+	prog := filepath.Join(dir, "demo")
+	const body = "#!/bin/bash\nprintf '%s\\n' \"$@\" > \"$PROG_OUT\"\n"
+	if err := os.WriteFile(prog, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	i := &inst.Instance{
+		ID: "demo2", Level: inst.LevelAlias, Target: prog,
+		DesktopOverride: filepath.Join(dir, "demo2.desktop"),
+		Root:            "dev",
+		Extras:          []string{"--proc /proc", "--die-with-parent"},
+	}
+	p := inst.Paths{Home: filepath.Join(dir, "home")}
+	plan, err := Build(i, p, Runtime{Bwrap: filepath.Join(dir, "no-such-bwrap")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptBody, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "launch")
+	if err := os.WriteFile(script, scriptBody, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res, err := sysx.RunEnv([]string{
+		"HOME=" + p.Home,
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"TWIN_INSTANCE=other1",
+		// 门路的那条判断：会话总线由环境指名（测试里当然是个假地址 —— 真的
+		// systemd-run 已经被上面的假货顶掉了）。
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus",
+		"HAND_BACK_OUT=" + handback,
+		"PROG_OUT=" + progOut,
+	}, script, "positional")
+	if err != nil {
+		t.Fatalf("启动器跑不起来：%v", err)
+	}
+	if res.Code != 0 {
+		t.Fatalf("交回宿主这一步应当成功（退出码 %d，stderr=%s）", res.Code, res.Stderr)
+	}
+	// 这一层什么都不该跑：程序要由宿主那一次重跑去跑。
+	if sysx.Exists(progOut) {
+		t.Error("交回宿主之后，这一层不该自己把程序跑起来")
+	}
+	got := readText(t, handback)
+	if strings.Contains(got, "--dev-bind") || strings.Contains(got, "--overlay-src") {
+		t.Errorf("交回宿主的那一条不该自己带 bwrap 参数：\n%s", got)
+	}
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("systemd-run 收到的参数太少：%q", lines)
+	}
+	// 末尾两条是"重跑谁"与"带什么参数"：桌面环境给的 %U / %F 也必须原样过去。
+	if last := lines[len(lines)-1]; last != "positional" {
+		t.Errorf("参数没有原样交过去，末尾是 %q：\n%s", last, got)
+	}
+	if self := lines[len(lines)-2]; !strings.HasSuffix(self, "/launch") {
+		t.Errorf("交回去的应当是这一份启动器自己的路径，得到 %q：\n%s", self, got)
+	}
+	if sep := lines[len(lines)-3]; sep != "--" {
+		t.Errorf("bwrap 那个分隔位置应当站着 --，得到 %q：\n%s", sep, got)
+	}
+	for _, want := range []string{
+		"--user\n",
+		"--wait\n",
+		"--pipe\n",
+		// 循环的保险：带着 TWIN_INSTANCE 过去，宿主那一次会再交回一次，永远落不到沙箱。
+		"--setenv=TWIN_INSTANCE=\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("交回宿主的参数里缺 %q：\n%s", want, got)
+		}
+	}
+}
+
+// 交不回去的时候不能静默退回嵌套 —— 那会起一个错层的沙箱，身份悄悄丢掉。说清楚这次来自哪个
+// 实例、为什么交不回去、下一步是什么：退出码 3 与"还有一步要人做"是同一个意思。
+func TestLauncherSaysWhatToDoWhenItCannotGetBackToTheHost(t *testing.T) {
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	dir := t.TempDir()
+	// PATH 指向一个空目录：那台"没有 systemd-run"的机器。启动器这一段只用内建命令，够跑。
+	empty := filepath.Join(dir, "empty-path")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	i := &inst.Instance{
+		ID: "demo2", Level: inst.LevelAlias, Target: filepath.Join(dir, "demo"),
+		DesktopOverride: filepath.Join(dir, "demo2.desktop"),
+		Root:            "dev",
+		Extras:          []string{"--proc /proc", "--die-with-parent"},
+	}
+	p := inst.Paths{Home: filepath.Join(dir, "home")}
+	plan, err := Build(i, p, Runtime{Bwrap: filepath.Join(dir, "no-such-bwrap")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptBody, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "launch")
+	if err := os.WriteFile(script, scriptBody, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 终端那一支：没有显示，所以 GUI=0，twin_fail 只退出、不弹窗也不写报告。
+	// 机器上根本没有 systemd-run。
+	res, err := sysx.RunEnv([]string{
+		"HOME=" + p.Home,
+		"PATH=" + empty,
+		"TWIN_INSTANCE=other1",
+	}, script, "positional")
+	if err != nil {
+		t.Fatalf("启动器跑不起来：%v", err)
+	}
+	if res.Code != 3 {
+		t.Fatalf("交不回宿主应当以退出码 3 收场（还有一步要人做），得到 %d（stderr=%q）", res.Code, res.Stderr)
+	}
+	for _, want := range []string{"other1", "systemd-run"} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr 里应当出现 %q（要能看出是哪一层、缺什么）：%q", want, res.Stderr)
+		}
+	}
+	if sysx.Exists(filepath.Join(p.StateDir(i.ID), "launch-error.log")) {
+		t.Error("终端启动不该写报告文件")
+	}
+
+	// 有 systemd-run，但沙箱把 /run/user 遮掉了（root 收紧成 ro 之后没补回来，或者
+	// --tmpfs /run）：门路一条都不通，于是连试都不该试 —— 那句话得由这一层说。
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	called := filepath.Join(dir, "handback-argv")
+	fake := "#!/bin/bash\nprintf '%s\\n' \"$@\" > \"$HAND_BACK_OUT\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "systemd-run"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res, err = sysx.RunEnv([]string{
+		"HOME=" + p.Home,
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"TWIN_INSTANCE=other1",
+		"HAND_BACK_OUT=" + called,
+	}, script, "positional")
+	if err != nil {
+		t.Fatalf("启动器跑不起来：%v", err)
+	}
+	if res.Code != 3 {
+		t.Fatalf("够不着宿主时应当以退出码 3 收场，得到 %d（stderr=%q）", res.Code, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "够不着宿主") {
+		t.Errorf("stderr 里应当说清是够不着宿主：%q", res.Stderr)
+	}
+	if sysx.Exists(called) {
+		t.Error("门路都不通时不该再调 systemd-run（那只会留下它的那句英文）")
+	}
+}
+
 // twin never runs the launcher, so a syntax error in it would first surface at
 // the one moment nobody is watching: a click.
 func TestLauncherIsValidBash(t *testing.T) {
