@@ -44,11 +44,24 @@ import (
 // something else without them — a path with a space is the case that made them
 // necessary — and on the empty string, which as a bare word would vanish
 // instead of arriving as an argument.
+//
+// Double quotes, and `$` left unescaped on purpose: what goes into the launcher
+// is the definition's own text, and a `$NAME` in it (`/run/user/${UID}/gcr/ssh`,
+// `SSH_AUTH_SOCK=$HOME/.ssh/agent`) is there to be expanded by the shell that
+// starts the program. Single quotes handed bwrap the literal `${UID}`: the
+// mount point became a directory nobody meant, and the only reason it was ever
+// findable is that mount_point now names the path it could not create
+// (measured).
+//
+// The price is stated plainly because it is a rule the reader has to know: a
+// `$` meant *literally* in a definition cannot be written any more. That is
+// double quotes' own meaning in the shell, so it is at least the meaning the
+// reader already has.
 func Sh(s string) string {
 	if s != "" && !strings.ContainsAny(s, shSpecial) {
 		return s
 	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return `"` + dqEscape(s) + `"`
 }
 
 // shSpecial is everything a bare word would be read as instead of itself: the
@@ -78,12 +91,16 @@ func shHome(home, tok string) string {
 	return Sh(tok)
 }
 
-// dqEscape escapes what would still expand inside double quotes.
+// dqEscape escapes what would still be read as something else inside double
+// quotes. `$` is not in the list, and that is the whole feature: a `$NAME` in a
+// definition is meant to be expanded at launch time (see Sh). Only `$` is
+// granted that — a backtick would run a command, and `\`/`"` would end the
+// quoting early.
 func dqEscape(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		switch r {
-		case '"', '\\', '`', '$':
+		case '"', '\\', '`':
 			b.WriteByte('\\')
 		}
 		b.WriteRune(r)

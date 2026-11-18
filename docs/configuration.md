@@ -73,16 +73,25 @@ profile.yml      （你正在编辑的那一份：gen 写，install / reinstall 
 
 ⇒ 一句话：`reinstall` 让**派生文件与那份定义一致**，而不是让定义跟随环境。
 
-### 路径怎么写：绝对 / `~` / 相对
+### 路径怎么写：绝对 / `~` / 环境变量 / 相对
 
 这些字段是路径：`bind` 的两侧、rules.d 里的 `tmpfs`、`profile.yml` 里的 `source.exec`、
-`source.desktop`、`override.desktop`、`override.icon.source`。它们接受三种写法：
+`source.desktop`、`override.desktop`、`override.icon.source`。它们接受这几种写法：
 
 | 写法 | 基准 | 什么时候用 |
 |---|---|---|
 | `/…` | 没有基准 —— 它就是它 | 系统路径（`/opt/…`、`/usr/share/…`） |
 | `~/…` | **用它的那台机器的 `$HOME`** | 默认写法。文件里存的是意图，折叠成绝对路径发生在**用的时候** |
+| `$NAME`、`${NAME}` | **启动那一刻**的环境（`$HOME`、`$UID`、`$XDG_RUNTIME_DIR`…） | 同一个实例在不同会话里要指向不同的东西（`/run/user/${UID}/gcr/ssh`） |
 | `state/x`、`./x` | **这份 `profile.yml` 自己所在的目录** | 配置、程序、状态目录放成一个能整体搬走的 bundle |
+
+变量只在会被原样交给 bwrap 的那三处生效：`bind` 的两侧、`bwrap.env` 的值、`bwrap.extras` 的
+token。它们由启动器在启动那一刻展开（启动器里的路径是双引号包着的，变量因此是活的）。
+`source.exec` / `override.*` 不在此列 —— 那几个键在 `install` 时就被解析成具体路径了。
+
+twin 自己**不**展开变量：`install`/`reinstall` 建挂载点、按磁盘判断两端形态时看到的是字面量，
+所以变量写在映射的**目标端**或只读的源端最稳妥；可写的源端带变量时，那句 `mkdir` 会以字面量
+路径报错（`mkdir /run/user/${UID}/…: Permission denied`），而不是替你去猜。
 
 相对路径在 `inst.Load` 里解析，**一次，而且只解析成绝对路径**：之后读它的每一处（bwrap 参数、建挂载点、
 图标、`verify`）看到的是同一个答案，谁也编不出第二个基准 —— 解析发生在读者那一侧，就等于按"你当时站

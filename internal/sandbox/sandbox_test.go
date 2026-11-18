@@ -40,6 +40,11 @@ func TestShHomeWithoutHomeLeavesTheTokenAlone(t *testing.T) {
 // A launcher nobody can read is a launcher nobody fixes: the quotes are for the
 // tokens a shell would read as something else, and every other token is written
 // the way it will be handed to bwrap.
+//
+// 引号是**双**的，而且 `$` 一个都不转义：定义里的 `$NAME` 就靠这一点在启动那一刻
+// 展开（`/run/user/${UID}/gcr/ssh`、`SSH_AUTH_SOCK=$HOME/...`）。单引号会把字面量
+// `${UID}` 交给 bwrap —— 那是"建了一个没人想建的目录"的来源。另外三个字符仍然要转
+// 义：`"` 与 `\` 会提前结束引号，反引号会去执行命令。
 func TestShQuotesOnlyWhatTheShellWouldReadDifferently(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"/usr/bin/bwrap", "/usr/bin/bwrap"},
@@ -49,14 +54,18 @@ func TestShQuotesOnlyWhatTheShellWouldReadDifferently(t *testing.T) {
 		{"PATH=/a:/b", "PATH=/a:/b"},
 		// The ones the quotes exist for: a space would split one argument into
 		// two, and everything else here would be expanded or re-read.
-		{"", `''`},
-		{"/home/a b/x", `'/home/a b/x'`},
-		{"it's", `'it'\''s'`},
-		{"$HOME/x", `'$HOME/x'`},
-		{"a b", `'a b'`},
-		{"{a,b}", `'{a,b}'`},
-		{"*.png", `'*.png'`},
-		{"x#y", `'x#y'`},
+		{"", `""`},
+		{"/home/a b/x", `"/home/a b/x"`},
+		{"it's", `"it's"`},
+		{"$HOME/x", `"$HOME/x"`},
+		{"a b", `"a b"`},
+		{"{a,b}", `"{a,b}"`},
+		{"*.png", `"*.png"`},
+		{"x#y", `"x#y"`},
+		// What still has to be escaped inside double quotes.
+		{`/a"b`, `"/a\"b"`},
+		{`/a\b`, `"/a\\b"`},
+		{"/a`b", "\"/a\\`b\""},
 	}
 	for _, c := range cases {
 		if got := Sh(c.in); got != c.want {
@@ -102,15 +111,15 @@ func TestLauncherRendersOneMountPairPerMapping(t *testing.T) {
 	got := string(body)
 
 	for _, want := range []string{
-		`mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" || twin_fail "$?" '建立挂载点失败：~/.local/state/twin/wechat2/xwechat → ~/.xwechat'` + "\n",
-		`mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" || twin_fail "$?" '建立挂载点失败：~/Documents/xwechat_files → ~/Documents/xwechat_files'` + "\n",
+		`mount_pair "$HOME/.local/state/twin/wechat2/xwechat" "$HOME/.xwechat" || twin_fail "$?" "建立挂载点失败：~/.local/state/twin/wechat2/xwechat → ~/.xwechat"` + "\n",
+		`mount_pair "$HOME/Documents/xwechat_files" "$HOME/Documents/xwechat_files" || twin_fail "$?" "建立挂载点失败：~/Documents/xwechat_files → ~/Documents/xwechat_files"` + "\n",
 		`mount_pair /usr/share/wechat/theme.conf "$HOME/.config/wechat/theme.conf" ro || twin_fail "$?"`,
 		// The state root is a mount point like any other, and a file end needs
 		// the helper that can create one. Its message keeps the quotes — it
 		// says `~/…`, and a bare `~` at the start of a word expands — while the
 		// mapping above lost them: quote a token only when it changes meaning
 		// without them.
-		`mount_point dir "$HOME/.local/state/twin/wechat2" || twin_fail "$?" '建立状态目录失败：~/.local/state/twin/wechat2'` + "\n",
+		`mount_point dir "$HOME/.local/state/twin/wechat2" || twin_fail "$?" "建立状态目录失败：~/.local/state/twin/wechat2"` + "\n",
 		`touch -- "$2"`,
 		// `:try` goes through the helper that does nothing when the source is
 		// missing — bwrap skips that mount itself, so there is nothing to build

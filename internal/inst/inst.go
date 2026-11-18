@@ -1005,16 +1005,16 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 	// key has to be there even when there is nothing to list.
 	bw.SetComment("bind", "隔离哪个数据目录（整段替换内置规则）：`源:目标[:ro|:rw|:dev][:try]`，同 Docker 的卷（:ro 只读、:rw 可读写、\n"+
 		":dev 带设备访问，单写一条路径则挂回自己；末尾的 :try 要写全模式，源不在就整条跳过、不报错）。\n"+
-		"根不在这里 —— 它是 `root` 那个键。空 = 数据目录与源程序共用。")
+		"路径里可写环境变量（`$HOME`、`${UID}`…），由启动器在启动那一刻展开。根在 `root` 键里，不在这里；空 = 数据目录与源程序共用。")
 	binds := make([]string, 0, len(i.Binds))
 	for _, b := range i.Binds {
 		binds = append(binds, b.String())
 	}
 	bw.Set("bind", binds)
 
-	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键=值`，后面的同名者胜；等号只在\n"+
-		"第一个处断开，所以值里可以再有等号与冒号（PATH=/a:/b）。TWIN_INSTANCE 由 twin 自己加，\n"+
-		"不写在这里；留空 = 一个都不注入。")
+	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键=值`，后面的同名者胜；等号只在第一个处断开，\n"+
+		"所以值里可以再有等号与冒号（PATH=/a:/b）。值里的 `$NAME` 由启动器在启动那一刻展开\n"+
+		"（`SSH_AUTH_SOCK=/run/user/${UID}/gnupg/S.gpg-agent.ssh`）。TWIN_INSTANCE 由 twin 自己加；留空 = 一个都不注入。")
 	env := make([]string, 0, len(i.Env))
 	for _, e := range i.Env {
 		env = append(env, e.String())
