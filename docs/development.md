@@ -17,13 +17,14 @@ gofmt -l . && go vet ./... && go test ./...
 迟早一处绿一处红）：
 
 ```bash
-task --list         # 全部任务
+task                # 全部任务（就是 task help）
 task check          # = 上面那一条：gofmt ＋ vet ＋ test，按顺序遇错即停
 task build          # 构建 bin/twin，版本号取 git describe 注入 main.version
 task install        # 构建并装进 $HOME/.local/bin/twin
 task fmt            # gofmt -w .
 task clean          # 删掉 bin/twin
 task test:real      # 依赖真实机器状态的诊断测试（默认不跑）
+task release        # 发版：打 vX.Y.Z 标签并问一次是否推送
 ```
 
 `task test` 自己把 `GOTMPDIR` / `TMPDIR` 指向 `$HOME/.cache/gotmp`（就是下面那个坑），所以本机不必再
@@ -50,6 +51,13 @@ go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" \
 ```
 
 `main.version` 的默认值是 `0.2.0-dev`。
+
+版本号的**唯一来源是 tag**：仓库里没有 `VERSION` 文件，`task build` 每次都去问 `git describe`，
+发布流水线则直接把推上去的 tag 原文喂进 `VERSION=…`。所以"发一次版"就是"给 HEAD 打一个
+`vX.Y.Z` 标签"——`task release` 干的正是这件事（交互输入版本号，回车取 patch +1；也可以
+`task release -- 1.2.3`），它先跑一遍 `task check`，再打标签、问一次是否推送。推 tag 是发布的
+开关：`.github/workflows/release.yml` 挂在 `push: tags: v*` 上，质量门、交叉编译、打包、建 Release
+都在那边。没有第二个地方要跟着改版本号，也就不存在"漏改一处"这件事。
 
 ### 诊断性测试
 

@@ -20,9 +20,18 @@ vars:
     sh: printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/gotmp"
 
 tasks:
+  # 故意不写 desc：`task --list` 只印有描述的任务，所以这张表里不会出现"看这张表"这一行。
+  # go-task 认的是 `default` 这个名字，与它有没有描述无关 —— 裸 `task` 照旧走到这里。
   default:
-    desc: 列出全部任务
     silent: true
+    cmds:
+      - task: help
+
+  help:
+    desc: 列出全部任务（裸 `task` 走的就是它）
+    # 这段脚本唯一的输出就是那张表，前面再挂一行 `task: [help] …` 只是噪音。
+    silent: true
+    # 用 --list 而不是 --list-all：后者会把没有描述的 default 一起翻出来，那正是上面藏掉的那一行。
     cmds:
       - task --list
 
@@ -88,6 +97,118 @@ tasks:
     desc: 删掉构建产物 {{.OUT}}
     cmds:
       - rm -f {{.OUT}}
+
+  # 一次发布 = 给 HEAD 打一个 vX.Y.Z 的 tag。推 tag 就是发布的开关：release.yml 挂在
+  # `push: tags: v*` 上，质量门、交叉编译、打包、建 Release 全在那边，这里只管版本号与那个 tag。
+  release:
+    desc: 发版：交互输入版本号（回车取 patch +1，也可 task release -- 1.2.3），打标签并只问一次是否推送
+    # 隐藏 task 自己的命令回显：这段脚本自己会说话，前面再挂一行 `task: [release] …` 只是噪音。
+    silent: true
+    interactive: true
+    cmds:
+      - |
+        set -e
+
+        # 版本号的唯一来源是 tag：二进制里的 main.version 由 `git describe --tags` 注入（见 vars.VERSION），
+        # 仓库里没有 VERSION 文件 —— 所以"发一次版"就是"给 HEAD 打一个 vX.Y.Z"，没有第二个地方要跟着改。
+        # 需要改两处的那种约定，漏掉一处的代价是发布出来的二进制与 tag 对不上，而版本号正是 bug 报告里
+        # 第一个要对的东西。
+        CUR="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^[vV]//')"
+        [ -n "$CUR" ] || CUR="0.0.0"
+        printf '%s' "$CUR" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+          echo "最近的 tag 不是 x.y.z 形式（读到「$CUR」），不知道该在哪个版本上 +1，发版中止" >&2
+          exit 1
+        }
+        REST="${CUR#*.}"
+        # 10#：补丁位带前导零时（1.0.08）bash 会当成八进制，$((08 + 1)) 直接报错。
+        DEFAULT="${CUR%%.*}.${REST%%.*}.$((10#${REST#*.} + 1))"
+
+        # 与版本号无关的前置检查先做完：让人输完版本号才被告知"发不了"，是最没必要的一次返工。
+        # 工作区脏着就往下走，落进 tag 的是 HEAD 而不是眼前这份代码，而那一步不会有任何地方报警。
+        [ -z "$(git status --porcelain --untracked-files=no)" ] || {
+          echo "工作区有未提交的改动，先提交（或 stash）再来发版" >&2
+          exit 1
+        }
+
+        echo "当前版本: v$CUR"
+
+        # 三条拒绝理由写在一处：交互那条路是"再问一次"，命令行参数与非交互默认是"直接中止"，
+        # 判据只有一份，两种处理才不会慢慢各表一套。
+        reject_reason() {
+          printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "版本号要写成 x.y.z（例如 $DEFAULT）"; return; }
+          [ "$1" != "$CUR" ] || { echo "v$1 就是当前版本"; return; }
+          if git rev-parse -q --verify "refs/tags/v$1" >/dev/null; then echo "本地已经有标签 v$1"; fi
+        }
+
+        # 命令行参数优先（脚本/CI 用）；否则在终端里问一次，回车取 patch +1。
+        NEW="{{.CLI_ARGS}}"
+        NEW="$(printf '%s' "$NEW" | tr -d ' \r\n\t' | sed 's/^[vV]//')"
+        if [ -n "$NEW" ]; then
+          echo "目标版本: v$NEW（来自命令行参数）"
+        elif [ -t 0 ]; then
+          while :; do
+            printf '请输入目标版本号（默认 v%s）: ' "$DEFAULT"
+            read NEW || NEW=""
+            NEW="$(printf '%s' "$NEW" | tr -d ' \r\n\t' | sed 's/^[vV]//')"
+            [ -n "$NEW" ] || NEW="$DEFAULT"
+            REASON="$(reject_reason "$NEW")"
+            if [ -z "$REASON" ]; then break; fi
+            echo "$REASON，请重新输入（Ctrl+C 可取消）"
+          done
+        else
+          NEW="$DEFAULT"
+          echo "目标版本: v$NEW（非交互环境，默认 patch +1；自定义用 task release -- 1.2.3）"
+        fi
+
+        # 命令行参数与非交互默认这两条路没进过上面那个循环，所以要在这里过同一道判据。
+        REASON="$(reject_reason "$NEW")"
+        [ -z "$REASON" ] || { echo "$REASON，发版中止" >&2; exit 1; }
+
+        # 远端已有的同名 tag 也要先拒。等到推的时候才撞上，本地那个 tag 已经打好了，还得手工删 ——
+        # 而"删掉重来"正是发布最不该有的一步。这条会走网络，所以整个脚本只问一次。
+        if git ls-remote --tags --refs origin "v$NEW" 2>/dev/null | grep -q .; then
+          echo "远端已经有标签 v$NEW（git ls-remote origin），发版中止" >&2
+          exit 1
+        fi
+
+        # 发布是一条承诺：先过一遍与 CI 完全相同的那道门（release.yml 在 tag 上跑的就是 task check）。
+        # 红了就停在这里；推上去之后才发现，本地这个 tag 已经存在，重来要手工删。
+        task check
+
+        git tag "v$NEW"
+        echo
+        echo "已打标签 v$NEW → $(git rev-parse --short HEAD)"
+
+        # 推送只问一次，回车就是推：tag 推上去那一刻 CI 才开始打包，不问就推等于替人做了决定。
+        if [ ! -t 0 ]; then
+          echo "非交互环境，跳过推送；要发时手动执行: git push && git push origin v$NEW"
+          exit 0
+        fi
+
+        printf '推送到远端？[Y/n] '
+        PUSH=""
+        read PUSH || true
+        PUSH="$(printf '%s' "$PUSH" | tr -d ' \r\n\t' | tr '[:upper:]' '[:lower:]')"
+        case "$PUSH" in
+          ""|y|yes) ;;
+          n|no)
+            echo "已跳过推送；要发时手动执行: git push && git push origin v$NEW"
+            exit 0
+            ;;
+          *)
+            echo "没认出「$PUSH」，按默认选项 yes 处理"
+            ;;
+        esac
+
+        # 本地分支还没设上游时用 -u 首次推送（tag 不能单独推上去，它得指着一个远端有的提交）；
+        # 其余情况沿用既有上游。tag 单独推。
+        if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+          git push
+        else
+          git push -u origin HEAD
+        fi
+        git push origin "v$NEW"
+        echo
 
   # 只被 test 依赖：GOTMPDIR 指向的目录不存在时，Go 建临时目录会直接失败。
   gotmp:

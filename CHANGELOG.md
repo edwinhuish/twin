@@ -91,6 +91,13 @@
   （退出码仍 0）：它只是让图标变大，底下那条兜底的路一直在画。
 - **`.github/workflows/ci.yml`**：push 到 `main` 与 PR 时装 Go（版本读 `go.mod`）、跑 `task check`，
   再 `task build` 并冒烟一次 `./twin version` —— 质量门只有 `Taskfile.yml` 一份定义，CI 不另抄。
+- **`task release` 与 `task help`，`default` 从任务表里退场**：版本号的唯一来源是 tag（仓库里没有
+  `VERSION` 文件，`main.version` 由 `git describe` 注入），所以"发一次版"就是"给 HEAD 打一个
+  `vX.Y.Z`"——`task release` 交互输入版本号（回车取 patch +1，`task release -- 1.2.3` 也行），
+  先跑一遍与 CI 相同的那道 `task check`，再打标签、只问一次是否推送。工作区脏、版本号格式不对、
+  本地或远端已有同名 tag，都在打标签**之前**拒绝：等到推的时候才撞上，本地那个 tag 已经打好了，
+  得手工删，而"删掉重来"正是发布最不该有的一步。任务表的第一行也不再是"看这张表"：`default`
+  去掉描述后从 `task --list` 里消失（裸 `task` 照旧打印这张表），显式入口叫 `task help`。
 - **终端输出着色 ＋ 状态字形**（新包 `internal/style`）：只在终端上着色，重定向 / 管道 /
   `TERM=dumb` 一律纯文本；`NO_COLOR` 强制关闭、`CLICOLOR_FORCE` 强制打开；stdout 与 stderr
   **各自判断**。判定走 `TCGETS` 而不是"是不是字符设备"（`/dev/null` 也是字符设备）。
