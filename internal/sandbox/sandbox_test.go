@@ -861,6 +861,10 @@ func TestLauncherShowsTheFailureInAGuiSession(t *testing.T) {
 		"哪一步没成：建立挂载点失败：" + filepath.Join(home, "blocker", "sub") + " → ~/data",
 		// The captured stderr is the "why": this is the line a user pastes.
 		"mkdir:",
+		// mkdir 那句话本身不一定带路径（本机是 uutils coreutils：只印
+		// "mkdir: Permission denied"），于是"哪个目录"的答案只能由启动器补上 —— 它得
+		// 一起进报告，否则弹窗里只有一句无从查起的 Permission denied。
+		"建不出这个路径：" + filepath.Join(home, "blocker", "sub"),
 		"启动器：" + script,
 		"报告文件：" + report,
 	} {
@@ -927,6 +931,59 @@ func TestLauncherStaysQuietWithoutAGraphicalSession(t *testing.T) {
 	}
 	if !strings.Contains(res.Stderr, "mkdir:") {
 		t.Errorf("错误应当原样落在 stderr 上：%q", res.Stderr)
+	}
+}
+
+// 失败在哪一个目录上，得由启动器自己说出来：mkdir 的说法在有些机器上完全不带路径
+// （本机是 uutils coreutils，"mkdir: Permission denied" 里没有一个字提到它想建什么），
+// 而终端里没有报告可以事后翻 —— 那一句就在用户眼前，这是唯一能补的地方。
+//
+// 两端的报法不一样，而且必须不一样：目录型的一端报的是它自己，文件型的一端报的是
+// **父目录**（那才是 mkdir 建的东西）；把文件名贴上去会把读者送到一个既不存在、也不
+// 可能被建出来的位置。
+func TestLauncherNamesThePathItCouldNotCreate(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		bind func(home string) inst.Bind
+		want func(home string) string
+	}{
+		{
+			"目录端",
+			func(home string) inst.Bind {
+				return inst.Bind{Source: filepath.Join(home, "blocker", "sub"), Target: "~/data"}
+			},
+			func(home string) string { return filepath.Join(home, "blocker", "sub") },
+		},
+		{
+			"文件端",
+			func(home string) inst.Bind {
+				return inst.Bind{
+					Source: filepath.Join(home, "src.conf"),
+					Target: filepath.Join(home, "blocker", "dst.conf"),
+				}
+			},
+			func(home string) string { return filepath.Join(home, "blocker") },
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home, bin, out := launchSandbox(t)
+			// 源端是个真文件：文件型的映射就是这么认出来的（形态看磁盘，见 mountKind）。
+			if err := os.WriteFile(filepath.Join(home, "src.conf"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			i := blockerInstance(t, home)
+			i.Binds = []inst.Bind{c.bind(home)}
+			p := inst.Paths{Home: home}
+			res, _ := runLauncher(t, i, p, Runtime{Bwrap: "/usr/bin/bwrap"}, home, bin, out, false)
+
+			if res.Code != 1 {
+				t.Fatalf("退出码应当仍是 mkdir 的，得到 %d", res.Code)
+			}
+			want := "建不出这个路径：" + c.want(home)
+			if !strings.Contains(res.Stderr, want) {
+				t.Errorf("stderr 里没说清是哪个路径没建出来（want %q）：%q", want, res.Stderr)
+			}
+		})
 	}
 }
 

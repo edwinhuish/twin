@@ -635,8 +635,10 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	// Each call carries its own failure line: a shell function's non-zero exit
 	// does not reach an ERR trap (bash needs `set -E` for that, and the trap
 	// would then report a line inside mount_point — `mkdir -p -- "$2"` — rather
-	// than which mapping it was working on). The sentence here is the one a
-	// human can act on; the mkdir error itself is captured in the report.
+	// than which mapping it was working on). The sentence here names the whole
+	// mapping; which *end* of it failed comes from mount_point's own line, and
+	// that line exists because mkdir's does not name a path at all on some
+	// machines (see mountHelpers).
 	b.WriteString(mountHelpers)
 	fmt.Fprintf(&b, "mount_point %s %s || twin_fail \"$?\" %s\n",
 		mountDir, shHome(p.Home, p.StateDir(i.ID)),
@@ -820,13 +822,28 @@ const mountHelpers = `# ── 挂载点 ─────────────
 # 拒绝：Can't create file at <目录>: Is a directory），所以形态由磁盘上已有的那一端决定，
 # 两端都没在时按目录（空目录 = 还没启动过；空文件 = 配置是空的，我们不替它说这句话）。
 # 已经存在的路径一个指头都不碰：那是程序自己的数据，不是我们的挂载点。
+#
+# 失败那句由我们自己拼：mkdir 的说法不足以定位是哪个目录。这台机器上的 coreutils 是
+# uutils 版，"mkdir: Permission denied" 里一个字都不提它想建的是哪（同一个原因下 GNU
+# 那版也只印最里层那一段，而 -p 建的是整条父目录链）。所以路径由下面这个函数说出 ——
+# 它落在 stderr：图形会话里 fd2 早已指向报告文件，于是它跟 mkdir 的原话一起进报告；
+# 终端启动时它就在那行 mkdir 报错的紧下面，用户不用去猜上下文。
+twin_no_mkdir() {  # <想建却没建出来的路径>
+  printf 'twin %s：建不出这个路径：%s\n' "$ID" "$1" >&2
+}
+
 mount_point() {  # <dir|file> <路径>
   if [ -e "$2" ]; then return 0; fi
   if [ "$1" = file ]; then
-    mkdir -p -- "$(dirname -- "$2")" && touch -- "$2"
-  else
-    mkdir -p -- "$2"
+    local dir
+    dir=$(dirname -- "$2")
+    # 文件型的一端要先有父目录，两句话各报各的路径：mkdir 失败时说的是父目录，
+    # touch 失败时说的是那个文件自己。
+    if ! mkdir -p -- "$dir"; then twin_no_mkdir "$dir"; return 1; fi
+    if ! touch -- "$2"; then twin_no_mkdir "$2"; return 1; fi
+    return 0
   fi
+  if ! mkdir -p -- "$2"; then twin_no_mkdir "$2"; return 1; fi
 }
 mount_pair() {  # <源> <目标> [ro]
   local kind=dir
@@ -921,8 +938,10 @@ twin_why() {  # <路径>
 twin_fail() {
   set +e
   local code=$1 step=$2 path=${3:-} captured='' report
-  # 终端启动：bash 与失败那条命令自己的措辞已经在用户眼前（比这句转述准），不再多说一句，
-  # 也不碰报告文件 —— 那个文件只属于"没人看得见输出"的那种启动。
+  # 终端启动：失败的那一步自己已经把话说在 stderr 上了（mount_point 会补出它建不出的
+  # 那个路径 —— mkdir 的说法本身常常不带路径，见 mountHelpers；exec 那句带着命令与路径），
+  # 这里再复述一遍只是同一件事的第二种说法。报告文件也不碰：它只属于"没人看得见输出"
+  # 的那种启动。
   [ "$GUI" = 1 ] || exit "$code"
   exec 2>&3
   if [ -n "$path" ]; then step="$step：$path$(twin_why "$path")"; fi
