@@ -128,6 +128,16 @@ type Plan struct {
 	// sync with the system binary. Empty means the system one is in use.
 	Copy string
 
+	// OperandBind is `bwrap.operand_bind`: what the launcher does with a path it
+	// finds in `"$@"`. It is not a group, and it cannot be one: a group is an
+	// argument this build knows the text of, while these pairs only exist at
+	// launch, when the desktop environment expands `%U` / `%F` into the file's
+	// operands. So the plan carries the *rule*, and RenderLauncher emits the
+	// code that applies it — one array expansion in the command, after every
+	// group above, which is where a mount it may add still wins over the
+	// mappings and `extras` the definition wrote.
+	OperandBind string
+
 	// Trampoline is the binary the launcher must exec *before* bubblewrap, so
 	// that this process and everything it spawns carry an AppArmor label with
 	// the userns permission. Empty means "exec bubblewrap directly", which is
@@ -207,6 +217,18 @@ func (p *Plan) String() string {
 	// way round — is the kind of preview that teaches the wrong thing.
 	for _, a := range p.ProgArgs {
 		b.WriteString(" " + a)
+	}
+	// The operand bind is the one part of the command that cannot be printed as
+	// an argument: it depends on what this launch is handed. Saying so is the
+	// honest preview — `install --dry-run` prints this string, and a line that
+	// showed a real path would be a command no launch will ever run.
+	if p.OperandBind == inst.OperandBindSelf || p.OperandBind == inst.OperandBindParent {
+		what := "<路径>"
+		if p.OperandBind == inst.OperandBindParent {
+			what = "<文件所在目录>"
+		}
+		b.WriteString("\n  # 启动时若 \"$@\" 里有认得出的路径（file:// 解成路径）：每个再补一条\n  # --bind-try " +
+			what + " " + what + "（bwrap.operand_bind: " + p.OperandBind + "）")
 	}
 	return b.String()
 }
@@ -347,6 +369,10 @@ func Build(i *inst.Instance, p inst.Paths, rt Runtime) (*Plan, error) {
 		Trampoline:    rt.Trampoline,
 		TrampolineEnv: rt.TrampolineEnv,
 		Bootstrap:     rt.Bootstrap,
+		// Empty reads as `off`, and Check has already refused the word this
+		// switch does not know plus the level that builds no sandbox — so what
+		// reaches RenderLauncher is always something it can render.
+		OperandBind: i.OperandBind,
 	}
 
 	// `source.args` — the program's own arguments. They are collected here,
@@ -689,6 +715,35 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 	}
 	b.WriteString("\n")
 
+	// The caller's operands (`bwrap.operand_bind`).
+	//
+	// This is the only block in the launcher that reads an input the definition
+	// could not have written: the paths arrive from the desktop entry's `%U` /
+	// `%F` expansion, i.e. `"$@"`. It runs here — after the mount-point work,
+	// after the two re-entry decisions above, and before the exec — because it
+	// is about this launch and nothing else: a launch handed back to the host
+	// re-derives it there, and one that is already inside this instance's own
+	// sandbox never needs it.
+	//
+	// What it must not do: rewrite `"$@"`. The program gets the same words the
+	// desktop handed over, URI and all; these pairs exist so the paths are
+	// *writable*, not so the program receives something else.
+	if plan.OperandBind == inst.OperandBindSelf || plan.OperandBind == inst.OperandBindParent {
+		b.WriteString(operandBindHelpers)
+		b.WriteString("\ntwin_operand_args=()\n")
+		b.WriteString("for twin_arg in \"$@\"; do\n")
+		b.WriteString("  if twin_p=$(twin_operand_path \"$twin_arg\"); then\n")
+		if plan.OperandBind == inst.OperandBindParent {
+			// A file operand widened to its directory: that is what a save
+			// through a sibling temporary file needs. A directory operand is
+			// already itself, in both modes.
+			b.WriteString("    [ -d \"$twin_p\" ] || twin_p=$(dirname -- \"$twin_p\")\n")
+		}
+		b.WriteString("    twin_operand_args+=(--bind-try \"$twin_p\" \"$twin_p\")\n")
+		b.WriteString("  fi\n")
+		b.WriteString("done\n\n")
+	}
+
 	// Two shapes, depending on whether this program builds a sandbox of its
 	// own. The trampoline form exists because the bubblewrap we need here is a
 	// private copy with no AppArmor profile — and on a machine that restricts
@@ -717,6 +772,17 @@ func RenderLauncher(i *inst.Instance, p inst.Paths, plan *Plan) ([]byte, error) 
 			parts = append(parts, shHome(p.Home, tok))
 		}
 		fmt.Fprintf(&cmd, "  %s \\\n", strings.Join(parts, " "))
+	}
+	// The pairs the block above worked out, after every static group. That
+	// position is the whole mechanism: last mount wins, so one file under a
+	// recursive `~:~:ro` (or under anything `extras` laid down earlier) is
+	// writable again without a second copy of the mapping list.
+	//
+	// The `+` idiom is not decoration: on bash older than 4.4 `"${a[@]}"` with
+	// `set -u` on an empty array is an unbound-variable error, and an empty
+	// array is the normal case (a launch that was handed no file at all).
+	if plan.OperandBind == inst.OperandBindSelf || plan.OperandBind == inst.OperandBindParent {
+		fmt.Fprintf(&cmd, "  ${twin_operand_args[@]+\"${twin_operand_args[@]}\"} \\\n")
 	}
 	// twin owns this `--`: it ends bwrap's option parsing so the program
 	// path can never be read as an option. A passthrough token that happens to
@@ -881,6 +947,73 @@ mount_pair() {  # <源> <目标> [ro]
 mount_try() {  # <源> <目标> [ro]
   [ -e "$1" ] || return 0
   mount_pair "$@"
+}
+`
+
+// operandBindHelpers is the shell half of `bwrap.operand_bind`, emitted only
+// into a launcher whose definition asks for it, and emitted verbatim like the
+// two blocks around it.
+//
+// There is deliberately no Go half. `install` cannot know a single operand — the
+// paths appear when the desktop entry's `%U` / `%F` is expanded at launch — and
+// there is nothing to prepare on disk either: both ends of every pair are the
+// same path, which exists by definition of "recognised". The one thing that can
+// change in between is that file disappearing, and `--bind-try` is exactly the
+// spelling that turns that into "this mount is skipped" instead of "the program
+// does not start".
+//
+// Why the pairs are appended after every static argument instead of living in
+// `bind`: a definition maps directories when it is written, while the file the
+// user just double-clicked is only named in `"$@"`. This block is therefore the
+// one place in the launcher that decides a bwrap argument from an input the
+// file could not contain — which is why the key that switches it on says what
+// to do rather than what the argument is.
+const operandBindHelpers = `# ── 本次启动的操作数 ────────────────────────────────────────────────────────
+# "$@" 是桌面项 Exec 的 %U / %F 展开出来的东西，写不进 profile.yml —— 写那份文件
+# 的时候它还不在。bwrap.operand_bind 说的是"认出来之后怎么办"（off / self /
+# parent），下面这一段就是那个"认"：只认绝对路径，以及 file:// 开头的绝对路径
+# （%U 给的就是它，空格与中文文件名都是 %XX）。认出来的每个路径发一条 --bind-try，
+# 而程序收到的 "$@" 一个字节都不改 —— 这里只**读**它。
+#
+# 为什么是 --bind-try 而不是 --bind：从现在到 exec 之间那个文件可能被删掉，而
+# "用户点的文件正好没了"该由程序自己说，不该变成"点了没反应"。
+twin_operand_decode() {  # <含 %XX 的字符串>
+  local s=$1 out='' hex
+  while [[ $s == *%* ]]; do
+    out+=${s%%%*}          # 第一个 % 之前的字面部分
+    s=${s#*%}
+    hex=${s:0:2}
+    case $hex in
+      [0-9A-Fa-f][0-9A-Fa-f])
+        out+=$(printf "\x$hex")
+        s=${s:2} ;;
+      # 孤零零的 % 是路径里合法的一个字符，不是编码：原样留着，别吃掉后面那位。
+      *) out+='%' ;;
+    esac
+  done
+  printf '%s' "$out$s"
+}
+
+twin_operand_path() {  # <操作数>；认成路径就打印它，否则以非零退出
+  local s=$1 real
+  case $s in
+    file://*) s=${s#file://}
+              case $s in
+                localhost/*) s=${s#localhost} ;;
+                /*) ;;
+                *) return 1 ;;      # 别的主机名不是本机路径
+              esac ;;
+    /*) ;;
+    *) return 1 ;;                  # http(s)://、程序自己的开关、相对路径
+  esac
+  s=$(twin_operand_decode "$s")
+  # 规范化：同一个文件的不同写法（a/../b、符号链接）不该挂两遍，而 / 必须在这一步
+  # 之后才判得准 —— file:/// 那种写法解出来就是它。
+  real=$(readlink -f -- "$s" 2>/dev/null) && s=$real
+  [ -n "$s" ] || return 1
+  # / 不是一个"要打开的文件"：把它升成可写，等于把 bwrap.root 那条决定整个翻过来。
+  [ "$s" != / ] || return 1
+  printf '%s' "$s"
 }
 `
 

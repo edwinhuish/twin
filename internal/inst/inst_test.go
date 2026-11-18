@@ -1087,6 +1087,83 @@ func TestLoadProfileKeepsNotExistMeaning(t *testing.T) {
 	}
 }
 
+// bwrap.operand_bind 是这个节点里唯一一条"规则"而不是一条参数：它说的是启动那一刻
+// 才存在的东西（桌面项 %U / %F ⇒ 启动器的 "$@"）。所以"没写"必须写成 off —— 缺这
+// 一段的老文件与"明确不要"要分得开（与 override.tray 同一条规矩），而它紧跟 bind，
+// 因为"它加的是什么"决定了读者去哪一块找它。
+func TestRenderAlwaysWritesOperandBind(t *testing.T) {
+	it := base()
+	data, err := it.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	// Quoted, and it has to be: a bare `off` is a YAML boolean, so the encoder
+	// says `"off"` — the value is the word, not a truth value.
+	if !strings.Contains(s, "\n  operand_bind: \"off\"\n") {
+		t.Fatalf("空值要写成 operand_bind: \"off\"，否则「不绑」与「这个键不存在」分不开：\n%s", s)
+	}
+	if i, j := strings.Index(s, "\n  bind:"), strings.Index(s, "\n  operand_bind:"); i < 0 || j < i {
+		t.Errorf("operand_bind 应当写在 bind 之后（它加的就是一条挂载）：\n%s", s)
+	}
+	// It comes back as the word, not as an empty string: the launcher reads it
+	// as a decision, and `off` is the decision.
+	out, _ := loadRender(t, t.TempDir(), data)
+	if out.OperandBind != OperandBindOff {
+		t.Errorf("operand_bind = %q，want %q", out.OperandBind, OperandBindOff)
+	}
+}
+
+// 三个词各自通过；不认识的词与"level: none 却要它"都被拒 —— 后者不是风格问题：
+// 那一档 exec 的是程序本身，没有挂载可加，于是这个键会被读到、然后什么都不做。
+func TestCheckReadsOperandBind(t *testing.T) {
+	for _, word := range []string{OperandBindOff, OperandBindSelf, OperandBindParent} {
+		it := base()
+		it.OperandBind = word
+		if err := it.Check(); err != nil {
+			t.Errorf("operand_bind = %q 应当被接受：%v", word, err)
+		}
+	}
+	it := base()
+	it.OperandBind = "rw"
+	if err := it.Check(); err == nil || !strings.Contains(err.Error(), "operand_bind") {
+		t.Errorf("不认识的词必须指名报错，得到 %v", err)
+	}
+	none := base()
+	none.Level = LevelNone
+	none.OperandBind = OperandBindSelf
+	none.Root, none.Binds, none.Extras = "", nil, nil
+	if err := none.Check(); err == nil || !strings.Contains(err.Error(), "operand_bind") {
+		t.Errorf("level=none 配 operand_bind 必须被拒（那一档没有 bwrap 调用），得到 %v", err)
+	}
+}
+
+func TestLoadReadsOperandBind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ProfileName)
+	body := `id: demo2
+source:
+  exec: /opt/demo/demo
+override:
+  desktop: ./demo2.desktop
+bwrap:
+  root: dev
+  operand_bind: parent
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.OperandBind != OperandBindParent {
+		t.Errorf("operand_bind = %q，want %q", it.OperandBind, OperandBindParent)
+	}
+	if err := it.Check(); err != nil {
+		t.Errorf("读进来的定义应当可用：%v", err)
+	}
+}
+
 // 旧快照也不能从 list 里消失：跳过它就等于这个实例从来没存在过。
 func TestListReportsLegacyTomlSnapshot(t *testing.T) {
 	p := Paths{Home: t.TempDir()}

@@ -344,6 +344,29 @@ func ParseEnvVar(spec string) (EnvVar, error) {
 	return EnvVar{Key: key, Value: value}, nil
 }
 
+// OperandBind* are the words `bwrap.operand_bind` accepts: what the launcher
+// does with an operand the caller handed in.
+//
+// This is not a `Bind` and cannot be one. A mapping's two ends are written when
+// the definition is written; these paths only exist at launch — the desktop
+// environment expands `%U`/`%F` from the entry, and the launcher receives the
+// result as `"$@"`. So the key says what to *do* with them, and there is
+// nothing else in the file that could say it.
+const (
+	// OperandBindOff leaves `"$@"` alone. It is the default and what `gen`
+	// writes, because "do not bind the caller's files" is a decision a reader
+	// has to be able to see.
+	OperandBindOff = "off"
+	// OperandBindSelf makes the operand itself writable in the sandbox.
+	OperandBindSelf = "self"
+	// OperandBindParent widens a *file* operand to the directory holding it,
+	// which is what a program that saves by writing a sibling temporary file
+	// and renaming it needs (a single rw file leaves that sibling read-only and
+	// the save fails). A directory operand is bound as itself in both modes:
+	// "parent of the folder I opened" is never what the caller meant.
+	OperandBindParent = "parent"
+)
+
 // Instance is one wrapped program.
 type Instance struct {
 	ID string
@@ -442,6 +465,28 @@ type Instance struct {
 	// list as "the program's data directories" leave it out — see
 	// Bind.IsRootMount.
 	Binds []Bind
+	// OperandBind is `bwrap.operand_bind`: what the launcher does with a path it
+	// finds in `"$@"` — the file/URL operands the desktop environment passed in
+	// from the entry's `%U` / `%F`.
+	//
+	// It is the one thing here that is a *rule* rather than an argument: the
+	// operands do not exist when this file is written, so they cannot be a
+	// `Bind`. Everything else follows from that. The launcher decides at launch
+	// which of `"$@"`'s words are existing absolute paths (a `file://` URI is
+	// decoded first), binds each of them onto itself with `--bind-try` — a file
+	// that disappears between that decision and `exec` must not turn into "the
+	// program does not start" — and appends those pairs *after* every argument
+	// this file wrote. That last position is the feature: last mount wins, so a
+	// file sitting under a recursive `~:~:ro` can be lifted back to writable
+	// without touching the mapping list. The price is stated in the key's own
+	// comment: it also overrules a `--remount-ro` on the same path, and a path
+	// the definition has already hidden (a private `/tmp`) is not visible to
+	// bwrap by the time this mount is made.
+	//
+	// `/` is deliberately never bound: the host root made writable is not "let
+	// this file be saved", it is switching `bwrap.root` off. `level: none`
+	// cannot use this key at all — see Check.
+	OperandBind string
 	// Env is `--setenv` pairs, in the order written (later pairs win, as bwrap
 	// does it) — the user's variables, and only those.
 	//
@@ -718,6 +763,18 @@ func (i *Instance) hasRootMount() bool {
 	return len(i.Extras) > 0
 }
 
+// operandBind is the word the file carries. Empty reads as `off`, and `gen`
+// writes `off` rather than leaving the key out: an absent key would become
+// indistinguishable from a definition written before this one existed, and
+// "the caller's files are left alone" is a decision a reader should be able to
+// find in the file (same rule as `override.tray`).
+func (i *Instance) operandBind() string {
+	if i.OperandBind == "" {
+		return OperandBindOff
+	}
+	return i.OperandBind
+}
+
 // Check performs the semantic validation the generator relies on. Every
 // failure here maps to a symptom we have actually seen fail silently.
 func (i *Instance) Check() error {
@@ -765,6 +822,25 @@ func (i *Instance) Check() error {
 		return fmt.Errorf("bwrap.root %q 不是 ro / rw / dev 之一：ro = --ro-bind / /（整个宿主根只读，"+
 			"代价是设备与 /run/user 要自己补回来），rw = --bind / /，dev = --dev-bind / /（带设备访问，"+
 			"`gen` 写的就是它）", i.Root)
+	}
+	// The three words are read here rather than in Load so a Go-built instance
+	// gets the same answer as a hand-edited file: an unknown word would
+	// otherwise be a rule the launcher silently ignores — and the whole point of
+	// this key is that nobody can see what it did until a file refuses to save.
+	switch i.OperandBind {
+	case "", OperandBindOff, OperandBindSelf, OperandBindParent:
+	default:
+		return fmt.Errorf("bwrap.operand_bind %q 不是 off / self / parent 之一：off 不碰 \"$@\"，"+
+			"self 把桌面递进来的那个路径本身升回可写，parent 把文件所在的目录升回可写"+
+			"（操作数自己是目录时仍是它自己）", i.OperandBind)
+	}
+	// `level: none` execs the program directly: there is no bwrap call to add a
+	// mounting to, so this key would be read and quietly do nothing — exactly
+	// the failure twin refuses to ship. Refused by name, with both ways out.
+	if i.operandBind() != OperandBindOff && !i.Level.Sandboxed() {
+		return fmt.Errorf("bwrap.operand_bind: %s 与 isolation.level: %s 是矛盾的 —— 这一档不过 bwrap，"+
+			"没有挂载可以加；要它就先把 level 改成 wrap / alias / redirect，或者删掉这个键",
+			i.operandBind(), i.Level)
 	}
 	for n, b := range i.Binds {
 		if b.Source == "" || b.Target == "" {
@@ -975,13 +1051,19 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		"用哪个跳板是机器属性，留在 config.toml 里。")
 	iso.Set("nested_ns", i.NestedNS)
 
-	// The invocation, all of it. Four keys, because a bwrap command line is four
-	// kinds of thing once the root is counted on its own: the surface the
-	// program runs on (`root`), mounts with two ends (`bind`), environment
-	// (`env`), and everything else as the option lines themselves (`extras`).
-	// The base is not in Go anywhere — `gen` writes it into these same keys
-	// (see sandbox.BaseFor) — so what the program gets can be read here, and
-	// which root it gets is a key in this file rather than a constant.
+	// The invocation, all of it. Four keys describe the command line the way a
+	// bwrap command line is made of four kinds of thing once the root is counted
+	// on its own: the surface the program runs on (`root`), mounts with two ends
+	// (`bind`), environment (`env`), and everything else as the option lines
+	// themselves (`extras`). The base is not in Go anywhere — `gen` writes it
+	// into these same keys (see sandbox.BaseFor) — so what the program gets can
+	// be read here, and which root it gets is a key in this file rather than a
+	// constant.
+	//
+	// `operand_bind` is the fifth key and a different kind of thing: it does not
+	// name an argument, it says what the launcher may add at launch for the
+	// paths the *caller* passed in. It lives here because what it adds is one
+	// more mount, and this node is where a reader looks for mounts.
 	bw := t.Ensure("bwrap")
 
 	// First, and written unconditionally: it is the first mount of the command
@@ -1011,6 +1093,16 @@ func (i *Instance) toTree() (*yamlz.Tree, error) {
 		binds = append(binds, b.String())
 	}
 	bw.Set("bind", binds)
+
+	// The fifth key, and the only one in this node that is a *rule* rather than
+	// an argument: the operands it is about do not exist yet. Written
+	// unconditionally for the same reason as `bind`: "the caller's files are
+	// left alone" is a decision, and a reader must be able to find it here
+	// instead of guessing from an absent line what an old file meant.
+	bw.SetComment("operand_bind", "桌面环境递进来的操作数（桌面项 Exec 的 %U / %F ⇒ 启动器里的 \"$@\"）里若是路径，为它补一条可写映射：off\n"+
+		"不碰（默认）；self = 路径本身；parent = 文件所在的目录（原子保存要它；目录操作数仍是自己）。只认绝对路径与\n"+
+		"file://（%XX 解码）、只读 \"$@\"；发在所有参数之后 ⇒ 压住同一路径的 --remount-ro/--tmpfs，被遮掉的（私有 /tmp）救不回；/ 不绑。")
+	bw.Set("operand_bind", i.operandBind())
 
 	bw.SetComment("env", "注入沙箱的环境变量（bwrap --setenv），一条一个 `键=值`，后面的同名者胜；等号只在第一个处断开，\n"+
 		"所以值里可以再有等号与冒号（PATH=/a:/b）。值里的 `$NAME` 由启动器在启动那一刻展开\n"+
@@ -1188,17 +1280,21 @@ func Load(path string) (*Instance, error) {
 	}
 	ov := root.At("override")
 	it := &Instance{
-		ID:         root.Str("id"),
-		Target:     resolvePath(base, root.At("source").Str("exec")),
-		Source:     resolvePath(base, root.At("source").Str("desktop")),
-		Level:      Level(root.At("isolation").Str("level")),
-		Unshare:    root.At("isolation").StrList("unshare"),
-		NestedNS:   root.At("isolation").Bool("nested_ns"),
-		Extras:     root.At("bwrap").StrList("extras"),
-		WMClass:    ov.Str("wm_class"),
-		IconSource: resolvePath(base, ov.At("icon").Str("source")),
-		Badge:      ov.At("icon").Str("badge"),
-		BadgeStyle: ov.At("icon").Str("style"),
+		ID:       root.Str("id"),
+		Target:   resolvePath(base, root.At("source").Str("exec")),
+		Source:   resolvePath(base, root.At("source").Str("desktop")),
+		Level:    Level(root.At("isolation").Str("level")),
+		Unshare:  root.At("isolation").StrList("unshare"),
+		NestedNS: root.At("isolation").Bool("nested_ns"),
+		// Unlike `root`, the word is checked in Check rather than here: it is
+		// semantic (`off` / `self` / `parent` pick a behaviour), and every other
+		// bad value in this file is reported by the same code.
+		OperandBind: root.At("bwrap").Str("operand_bind"),
+		Extras:      root.At("bwrap").StrList("extras"),
+		WMClass:     ov.Str("wm_class"),
+		IconSource:  resolvePath(base, ov.At("icon").Str("source")),
+		Badge:       ov.At("icon").Str("badge"),
+		BadgeStyle:  ov.At("icon").Str("style"),
 		// The desktop entry's text is a path like any other path in this file,
 		// and it resolves the same way: against the definition's own directory,
 		// which is what makes a bundle (definition + entry text + program)

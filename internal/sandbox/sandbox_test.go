@@ -1344,6 +1344,10 @@ func TestLauncherIsValidBash(t *testing.T) {
 	sandboxed := mountInstance()
 	trampolined := mountInstance()
 	trampolined.Binds = nil
+	operandSelf := mountInstance()
+	operandSelf.OperandBind = inst.OperandBindSelf
+	operandParent := mountInstance()
+	operandParent.OperandBind = inst.OperandBindParent
 
 	cases := []struct {
 		name string
@@ -1357,6 +1361,8 @@ func TestLauncherIsValidBash(t *testing.T) {
 			Trampoline: "/opt/electron/electron", TrampolineEnv: []string{"ELECTRON_RUN_AS_NODE=1"},
 			Bootstrap: p.Bootstrap(),
 		}},
+		{"操作数 self", operandSelf, Runtime{Bwrap: "/usr/bin/bwrap"}},
+		{"操作数 parent", operandParent, Runtime{Bwrap: "/usr/bin/bwrap"}},
 	}
 	for _, c := range cases {
 		plan, err := Build(c.i, p, c.rt)
@@ -1373,6 +1379,157 @@ func TestLauncherIsValidBash(t *testing.T) {
 		}
 		if res, err := sysx.Run("bash", "-n", script); err != nil || res.Code != 0 {
 			t.Errorf("%s：bash -n 不认这份启动器：%v %s", c.name, err, res.Stderr)
+		}
+	}
+}
+
+// ------------------------------------------------------------ 本次启动的操作数
+
+// fakeBwrap writes the argv it was called with, one argument per line, and exits
+// successfully. The generated launcher execs a *path* for bubblewrap, so the
+// fake is handed in as Runtime.Bwrap rather than put on PATH — which is also
+// how a real instance names its private copy.
+func fakeBwrap(t *testing.T, dir, out string) string {
+	t.Helper()
+	path := filepath.Join(dir, "bwrap")
+	body := "#!/bin/bash\nprintf '%s\\n' \"$@\" > \"" + out + "\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// runRenderedLauncher renders and runs a launcher for one instance with one
+// caller operand, returning the argv the (fake) bubblewrap received.
+func runRenderedLauncher(t *testing.T, i *inst.Instance, p inst.Paths, bwrap, script, argvFile, operand string) []string {
+	t.Helper()
+	plan, err := Build(i, p, Runtime{Bwrap: bwrap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res, err := sysx.RunEnv([]string{
+		"HOME=" + p.Home,
+		"PATH=" + os.Getenv("PATH"),
+	}, script, operand)
+	if err != nil {
+		t.Fatalf("启动器跑不起来：%v", err)
+	}
+	if res.Code != 0 {
+		t.Fatalf("启动器退出码 %d，stderr=%q", res.Code, res.Stderr)
+	}
+	return strings.Split(strings.TrimRight(readText(t, argvFile), "\n"), "\n")
+}
+
+// 这一整段的判据只有三条：认得出路径、绑的是同一个路径两遍、程序收到的 "$@" 原样。
+// 每条用例都真跑一遍生成的脚本（假 bwrap 记下 argv），因为这段代码只在启动那一刻
+// 存在，任何"渲染时看一眼"的测试都会放过它的错。
+func TestLauncherBindsTheCallersOperandPaths(t *testing.T) {
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := filepath.Join(home, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(docs, "report 1.md")
+	if err := os.WriteFile(file, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := "file://" + strings.ReplaceAll(file, " ", "%20")
+
+	cases := []struct {
+		name    string
+		mode    string
+		operand string
+		want    []string
+	}{
+		{"file:// 解成路径", inst.OperandBindSelf, uri, []string{file}},
+		{"普通绝对路径", inst.OperandBindSelf, file, []string{file}},
+		{"parent 放宽到所在的目录", inst.OperandBindParent, file, []string{docs}},
+		{"parent 遇到目录操作数仍是它自己", inst.OperandBindParent, docs, []string{docs}},
+		{"URL 不是路径", inst.OperandBindSelf, "https://example.com/a", nil},
+		{"根不是一个要打开的文件", inst.OperandBindSelf, "file:///", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			argvFile := filepath.Join(dir, "argv")
+			i := passthroughInstance()
+			i.Level = inst.LevelWrap // 没有 overlay：这条测试只看参数
+			i.Binds = nil
+			i.OperandBind = c.mode
+			p := inst.Paths{Home: home}
+
+			argv := runRenderedLauncher(t, i, p, fakeBwrap(t, dir, argvFile),
+				filepath.Join(dir, "launch"), argvFile, c.operand)
+
+			// 程序收到的还是原样的那个词：这一段只读 "$@"，不改写它。
+			if last := argv[len(argv)-1]; last != c.operand {
+				t.Errorf("程序收到的最后一个参数 = %q，want %q", last, c.operand)
+			}
+			var bound []string
+			for n := 0; n < len(argv); n++ {
+				if argv[n] != "--bind-try" {
+					continue
+				}
+				if n+2 >= len(argv) || argv[n+1] != argv[n+2] {
+					t.Fatalf("--bind-try 后面应当是同一条路径两遍：%q", argv[n:])
+				}
+				bound = append(bound, argv[n+1])
+				n += 2
+			}
+			if !reflect.DeepEqual(bound, c.want) {
+				t.Errorf("绑定 = %q，want %q\nargv: %q", bound, c.want, argv)
+			}
+		})
+	}
+}
+
+// 关掉的时候一个字节都不该多：生成的脚本里连那段函数都不该有（死代码读起来
+// 像"这里做过什么"，而它什么都没做），argv 里也不该出现那条挂载。
+func TestLauncherLeavesOperandsAloneWhenOff(t *testing.T) {
+	if sysx.Which("bash") == "" {
+		t.Skip("没有 bash：这份启动器本来就以 bash 为宿主")
+	}
+	dir := t.TempDir()
+	argvFile := filepath.Join(dir, "argv")
+	i := passthroughInstance()
+	i.Level = inst.LevelWrap
+	i.Binds = nil
+	p := inst.Paths{Home: t.TempDir()}
+	script := filepath.Join(dir, "launch")
+	bwrap := fakeBwrap(t, dir, argvFile)
+
+	plan, err := Build(i, p, Runtime{Bwrap: bwrap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := RenderLauncher(i, p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "twin_operand_args") {
+		t.Errorf("operand_bind=off 的启动器里不该有那一段：\n%s", body)
+	}
+	if strings.Contains(plan.String(), "bwrap.operand_bind") {
+		t.Errorf("预览也不该提这条规则：\n%s", plan.String())
+	}
+
+	argv := runRenderedLauncher(t, i, p, bwrap, script, argvFile, "/opt/some/file.txt")
+	for _, a := range argv {
+		if a == "--bind-try" {
+			t.Errorf("off 时不该绑任何操作数：%q", argv)
 		}
 	}
 }
